@@ -82,9 +82,15 @@ LOCAL_SPEC_FILES = {
 }
 
 # These cite contracts copied from upstream projects. They are provenance,
-# not headings Taut owns. Keep their source scope narrow so a new CC/SB cite in
+# not headings Taut owns. Keep their source scope narrow so a new upstream cite in
 # ordinary Taut prose cannot silently masquerade as a local requirement.
 EXTERNAL_FAMILIES: dict[str, tuple[str, frozenset[Path]]] = {
+    "TS": (
+        "copied Weft thread-safety contract and its suppression-mapping fixture",
+        frozenset(
+            {Path("taut/watcher.py"), Path("tests/test_ruff_suppression_index.py")}
+        ),
+    ),
     "CC": (
         "copied Weft multi-queue watcher contract",
         frozenset({Path("taut/watcher.py")}),

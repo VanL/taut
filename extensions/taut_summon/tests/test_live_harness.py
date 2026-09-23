@@ -90,11 +90,6 @@ def _fatal_readiness_reason(status: SummonStatus) -> str | None:
             "driver reports an unanswered terminal query; the PTY responder "
             f"needs coverage for this harness ({awaiting_query})"
         )
-    control_health = status.details.get("control_health")
-    if control_health != "ok":
-        detail = status.details.get("health_detail")
-        suffix = f": {detail}" if detail else ""
-        return f"driver control health is {control_health or 'missing'}{suffix}"
     return None
 
 
@@ -235,20 +230,8 @@ def test_live_status_not_ready_reason_names_query_gap() -> None:
     assert "[?15n" in reason
 
 
-def test_live_status_fatal_reason_names_control_health_gap() -> None:
-    reason = _fatal_readiness_reason(_status_with_details(control_health="degraded"))
-
-    assert reason == "driver control health is degraded"
-
-
-def test_live_status_fatal_reason_names_missing_control_health() -> None:
-    reason = _fatal_readiness_reason(_status_with_details())
-
-    assert reason == "driver control health is missing"
-
-
 def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
-    status = _status_with_details(control_health="ok")
+    status = _status_with_details()
 
     assert _fatal_readiness_reason(status) is None
     assert _not_ready_reason(status) is None

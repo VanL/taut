@@ -1079,7 +1079,6 @@ def test_attach_partial_duplicate_failure_closes_first_duplicate() -> None:
     with pytest.raises(AdapterError, match="injected second duplicate failure"):
         _AttachSession(
             cast(Any, owner),
-            wake=threading.Event(),
             shutdown=threading.Event(),
             input_fd=0,
             output_fd=1,
@@ -1140,7 +1139,6 @@ def test_attach_route_failure_retires_started_sink_before_handles_close() -> Non
     )()
     session = _AttachSession(
         cast(Any, owner),
-        wake=threading.Event(),
         shutdown=threading.Event(),
         input_fd=0,
         output_fd=1,
@@ -1254,7 +1252,6 @@ def _run_attach(api: _AttachApi, drain: _AttachDrain) -> None:
 
     session = _AttachSession(
         _attach_owner(api, drain),
-        wake=threading.Event(),
         shutdown=threading.Event(),
         input_fd=0,
         output_fd=1,

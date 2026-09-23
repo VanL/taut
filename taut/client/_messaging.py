@@ -241,6 +241,7 @@ class MessagingMixin(_ClientBase):
                 last_seen_ts=ts,
                 expected_thread_created_ts=child["created_ts"],
             )
+            self._publish_cache_stale("membership")
             prior_cursor = ts
         else:
             prior_cursor = membership["last_seen_ts"]
@@ -588,6 +589,7 @@ class MessagingMixin(_ClientBase):
                 last_seen_ts=ts,
                 expected_thread_created_ts=existing["created_ts"],
             )
+            self._publish_cache_stale("membership")
             prior_cursor = ts
         else:
             prior_cursor = actor_membership["last_seen_ts"]
@@ -602,6 +604,7 @@ class MessagingMixin(_ClientBase):
                 last_seen_ts=0,
                 expected_thread_created_ts=existing["created_ts"],
             )
+            self._publish_cache_stale("membership")
         message = self._write_message(
             queue=queue,
             thread=thread,
@@ -651,13 +654,15 @@ class MessagingMixin(_ClientBase):
                 f"{member['display_name']} is not a member of {thread}"
             )
         joined_ts = self._meta_queue.generate_timestamp()
-        return self._state.add_membership(
+        membership = self._state.add_membership(
             thread=thread,
             member_id=member["member_id"],
             joined_ts=joined_ts,
             last_seen_ts=0,
             expected_thread_created_ts=row["created_ts"],
         )
+        self._publish_cache_stale("membership")
+        return membership
 
     def _write_message(
         self,

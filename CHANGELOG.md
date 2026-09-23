@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- Membership refresh racing shutdown now recognizes a typed topology-stop
+  rejection; unrelated runtime failures still propagate.
+- Summon hard interrupts reuse native operation workers, keeping broker control
+  responsive during blocked I/O. Owner-requested write cancellation is expected;
+  deterministic cleanup failures propagate. The extra POSIX wake bridge and
+  obsolete generation bookkeeping are removed.
+- Summon attach cancellation is the published shutdown event. `AdapterHandle.attach`
+  no longer takes an unused wake event.
+- TUI attach confirmation stays on the worker that is already waiting. That
+  worker samples cancellation between short waits. A normal answer leaves no
+  extra thread. Host shutdown still publishes stop before the refusal is
+  visible.
+- MCP workspace completion now wakes the parent directly, removing maintenance
+  and shutdown polls. Failed executor submission cannot grant workspace authority.
+- TUI presentation failures are reported instead of swallowed. Reaction
+  configuration failures have a typed public exception; duplicate private
+  validation and diagnostic fallbacks are removed.
+
+- Summon no longer rebuilds its reactor after an escaping broker/OS error.
+  The single source unwinds and releases ownership; caller restart remains
+  possible. Harness-crash restart remains policy within that reactor.
+- Summon STATUS no longer includes `control_health` or `health_detail`.
+  Failed replies log a request-local warning without leaving sticky degraded
+  state. STATUS/PING requesters retain their idempotent retry deadlines.
+- MCP handles queued terminal causes before reaping workspace threads, so
+  identity loss remains identity loss when ensure/detach races child exit.
+
+- Reactor restoration raises the supported floors to SimpleBroker 8.4.0 and
+  simplebroker-pg 4.4.0. The shared watcher reuses Weft's pinned scheduler, with
+  Taut cursor and delivery policy in subclasses.
+- Membership changes and notification claims publish a coalescing
+  `taut.cache_stale` broker hint. It replaces cache-refresh backstops; a failed
+  hint, raw broker operation or older writer can leave a cache stale until an
+  explicit refresh trigger on either backend. Claims remain atomic and chat
+  remains retained history. Hint failure never changes a committed operation's
+  success result.
+- The copied `MultiQueueWatcher` no longer accepts the unused `check_interval`
+  argument. `TautWatcher` retains its membership interval argument for source
+  compatibility, but membership refresh is driven by hints. Unsupported
+  `yield_strategy` values still fail before broker I/O.
+
+- Summon now handles chat, control and native completion on one foreground
+  watcher reactor. Delivery stays serialized and cursors advance only after
+  successful delivery; STOP remains responsive while injection is blocked.
+  The separate control loop and watcher supervisors are removed.
+- MCP workspace reactors reuse the same watcher scheduler. The parent still
+  coordinates multiple contexts; redundant workspace polling and timed snapshot
+  refresh are removed.
+
 ## 0.9.8 - 2026-09-16
 
 - Persistent clients, reactor workers, and watcher metadata runtimes now own

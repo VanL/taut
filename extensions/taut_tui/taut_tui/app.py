@@ -502,9 +502,7 @@ class TautApp(App[None]):
         self._clear_pending_search_anchor()
         try:
             if self._summon_interaction is not None:
-                close_interaction = getattr(self._summon_interaction, "close", None)
-                if close_interaction is not None:
-                    close_interaction()
+                self._summon_interaction.close()
             if self._summon is not None:
                 self._summon.close()
             self._summon = None
@@ -1782,27 +1780,36 @@ class TautApp(App[None]):
     ) -> None:
         self._owned_summon_tokens.discard(token)
         member_name = self._summon_names.pop(token, "summoned member")
+        if self._operation_state.startswith("summon"):
+            self._operation_state = "idle"
         try:
             future.result()
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
+            primary = str(exc) or type(exc).__name__
             try:
-                self._show_error(str(exc) or type(exc).__name__)
-            except BaseException:  # noqa: BLE001,S110 approved [DOM-10.2.1] [RUFF-SUP-086] exception
-                pass
+                self._show_error(primary)
+            except Exception as presentation:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+                self.notify(
+                    f"Summon failed: {primary}\nUnable to display failure: {presentation}",
+                    severity="error",
+                )
         else:
             try:
                 self._render_inspector(
                     f"Summon run for {member_name} ended.",
                     kind=InspectorKind.SUMMON,
                 )
-            except BaseException:  # noqa: BLE001,S110 approved [DOM-10.2.1] [RUFF-SUP-086] exception
-                pass
-        if self._operation_state.startswith("summon"):
-            self._operation_state = "idle"
+            except Exception as presentation:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+                self.notify(
+                    f"Unable to display Summon completion: {presentation}",
+                    severity="error",
+                )
         try:
             self._update_status()
-        except BaseException:  # noqa: BLE001,S110 approved [DOM-10.2.1] [RUFF-SUP-086] exception
-            pass
+        except Exception as presentation:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+            self.notify(
+                f"Unable to display Summon status: {presentation}", severity="error"
+            )
 
     def _confirm_message_delete(self, domain: TuiDomainActions) -> None:
         message_id = self.visual_state.selected_message_id
@@ -2869,8 +2876,10 @@ class TautApp(App[None]):
                 display_text("Summon\n", message),
                 kind=InspectorKind.SUMMON,
             )
-        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
-            return
+        except Exception as presentation:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
+            self.notify(
+                f"Unable to display Summon log: {presentation}", severity="error"
+            )
 
     def _accept_summon_ready_from_worker(self, run: OwnedSummonRun) -> None:
         try:
@@ -2896,8 +2905,10 @@ class TautApp(App[None]):
                 kind=InspectorKind.SUMMON,
             )
             self._update_status()
-        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
-            return
+        except Exception as presentation:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
+            self.notify(
+                f"Unable to display Summon readiness: {presentation}", severity="error"
+            )
 
     def _complete_owned_exit(self, confirmed: bool | None) -> None:
         self._owned_exit_confirmation_open = False

@@ -215,7 +215,7 @@ class _WindowsCancelableReadOwner:
             ready_error = _ErrorCapture()
             with ready_error:
                 self._state.ready.wait(_WINDOWS_READ_POLL_SECONDS)
-            self._record_primary(ready_error.error)
+            self._record_cleanup_interruption(ready_error.error)
 
     def _abort_before_read(self) -> None:
         def abort() -> None:
@@ -277,7 +277,7 @@ class _WindowsCancelableReadOwner:
             wait_error = _ErrorCapture()
             with wait_error:
                 self._state.done.wait(_WINDOWS_READ_POLL_SECONDS)
-            self._record_primary(wait_error.error)
+            self._record_cleanup_interruption(wait_error.error)
             if self._state.done.is_set():
                 break
             if handle is None:
@@ -289,14 +289,14 @@ class _WindowsCancelableReadOwner:
             cancelled = False
             with cancel_error:
                 cancelled = _cancel_windows_synchronous_io(handle)
-            self._record_primary(cancel_error.error)
+            self._record_cleanup_interruption(cancel_error.error)
             if cancelled:
                 self._retry_cleanup_state_action(self._mark_cancel_succeeded)
         while self._retry_cleanup_action(self._reader.is_alive):
             join_error = _ErrorCapture()
             with join_error:
                 self._reader.join(_WINDOWS_READ_POLL_SECONDS)
-            self._record_primary(join_error.error)
+            self._record_cleanup_interruption(join_error.error)
         if handle is None:
             return None
         close_capture = _ErrorCapture()
@@ -307,6 +307,17 @@ class _WindowsCancelableReadOwner:
     def _record_primary(self, error: BaseException | None) -> None:
         if error is not None and self._primary_error is None:
             self._primary_error = error
+
+    def _record_cleanup_interruption(self, error: BaseException | None) -> None:
+        self._record_primary(error)
+        if error is not None and not isinstance(
+            error, (KeyboardInterrupt, SystemExit, InterruptedError)
+        ):
+            primary = self._primary_error
+            assert primary is not None
+            if primary is not error:
+                primary.add_note(f"cleanup also failed: {error}")
+            raise primary
 
     def _retry_cleanup_state_action(self, action: Callable[[], _T]) -> _T:
         def locked_action() -> _T:
@@ -321,7 +332,7 @@ class _WindowsCancelableReadOwner:
             result: _T | object = _NO_RESULT
             with action_error:
                 result = action()
-            self._record_primary(action_error.error)
+            self._record_cleanup_interruption(action_error.error)
             if action_error.error is None:
                 return cast(_T, result)
 

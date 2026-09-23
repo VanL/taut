@@ -13,8 +13,10 @@ from typing import Any
 
 import pytest
 from conftest import canonical_of
+from simplebroker.watcher import PollingStrategy
 from tests.helpers.eventually import async_eventually
 
+import taut.watcher as core_watcher
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, addressing, identity
 from taut_mcp._process_reactor import ProcessReactor
@@ -610,7 +612,7 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(_resource_deadlock_cap(15))
-def test_backstop_detects_external_consumption_without_touching_identity(
+def test_raw_claim_stays_stale_until_source_hint_without_touching_identity(
     tmp_path: Path,
 ) -> None:
     """[MCP-7]/[MCP-8] Repeated peeks are observational and externally fresh."""
@@ -655,6 +657,12 @@ def test_backstop_detects_external_consumption_without_touching_identity(
                 addressing.notification_queue_name(str(row["member_id"]))
             )
             assert notification_queue.read_one(with_timestamps=True) is not None
+            await asyncio.sleep(0.7)
+            assert (
+                len(json.loads(reactor.current_text)["workspaces"][0]["notifications"])
+                == 1
+            )
+            observer.queue("taut.cache_stale").write("{}")
             await async_eventually(
                 lambda: (
                     json.loads(reactor.current_text)["workspaces"][0]["notifications"]
@@ -708,90 +716,52 @@ class _FakeActivityWaiter:
         self._event.set()
 
 
-def test_degraded_workspace_reactor_idles_until_stop_wake() -> None:
-    """[MCP-8] A degraded child does no timed backstop spin or DB work."""
-
-    inbound: queue.Queue[Any] = queue.Queue()
-
-    class StopWake:
-        def __init__(self) -> None:
-            self.wait_timeouts: list[float | None] = []
-
-        def wait(self, timeout: float | None = None) -> bool:
-            self.wait_timeouts.append(timeout)
-            inbound.put_nowait(workspace_reactor.StopWorkspace(7))
-            return True
-
-        def clear(self) -> None:
-            return None
-
-        def is_set(self) -> bool:
-            return False
-
-    wake = StopWake()
-    reactor = workspace_reactor._WorkspaceReactor(
-        inbound,
-        wake,  # type: ignore[arg-type]
-        queue.Queue(),
-        lambda: None,
-    )
-    reactor.generation = 7
-    reactor.ready = True
-    reactor.degraded = True
-    reactor.next_backstop_at = float("-inf")
-
-    assert reactor._run_cycle() is False
-    assert wake.wait_timeouts == [None]
-
-
-def test_workspace_reactor_defers_pending_native_snapshot_until_pacing_deadline(
+def test_workspace_reactor_defers_pending_snapshot_until_pacing_deadline(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[MCP-8] Native pacing uses the child clock, not master-loop timing."""
-
-    class SnapshotClient:
-        def peek_inbox(self, *, limit: int) -> list[Any]:
-            assert limit == 101
-            return ["new snapshot"]
-
+    """[MCP-8] Pending source work survives pacing; quiet turns do not query."""
+    workspace, token, other = _workspace(
+        tmp_path, "pacing", selected_name="selected", other_name="other"
+    )
+    target, config, _, _ = workspace_reactor._resolve_workspace(str(workspace))
+    client = TautClient(
+        broker_target=target, broker_config=config, token=token, persistent=True
+    )
+    stop = threading.Event()
     outbound: queue.Queue[Any] = queue.Queue()
-    master_wakes: list[None] = []
     reactor = workspace_reactor._WorkspaceReactor(
         queue.Queue(),
-        threading.Event(),
+        PollingStrategy(stop),
+        stop,
         outbound,
-        lambda: master_wakes.append(None),
+        lambda: None,
+        generation=7,
+        client=client,
+        target=target,
+        config=config,
     )
-    reactor.client = SnapshotClient()  # type: ignore[assignment]
-    reactor.generation = 7
-    reactor.ready = True
-    # Isolate the native deadline. Stable-snapshot deduplication owns a nearby
-    # observational backstop, which is covered by the integration tests.
-    reactor.next_backstop_at = 1_000.0
-    reactor.last_native_snapshot_at = 100.0
-    reactor.native_snapshot_pending = True
-    interval = workspace_reactor.NOTIFICATION_BACKSTOP_SECONDS
-    now = [100.0 + interval / 2]
-    monkeypatch.setattr(workspace_reactor.time, "monotonic", lambda: now[0])
-
-    assert reactor._publish_snapshot_if_due() is True
-    assert outbound.empty()
-    assert reactor.native_snapshot_pending is True
-    assert reactor.last_native_snapshot_at == 100.0
-
-    now[0] = 100.0 + interval
-    assert reactor._publish_snapshot_if_due() is True
-    event = outbound.get_nowait()
-    assert isinstance(event, workspace_reactor.WorkspaceSnapshot)
-    assert event.notifications == ("new snapshot",)
-    assert reactor.native_snapshot_pending is False
-    assert reactor.last_native_snapshot_at == 100.0 + interval
-    assert master_wakes == [None]
-
-    now[0] += interval
-    assert reactor._publish_snapshot_if_due() is True
-    assert outbound.empty()
-    assert master_wakes == [None]
+    outbound.get_nowait()  # Ready baseline.
+    try:
+        other.say("general", "paced @selected")
+        now = [100.25]
+        monkeypatch.setattr(workspace_reactor, "_monotonic", lambda: now[0])
+        reactor.last_snapshot_at = 100.0
+        reactor.snapshot_pending = True
+        assert reactor._publish_snapshot_if_due()
+        assert outbound.empty()
+        assert reactor.snapshot_pending
+        now[0] = 100.5
+        assert reactor._publish_snapshot_if_due()
+        assert isinstance(outbound.get_nowait(), workspace_reactor.WorkspaceSnapshot)
+        assert not reactor.snapshot_pending
+        assert reactor.next_wait_timeout() is None
+        now[0] = 110.0
+        assert reactor._publish_snapshot_if_due()
+        assert outbound.empty()
+    finally:
+        reactor.stop(join=False)
+        other.close()
 
 
 @pytest.mark.sqlite_only
@@ -826,7 +796,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
         return waiter
 
     monkeypatch.setattr(
-        workspace_reactor,
+        core_watcher,
         "create_activity_waiter_for_queues",
         activity_waiter_factory,
         raising=False,
@@ -852,8 +822,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
             )
             updates.clear()
 
-            # A completed command starts a fresh observational-backstop interval.
-            # Keep that independent poll from racing this native-wake pacing proof.
+            # Command refresh remains immediate and uses the same owner.
             await reactor._execute_ready_tool(
                 canonical_of(attached),
                 "whoami",
@@ -897,8 +866,9 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
     finally:
         other.close()
     assert waiter.closed is True
-    assert len(queue_names) == 1
-    assert queue_names[0].startswith("notify.m_")
+    assert len(queue_names) == 2
+    assert any(name.startswith("notify.m_") for name in queue_names)
+    assert "taut.cache_stale" in queue_names
     assert len(factory_thread) == 1
     assert factory_thread[0] != master_thread
     assert waiter.wait_threads == {factory_thread[0]}
@@ -913,7 +883,7 @@ class _FailingActivityWaiter(_FakeActivityWaiter):
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(_resource_deadlock_cap(15))
-def test_native_wait_failure_falls_back_to_observational_backstop(
+def test_native_wait_failure_reuses_shared_polling_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -936,7 +906,7 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
         return waiter
 
     monkeypatch.setattr(
-        workspace_reactor,
+        core_watcher,
         "create_activity_waiter_for_queues",
         activity_waiter_factory,
         raising=False,
@@ -958,7 +928,7 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
                 ),
                 timeout=1.5,
                 interval=0.01,
-                description="observational backstop publishes notification",
+                description="shared polling fallback publishes notification",
                 snapshot=lambda: {
                     "notification_count": len(
                         json.loads(reactor.current_text)["workspaces"][0][
@@ -984,9 +954,9 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
         ("test_reaction_appears_in_recipient_resource_and_inbox_consumes_it", 15),
         ("test_legacy_failure_cannot_suppress_modern_resource_delivery", 15),
         ("test_resource_sorts_workspaces_and_bounds_each_notification_snapshot", 60),
-        ("test_backstop_detects_external_consumption_without_touching_identity", 15),
+        ("test_raw_claim_stays_stale_until_source_hint_without_touching_identity", 15),
         ("test_native_activity_wake_is_immediate_but_bursts_are_paced", 15),
-        ("test_native_wait_failure_falls_back_to_observational_backstop", 15),
+        ("test_native_wait_failure_reuses_shared_polling_fallback", 15),
     ],
 )
 def test_resource_integration_deadlock_markers_use_platform_budget(
@@ -997,3 +967,39 @@ def test_resource_integration_deadlock_markers_use_platform_budget(
     timeout_markers = [marker for marker in test.pytestmark if marker.name == "timeout"]
     assert len(timeout_markers) == 1
     assert timeout_markers[0].args == (_resource_deadlock_cap(base_seconds),)
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_quiet_workspace_does_not_refresh_without_source_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Backend idle passes are not application snapshot deadlines."""
+    workspace, token, other = _workspace(
+        tmp_path, "quiet", selected_name="selected", other_name="other"
+    )
+    peeks: list[int] = []
+    original = TautClient.peek_inbox
+
+    def observed(self: TautClient, *args: Any, **kwargs: Any) -> Any:
+        peeks.append(threading.get_ident())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(TautClient, "peek_inbox", observed)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            await reactor.attach_workspace(str(workspace), token)
+            await asyncio.sleep(0.7)  # Let initial retained source rows settle.
+            before = len(peeks)
+            await asyncio.sleep(1.1)
+            assert len(peeks) == before
+        finally:
+            await reactor.aclose()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        other.close()

@@ -100,12 +100,13 @@ def test_invalid_packaged_reaction_defaults_use_fixed_error(
     packaged_text: str,
 ) -> None:
     import taut._reactions as reactions
+    from taut import ReactionConfigurationError
 
     (tmp_path / "defaults.toml").write_text(packaged_text, encoding="utf-8")
     monkeypatch.setattr(reactions.resources, "files", lambda _package: tmp_path)
 
     with pytest.raises(
-        TautError,
+        ReactionConfigurationError,
         match="^reaction configuration is unavailable$",
     ):
         reactions.load_reaction_values(None)
@@ -184,7 +185,9 @@ def test_invalid_project_reaction_values_fail_without_echoing_values(
     monkeypatch.chdir(tmp_path)
     TautClient.init()
 
-    with pytest.raises(TautError) as caught:
+    from taut import ReactionConfigurationError
+
+    with pytest.raises(ReactionConfigurationError) as caught:
         TautClient(as_name="van")
 
     assert str(caught.value) == (

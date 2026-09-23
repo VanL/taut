@@ -67,15 +67,15 @@ def test_postgres_owner_detach_reattach_and_shutdown_close_sessions(
         canonical = canonical_of(attached)
         assert len(close_calls) == 1
         await reactor.detach_workspace(canonical)
-        await wait_for_closes(2, "detached owner session close")
+        await wait_for_closes(3, "detached client and watcher session close")
 
         await reactor.attach_workspace(str(taut_pg_project), member.token or "")
-        assert len(close_calls) == 2
+        assert len(close_calls) == 3
         await reactor.aclose()
-        await wait_for_closes(3, "shutdown owner session close")
+        await wait_for_closes(5, "shutdown client and watcher session close")
 
     asyncio.run(scenario())
-    assert len({id(session) for session, _thread_id in close_calls}) == 3
+    assert len({id(session) for session, _thread_id in close_calls}) == 5
     assert all(
         thread_id != threading.get_ident() for _session, thread_id in close_calls
     )
@@ -722,14 +722,13 @@ def test_postgres_exact_message_tools_use_public_core_contract(
 
 @pytest.mark.pg_only
 @pytest.mark.timeout(30)
-def test_postgres_native_notification_wake_precedes_long_backstop(
+def test_postgres_native_notification_wake_without_freshness_poll(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[MCP-8]/[MCP-12] Real LISTEN/NOTIFY wakes without claiming pointers."""
 
     monkeypatch.chdir(taut_pg_project)
-    monkeypatch.setattr(workspace_reactor, "NOTIFICATION_BACKSTOP_SECONDS", 5.0)
     TautClient.init()
     selected = TautClient(as_name="selected")
     selected.join("general")

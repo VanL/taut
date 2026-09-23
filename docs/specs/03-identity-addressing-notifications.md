@@ -467,6 +467,13 @@ inbox, persistence thread, or search-work queue. Taut chat enumeration does not
 expose it; operators inspect and consume it only through ordinary SimpleBroker
 commands.
 
+Core owns one unregistered `taut.cache_stale` system queue. It is a bounded,
+coalescing advisory source for an authoritative change that an already-running
+owner may not observe on its current queue set. It is invisible to chat routes
+and listings. Payloads are inspection-only; consumers reread authoritative
+state. Membership-topology mutations and notification-pointer claims are its initial
+producers.
+
 ### [IAN-6.2] Channel names
 
 Channel names match:
@@ -669,6 +676,15 @@ cursor. A later membership change, source claim, or source deletion does not
 rewrite an already emitted pointer.
 
 ### [IAN-7.4] Notification reads
+
+After a normal Taut notification claim commits, the client publishes one
+`taut.cache_stale` hint through the shared core helper. Atomic claim remains the
+consumption authority. Failure after claim and before hint, a raw SimpleBroker
+claim or a mixed-version caller may leave an observer's cache stale on either
+backend until a new notification/cache-stale row or a refreshing local command.
+None permits duplicate claim or adds a freshness timer.
+Hint-publication failure must not discard the already-claimed rows returned to
+the caller.
 
 Notification reads use claim/read broker APIs. Reading a notification removes
 it from the recipient's notification inbox. A failed notification renderer may
@@ -985,6 +1001,13 @@ Required proofs:
   creation or broker queue mutation
 
 ## Related Plans
+
+- `docs/plans/2026-09-19-reactor-restoration-plan.md` — proposes the
+  core-owned unregistered `taut.cache_stale` queue under [IAN-6.1]. Membership
+  topology mutations and normal notification claims emit a bounded advisory hint
+  after their authoritative commit so existing reactors can refresh without a
+  polling backstop. The commit-to-hint, raw-broker and mixed-version limitations
+  remain explicit. Spec corrections await promotion.
 
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors for the coordinated 0.9.8 release.

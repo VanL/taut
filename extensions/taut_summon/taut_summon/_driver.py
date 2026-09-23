@@ -1,33 +1,20 @@
 """The summon driver: bootstrap, ears, event pump, resume ([SUM-4]/[SUM-5]).
 
-One foreground process per summoned member — a terminal emulator, not a
-manager ([SUM-2]). The driver owns exactly three runtime lanes:
+One foreground process per summoned member hosts one shared reactor after
+bootstrap ([SUM-4]). The owner applies chat policy, delivery completions,
+control commands, rate audits, readiness and provider lifecycle transitions.
+``SummonReactor`` retains chat cursors until bounded native injection succeeds;
+no separate chat watcher, control consumer or supervisor wait is needed.
 
-- **Bootstrap** in [SUM-4]'s order (claim → fail-not-adopt final-name create
-  → ledger → spawn → token-only rejoin), entirely over public core
-  seams: ``TautClient(identity_capture=..., token=...)``, ``join``,
-  ``set_name``, ``rejoin``, and the ``taut.identity`` capture surface
-  blessed for extensions.
-- **Ears**: a ``TautClient.watch`` handler that is exactly self-filter →
-  format ([SUM-5.2]) → ``inject()`` → return. The watcher's
-  handler-return contract IS the injection ledger — this module contains
-  **zero cursor code** ([SUM-5.4]). Reusable interrupt cancellation stops
-  and rebuilds the watcher over the same live handle without spending a
-  failure budget. Genuine adapter death remains fatal-and-resume: the handler
-  halts injection on the first failed inject (blocking until the driver has
-  stopped the watcher) so [TAUT-8.4]'s 3-strikes poison advance can never skip
-  live chat.
-- **Event pump**: a dedicated thread draining ``events()`` for the life
-  of the child ([SUM-7.1]). Activity updates member liveness through
-  rate-limited token-selected ``whoami()``; ``exit`` enters [SUM-11]'s
-  fresh-generation recovery path with durable cursor replay, bounded
-  backoff, and then a loud exit.
+The continuous native event pump publishes immutable generation-tagged results.
+It owns no broker client. The foreground applies liveness and exit policy and
+rejects stale generations. Blocking spawn, attach, settle, orientation and close
+operations likewise publish results to this owner through the retained arbiter.
 
-Shutdown ordering ([SUM-9], shared by SIGINT): publish shutdown → request
-terminal close on the adapter → stop and checked-join the watcher →
-foreground adapter finalization while the pump drains → checked pump join →
-ownership-checked driver release → exit 0. Signal and control paths never
-wait, join, or reap.
+Shutdown ([SUM-9]) retires native work and the pump, closes the reactor source,
+releases the driver slot, and then sends the correlated STOP outcome. Signals
+publish only pending intent and a safe strategy hint; ordinary owner execution
+performs cancellation. Provider recovery remains bounded under [SUM-11].
 
 Test/ops knob: ``TAUT_SUMMON_RESUME_BACKOFF`` (comma-separated seconds,
 e.g. ``"0.2,0.2"``) overrides the default resume backoff schedule; the
@@ -47,6 +34,7 @@ from __future__ import annotations
 import getpass
 import logging
 import os
+import queue
 import signal
 import sys
 import threading
@@ -66,6 +54,7 @@ from taut import (
     TautError,
     WatcherRejected,
 )
+from taut._cleanup import capture_cleanup_failure
 from taut.addressing import classify_registered_queue
 from taut.client import Member, Message, Notification
 from taut.identity import (
@@ -86,9 +75,14 @@ from taut_summon._adapter import (
     UnknownAdapterError,
     get_adapter,
 )
-from taut_summon._control import ControlLoop, StopShutdownOutcome
+from taut_summon._control import (
+    ControlPolicy,
+    StopShutdownOutcome,
+    control_in_queue_name,
+)
 from taut_summon._members import find_member
 from taut_summon._persona import render_default_persona
+from taut_summon._reactor import PreparedInjection, SummonReactor
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
     ClaimConflictError,
@@ -129,25 +123,12 @@ _DEFAULT_RESUME_BACKOFF = (1.0, 2.0, 4.0)
 _HEALTHY_RUN_SECONDS = 60.0
 _ACTIVITY_WINDOW_SECONDS = 10.0
 _PUMP_JOIN_TIMEOUT_SECONDS = 10.0
-_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS = 5.0
-_HALT_ACK_TIMEOUT_SECONDS = 30.0
-_WATCHER_JOIN_TIMEOUT_SECONDS = 30.0
 _FOREGROUND_READINESS_TIMEOUT_SECONDS = 30.0
 _NAME_RETRY_ATTEMPTS = 5
-_WATCHER_RESTART_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0)
 
 
 class DriverError(Exception):
     """A fatal driver condition; its message is the exit-1 diagnostic."""
-
-
-class _InjectionHalted(Exception):
-    """Raised out of the watch handler so the cursor stays put.
-
-    Exactly one of these surfaces per halt: the handler waits for the
-    driver to request watcher stop before raising, so [TAUT-8.4]'s
-    3-strikes poison advance can never trigger on adapter death.
-    """
 
 
 # --- [SUM-5.2] injection format (the one shared helper) -----------------------
@@ -230,6 +211,21 @@ class _BootstrapResult:
     resummon: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _PhaseResult:
+    name: str
+    value: Any
+    error: BaseException | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PumpResult:
+    generation: int
+    event: AdapterEvent | None
+    error: BaseException | None
+    retired: bool
+
+
 @dataclass(slots=True)
 class _GenerationExit:
     """Generation-local exit state; never reused by a later spawn."""
@@ -237,23 +233,12 @@ class _GenerationExit:
     returncode: int | None = None
 
 
-@dataclass(slots=True)
-class _GenerationFailure:
-    """Fatal pump failure transferred from the worker to the foreground."""
-
-    error: BaseException | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class _GenerationContext:
     """All pump-written state for one immutable [SUM-11] spawn identity."""
 
     token: int
-    completion: threading.Event
-    harness_dead: threading.Event
-    wake: threading.Event
     exit: _GenerationExit
-    failure: _GenerationFailure
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +248,7 @@ class _RunningGeneration:
     started_at: float
     handle: AdapterHandle
     generation: _GenerationContext
-    pump: threading.Thread
+    pump: threading.Thread | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +312,6 @@ class SummonDriver:
         self._install_signal_handlers = install_signal_handlers
         self._on_ready = on_ready
         self._ready_callback_invoked = False
-        self._control_ready = threading.Event() if on_ready is not None else None
         self._run_completion = threading.Event() if on_ready is not None else None
         self._backoff = _resume_backoff_from_env()
         # [SUM-7.4] setup-recovery escalation: at most one offer per
@@ -335,43 +319,22 @@ class SummonDriver:
         self._setup_recovery_consumed = False
         self._pending_setup_recovery_attach = False
         self._setup_recovery_excerpt: str | None = None
+        self._signal_pending = False
         self._shutdown = threading.Event()
         self._harness_dead = threading.Event()
-        self._halt_ack = threading.Event()
-        self._wake = threading.Event()
-        # Set once the clean-shutdown path has released the driver slot, so
-        # the control thread can ack a STOP only after the ledger is clear
-        # ([SUM-9]: the stop client observes both the reply and the
-        # evidence release).
-        self._shutdown_complete = threading.Event()
-        # Whether _release() confirmed the slot is clear of our evidence.
-        # A STOP ack asserts release ([SUM-9]); if release could not be
-        # confirmed (persistent broker failure), the control loop replies
-        # an error rather than a false ack.
+        # The final correlated STOP result is frozen only after retirement and
+        # ownership-checked ledger release.
         self._release_confirmed = False
         self._release_error: BaseException | None = None
         self._stop_shutdown_outcome: StopShutdownOutcome | None = None
-        # Terminates the control thread on driver exit for any reason
-        # (a control STOP breaks its loop earlier, via the pending-stop
-        # flag). Set in _run's finally.
-        self._control_stop = threading.Event()
-        self._control_thread: threading.Thread | None = None
-        self._control_loop: ControlLoop | None = None
-        self._control_failed = threading.Event()
-        self._control_error: BaseException | None = None
-        self._control_failure_lock = threading.Lock()
         self._handle: AdapterHandle | None = None
-        # The live watcher, published so the ears handler can stop it
-        # directly on adapter death — the wedged-supervisor-safe halt
-        # ([TAUT-8.4]: a per-message raise loop would poison-advance).
+        # One foreground reactor owns broker policy and delivery continuations.
         self._watcher: Any | None = None
-        self._watcher_failed = threading.Event()
-        self._injection_cancelled = threading.Event()
-        self._watcher_error: BaseException | None = None
         self._member_id: str | None = None
-        self._generation_lock = threading.RLock()
         self._generation_counter = 0
         self._active_generation: _GenerationContext | None = None
+        self._interrupt_worker: threading.Thread | None = None
+        self._phase_cancel_requested = False
         self._shutdown_error: BaseException | None = None
         self._queue: Queue | None = None
         self._evidence: tuple[int, str] | None = None
@@ -425,7 +388,7 @@ class SummonDriver:
                 handle.request_close()
             except AdapterError:
                 logger.debug("adapter close request during stop failed", exc_info=True)
-        self._wake.set()
+        self._publish_owner_activity()
 
     def _persistent_client(self, **kwargs: Any) -> TautClient:
         client = TautClient(
@@ -464,33 +427,19 @@ class SummonDriver:
                 self._audit_start_ts = self._queue.generate_timestamp()
                 return self._supervise(boot, db_display, db_path=db_env_path)
             finally:
-                inherited = sys.exception()
                 # Ownership-checked release covering EVERY post-claim fatal
                 # path, including a bootstrap failure after member_id becomes
-                # known. Release BEFORE letting the control thread ack a STOP,
+                # known. Release BEFORE the owner sends a STOP acknowledgement,
                 # so the stop client sees the reply only after the ledger is
                 # clear ([SUM-9]). Idempotent — a second release is a no-op.
                 self._release()
                 self._finalize_stop_shutdown_outcome()
-                self._shutdown_complete.set()
-                self._control_stop.set()
-                if self._control_thread is not None:
-                    self._control_thread.join(timeout=_HALT_ACK_TIMEOUT_SECONDS)
-                    if self._control_thread.is_alive():
-                        cleanup = DriverError(
-                            "Summon control owner did not stop within "
-                            "the cleanup budget"
-                        )
-                        if inherited is not None:
-                            self._add_cleanup_note(inherited, cleanup)
-                        # The public foreground run is the exact ownership
-                        # boundary. Keep it live after the cleanup budget is
-                        # exhausted so hosts can classify this run as
-                        # unresolved until the control owner actually exits.
-                        self._control_thread.join()
-                        if inherited is None:
-                            raise cleanup
-                self._control_loop = None
+                control = getattr(self, "_owner_control", None)
+                if control is not None and control._pending_stop_seen:
+                    # The source has retired; recreate only the transient reply
+                    # route after release, without retaining its old client.
+                    control._client = client
+                    control.finish_stop(self._control_shutdown_outcome())
         finally:
             self._close_owned_clients()
 
@@ -720,11 +669,6 @@ class SummonDriver:
                                 raise self._residual_member_error(created) from exc
                             raise
             break
-        else:
-            raise DriverError(
-                f"could not claim a name for '{requested}' after "
-                f"{_NAME_RETRY_ATTEMPTS} attempts"
-            )
         assert created is not None and created.token is not None
 
         # Publish the durable session row, then release the claim —
@@ -780,7 +724,7 @@ class SummonDriver:
                 "persona update resolved a different member than the driver claim"
             )
 
-    # --- supervision loop (steps 4-5, ears, pump, resume) ------------------
+    # --- foreground reactor (steps 4-5, ears, pump, resume) ----------------
 
     def _supervise(
         self,
@@ -789,117 +733,639 @@ class SummonDriver:
         *,
         db_path: str | None = None,
     ) -> int:
-        request = self._request
-        adapter = self._require_adapter(boot.provider)
-        if request.attach and not adapter.supports_attach:
+        """Drive the run's single reactor; escaping failures end the run."""
+        self._owner_boot = boot
+        self._owner_adapter = self._require_adapter(boot.provider)
+        if self._request.attach and not self._owner_adapter.supports_attach:
             raise DriverError(f"provider '{boot.provider}' does not support attach")
-        terminal_availability = self._terminal_availability(request, adapter)
-        env = _harness_environment(boot, db_path=db_path)
-        system_prompt = self._system_prompt(boot, db_display)
-        consecutive_crashes = 0
-        first_generation = True
-        while True:
-            attach_decision = self._prepare_generation_start(
-                boot=boot,
-                adapter=adapter,
-                availability=terminal_availability,
-                first_generation=first_generation,
-            )
-            if attach_decision is None:
-                return 0
-            running = self._start_live_generation(
-                boot=boot,
-                adapter=adapter,
-                env=env,
-                system_prompt=system_prompt,
-                terminal_availability=terminal_availability,
-                attach_decision=attach_decision,
-            )
-            if running is None:
-                self._raise_if_foreground_readiness_pending()
-                return 0
-            if self._shutdown.is_set():
-                return self._shutdown_before_or_after_readiness(running, boot)
-            first_generation = False
-            orientation = self._orient_running_generation(
-                running,
-                adapter,
-                system_prompt,
-                boot=boot,
-                availability=terminal_availability,
-                attached_this_generation=attach_decision.should_attach,
-            )
-            if orientation != "oriented":
-                consecutive_crashes, result = self._finish_orientation_outcome(
-                    orientation,
-                    running,
-                    boot,
-                    consecutive_crashes,
-                    adapter,
+        self._owner_availability = self._terminal_availability(
+            self._request, self._owner_adapter
+        )
+        self._owner_env = _harness_environment(boot, db_path=db_path)
+        self._owner_prompt = self._system_prompt(boot, db_display)
+        self._owner_phase = "prepare"
+        self._phase_worker: threading.Thread | None = None
+        self._phase_results: queue.SimpleQueue[_PhaseResult] = queue.SimpleQueue()
+        self._phase_result: _PhaseResult | None = None
+        self._pump_results: queue.SimpleQueue[_PumpResult] = queue.SimpleQueue()
+        self._owner_running: _RunningGeneration | None = None
+        self._owner_first = True
+        self._owner_generation_ready = False
+        self._owner_crashes = 0
+        self._harness_restart_at = 0.0
+        self._owner_readiness_at: float | None = None
+        self._owner_last_activity = 0.0
+        self._pending_nudge: str | None = None
+        self._owner_control: ControlPolicy | None = None
+        self._owner_client: TautClient | None = None
+        try:
+            client, reactor = self._open_owner_source()
+            try:
+                reactor.run_until_stopped()
+                if self._owner_phase == "done":
+                    return 0
+                raise DriverError("Summon reactor exited before lifecycle retirement")
+            finally:
+                primary = sys.exception()
+                cleanup = capture_cleanup_failure(
+                    None, lambda: reactor.stop(join=False)
                 )
-                if result is not None:
-                    return result
-                continue
-            self._await_running_generation(running, boot)
-            if self._shutdown.is_set():
-                return self._shutdown_running_generation(running, boot)
-            consecutive_crashes, _ = self._resume_after_harness_exit(
-                running, boot, consecutive_crashes, adapter=adapter
-            )
-            if self._shutdown.is_set():
-                return 0
+                cleanup = capture_cleanup_failure(cleanup, client.close)
+                self._watcher = None
+                if cleanup is not None:
+                    if primary is None:
+                        raise cleanup
+                    self._add_cleanup_note(primary, cleanup)
+        finally:
+            self._close_owner_generation()
 
-    def _start_live_generation(
-        self,
-        *,
-        boot: _BootstrapResult,
-        adapter: ProviderAdapter,
-        env: dict[str, str],
-        system_prompt: str,
-        terminal_availability: TerminalAvailability | None,
-        attach_decision: _GenerationAttachDecision,
-    ) -> _RunningGeneration | None:
-        started_at = time.monotonic()
-        handle = self._spawn(adapter, system_prompt, env)
-        self._handle = handle
-        self._request_close_after_publication_if_needed(handle)
-        generation = self._activate_generation()
-        self._halt_ack.clear()
-        pump: threading.Thread | None = None
+    def _open_owner_source(self) -> tuple[TautClient, SummonReactor]:
+        boot = self._owner_boot
+        client = TautClient(
+            db_path=self._db_path,
+            token=boot.token,
+            persistent=True,
+            inherit_environment_identity=False,
+        )
+        reactor: SummonReactor | None = None
         try:
-            if self._should_start_pump_before_bootstrap(
-                self._request, adapter, availability=terminal_availability
-            ):
-                pump = self._start_generation_pump(generation, handle, boot)
-            self._rejoin(handle, boot)
-            self._ensure_generation_threads(boot)
-            if self._prepare_generation_attach(
-                handle,
-                boot=boot,
-                attach_decision=attach_decision,
-            ):
-                self._teardown_generation(generation, handle, pump)
-                return None
-            if pump is None:
-                pump = self._start_generation_pump(generation, handle, boot)
-            self._raise_if_pump_failed(generation)
-            self._start_control_thread(boot)
-            self._raise_if_control_failed()
-        except Exception:
-            self._teardown_generation(generation, handle, pump)
+            candidate = client.watch(lambda _item: None, watcher_type=SummonReactor)
+            assert isinstance(candidate, SummonReactor)
+            reactor = candidate
+            self._owner_client = client
+            self._watcher = reactor
+            reactor.prepare_delivery = self._prepare_injection
+            reactor.current_generation = lambda: (
+                self._active_generation.token if self._active_generation else 0
+            )
+            reactor.delivery_error = self._owner_delivery_error
+            reactor.delivery_enabled = (
+                self._owner_phase == "listen"
+                and self._harness_restart_at <= time.monotonic()
+            )
+            reactor.control_queue_name = control_in_queue_name(boot.member_id)
+            reactor.owner_turn = self._owner_turn
+            reactor.owner_wait_timeout = self._owner_wait_timeout
+            pid, started = self._require_evidence()
+            control = ControlPolicy(
+                client=client,
+                reactor=reactor,
+                member_id=boot.member_id,
+                provider=boot.provider,
+                threads=self._request.threads,
+                handle_provider=lambda: self._handle,
+                request_stop=self.request_stop,
+                send_nudge=self._queue_rate_nudge,
+                interrupt=self._owner_interrupt,
+                rate_limit=self._request.rate_limit,
+                ledger_queue_name=_LEDGER_QUEUE_NAME,
+                driver_pid=pid,
+                driver_start_time=started,
+                audit_start_ts=self._audit_start_ts or 0,
+            )
+            self._owner_control = control
+            control.install()
+            return client, reactor
+        except BaseException as primary:
+            if reactor is not None:
+                cleanup = capture_cleanup_failure(
+                    None, lambda: reactor.stop(join=False)
+                )
+                if cleanup is not None:
+                    self._add_cleanup_note(primary, cleanup)
+            cleanup = capture_cleanup_failure(None, client.close)
+            if cleanup is not None:
+                self._add_cleanup_note(primary, cleanup)
+            self._watcher = None
             raise
-        assert pump is not None
-        return _RunningGeneration(started_at, handle, generation, pump)
 
-    def _request_close_after_publication_if_needed(self, handle: AdapterHandle) -> None:
-        if not (self._shutdown.is_set() or self._control_failed.is_set()):
-            return
+    def _close_owner_generation(self) -> None:
+        """Cancel native work before closing its generation on terminal unwind."""
+        primary = sys.exception()
         try:
-            handle.request_close()
-        except AdapterError:
-            logger.debug(
-                "adapter close request after publication failed", exc_info=True
+            self._retire_owner_generation()
+        except BaseException as error:
+            self._shutdown_error = error
+            if primary is None:
+                raise
+            self._add_cleanup_note(primary, error)
+
+    def _retire_owner_generation(self) -> None:
+        self._shutdown.set()
+        handle = self._handle
+        cleanup = (
+            capture_cleanup_failure(None, handle.request_close) if handle else None
+        )
+        worker = self._phase_worker
+        if worker is not None:
+            cleanup = capture_cleanup_failure(
+                cleanup, lambda: self._join_native_operation(worker, "native operation")
             )
+            if handle is None and not worker.is_alive():
+                try:
+                    result = self._phase_result or self._phase_results.get_nowait()
+                except queue.Empty:
+                    result = None
+                if (
+                    result is not None
+                    and result.name == "spawn"
+                    and result.error is None
+                ):
+                    cleanup = capture_cleanup_failure(cleanup, result.value.close)
+        interrupt = self._interrupt_worker
+        if interrupt is not None:
+            cleanup = capture_cleanup_failure(
+                cleanup,
+                lambda: self._join_native_operation(interrupt, "native interrupt"),
+            )
+            if not interrupt.is_alive():
+                self._interrupt_worker = None
+        running = self._owner_running
+        if running is not None:
+            cleanup = capture_cleanup_failure(
+                cleanup,
+                lambda: self._teardown_generation(
+                    running.generation, running.handle, running.pump
+                ),
+            )
+            self._owner_running = None
+        if cleanup is not None:
+            raise cleanup
+
+    @staticmethod
+    def _join_native_operation(worker: threading.Thread, name: str) -> None:
+        worker.join(timeout=_PUMP_JOIN_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            raise DriverError(f"{name} did not retire during shutdown")
+
+    def _publish_owner_activity(self) -> None:
+        reactor = self._watcher
+        if reactor is not None:
+            reactor.notify_activity()
+
+    def _start_phase_operation(self, name: str, operation: Callable[[], Any]) -> None:
+        interrupt = name == "interrupt"
+        if (
+            self._interrupt_worker is not None
+            if interrupt
+            else self._phase_worker is not None
+        ):
+            raise DriverError("overlapping native phase operations")
+        if not interrupt:
+            self._owner_phase = name
+            self._phase_cancel_requested = False
+
+        def execute() -> None:
+            value: Any = None
+            error: BaseException | None = None
+            try:
+                value = operation()
+            except BaseException as exc:  # noqa: BLE001 - transfer worker failure to owner
+                error = exc
+            finally:
+                self._phase_results.put(_PhaseResult(name, value, error))
+                self._publish_owner_activity()
+
+        worker = threading.Thread(
+            target=execute, name=f"taut-summon-{name}", daemon=True
+        )
+        if interrupt:
+            self._interrupt_worker = worker
+        else:
+            self._phase_worker = worker
+        try:
+            worker.start()
+        except BaseException:
+            if interrupt:
+                self._interrupt_worker = None
+            else:
+                self._phase_worker = None
+            raise
+
+    def _owner_wait_timeout(self) -> float | None:
+        now = time.monotonic()
+        if self._harness_restart_at > now and not self._shutdown.is_set():
+            return self._harness_restart_at - now
+        deadlines = []
+        if self._owner_control is not None and not self._shutdown.is_set():
+            deadlines.append(self._owner_control._next_rate_audit_at)
+        if self._harness_restart_at > now:
+            deadlines.append(self._harness_restart_at)
+        if (
+            not self._ready_callback_invoked
+            and self._on_ready is not None
+            and not self._shutdown.is_set()
+            and self._owner_readiness_at is not None
+        ):
+            deadlines.append(self._owner_readiness_at)
+        return max(0.0, min(deadlines) - now) if deadlines else None
+
+    def _harness_restart_pending(self) -> bool:
+        return (
+            self._harness_restart_at > time.monotonic()
+            and not self._shutdown.is_set()
+            and not self._harness_dead.is_set()
+        )
+
+    def _owner_turn(self) -> None:
+        if self._signal_pending:
+            self._signal_pending = False
+            self.request_stop()
+        self._apply_pump_results()
+        if self._harness_restart_pending():
+            return
+        self._apply_phase_result()
+        reactor = self._watcher
+        assert isinstance(reactor, SummonReactor)
+        if self._shutdown.is_set() and self._handle is not None:
+            self._handle.request_close()
+        if self._owner_control is not None and not self._shutdown.is_set():
+            self._owner_control.turn()
+        self._check_owner_readiness_deadline()
+        if self._phase_worker is not None or self._interrupt_worker is not None:
+            return
+        if self._shutdown.is_set() or self._harness_dead.is_set():
+            self._begin_owner_teardown()
+            return
+        if self._owner_phase == "prepare":
+            self._prepare_owner_generation()
+        elif self._owner_phase == "spawn-ready":
+            adapter, prompt, env = (
+                self._owner_adapter,
+                self._owner_prompt,
+                self._owner_env,
+            )
+            self._start_phase_operation(
+                "spawn", lambda: adapter.spawn(system_prompt=prompt, env=env)
+            )
+        elif self._owner_phase == "listen":
+            self._listen_owner_turn(reactor)
+
+    def _check_owner_readiness_deadline(self) -> None:
+        if (
+            self._on_ready is not None
+            and not self._ready_callback_invoked
+            and not self._shutdown.is_set()
+            and self._owner_readiness_at is not None
+            and time.monotonic() >= self._owner_readiness_at
+        ):
+            self.request_stop()
+            raise DriverError(
+                "Summon reactor did not become ready within startup deadline"
+            )
+
+    def _listen_owner_turn(self, reactor: SummonReactor) -> None:
+        if self._owner_readiness_at is None:
+            self._owner_readiness_at = (
+                time.monotonic() + _FOREGROUND_READINESS_TIMEOUT_SECONDS
+            )
+        reactor.delivery_enabled = True
+        if self._pending_nudge is not None and reactor._delivery_pending is None:
+            text = self._pending_nudge
+            self._pending_nudge = None
+            handle = self._handle
+            assert handle is not None
+            self._start_phase_operation("nudge", lambda: handle.inject(text))
+            reactor.delivery_enabled = False
+        if reactor._ready_after_initial_drain and reactor._delivery_pending is None:
+            self._publish_owner_ready()
+
+    def _prepare_owner_generation(self) -> None:
+        decision = self._resolve_generation_attach(
+            boot=self._owner_boot,
+            adapter=self._owner_adapter,
+            availability=self._owner_availability,
+            first_generation=self._owner_first,
+        )
+        self._owner_attach = decision
+        if decision.should_attach:
+            notice = TerminalAttachNotice(
+                member=self._owner_boot.member_name,
+                provider=self._owner_boot.provider,
+                detach_hint="Ctrl-\\ Ctrl-\\",
+                screen_excerpt=self._setup_recovery_excerpt,
+            )
+            self._setup_recovery_excerpt = None
+            interaction, cancel = self._interaction, self._shutdown
+            self._start_phase_operation(
+                "confirm",
+                lambda: interaction.confirm_terminal_attach(notice, cancel=cancel),
+            )
+        else:
+            self._owner_phase = "spawn-ready"
+            self._publish_owner_activity()
+
+    def _apply_phase_result(self) -> None:
+        result = self._phase_result
+        if result is None:
+            try:
+                result = self._phase_results.get_nowait()
+            except queue.Empty:
+                return
+            self._phase_result = result
+        interrupt = result.name == "interrupt"
+        worker = self._interrupt_worker if interrupt else self._phase_worker
+        if worker is not None:
+            worker.join(timeout=_PUMP_JOIN_TIMEOUT_SECONDS)
+            if worker.is_alive():
+                raise DriverError("native worker published but did not retire")
+        if interrupt:
+            self._interrupt_worker = None
+        else:
+            self._phase_worker = None
+        if result.error is not None:
+            self._phase_result = None
+            self._handle_phase_failure(result)
+            return
+        self._accept_phase_result(result)
+        self._phase_result = None
+
+    def _handle_phase_failure(self, result: _PhaseResult) -> None:
+        assert result.error is not None
+        if self._shutdown.is_set() and result.name != "close":
+            return
+        if (
+            result.name in {"orientation", "nudge"}
+            and self._phase_cancel_requested
+            and isinstance(result.error, AdapterWriteCancelled)
+        ):
+            self._phase_cancel_requested = False
+            self._owner_phase = "listen"
+            return
+        if result.name in {"settle", "orientation", "nudge"} and isinstance(
+            result.error, AdapterExitedError
+        ):
+            self._harness_dead.set()
+            return
+        if result.name == "close":
+            self._shutdown_error = result.error
+        if result.name == "confirm":
+            raise SummonOperationError(
+                f"terminal acknowledgement failed: {result.error}"
+            ) from result.error
+        if result.name == "spawn":
+            raise DriverError(
+                f"cannot spawn the harness: {result.error}"
+            ) from result.error
+        raise result.error
+
+    def _accept_phase_result(self, result: _PhaseResult) -> None:
+        if result.name == "confirm":
+            if type(result.value) is not bool:
+                raise DriverError(
+                    "terminal interaction returned non-boolean confirmation"
+                )
+            if not result.value:
+                if self._pending_setup_recovery_attach and not self._shutdown.is_set():
+                    self._owner_attach = _GenerationAttachDecision(
+                        self._owner_attach.wired, False
+                    )
+                else:
+                    self.request_stop()
+            self._pending_setup_recovery_attach = False
+            self._owner_phase = "spawn-ready"
+        elif result.name == "spawn":
+            self._accept_spawn(result.value)
+        elif result.name == "attach":
+            self._accept_attach(result.value)
+        elif result.name == "settle":
+            self._after_owner_settle()
+        elif result.name in {"orientation", "nudge"}:
+            self._owner_phase = "listen"
+
+        elif result.name == "close":
+            self._finish_owner_teardown()
+        self._publish_owner_activity()
+
+    def _accept_spawn(self, handle: AdapterHandle) -> None:
+        running = self._owner_running
+        if running is None:
+            self._handle = handle
+            self._owner_generation_ready = False
+            generation = self._activate_generation()
+            self._owner_first = False
+            running = _RunningGeneration(time.monotonic(), handle, generation, None)
+            self._owner_running = running
+        elif running.handle is not handle:
+            raise DriverError("spawn acceptance conflicts with retained generation")
+        if self._shutdown.is_set():
+            handle.request_close()
+        if running.pump is None and self._should_start_pump_before_bootstrap(
+            self._request, self._owner_adapter, availability=self._owner_availability
+        ):
+            pump = self._start_generation_pump(
+                running.generation, handle, self._owner_boot
+            )
+            self._owner_running = _RunningGeneration(
+                running.started_at, handle, running.generation, pump
+            )
+        self._rejoin(handle, self._owner_boot)
+        self._ensure_generation_threads(self._owner_boot)
+        if self._owner_attach.should_attach:
+            self._start_phase_operation(
+                "attach", lambda: self._run_terminal_attach(handle)
+            )
+        else:
+            self._start_owner_settle()
+
+    def _accept_attach(self, result: str) -> None:
+        if result == "shutdown":
+            self.request_stop()
+        if result == "detached":
+            set_wired(
+                self._ledger(),
+                member_id=self._owner_boot.member_id,
+                value=True,
+                updated_ts=self._ledger().generate_timestamp(),
+            )
+        running = self._owner_running
+        assert running is not None
+        pump = self._start_generation_pump(
+            running.generation, running.handle, self._owner_boot
+        )
+        self._owner_running = _RunningGeneration(
+            running.started_at, running.handle, running.generation, pump
+        )
+        self._start_owner_settle()
+
+    def _start_owner_settle(self) -> None:
+        running = self._owner_running
+        assert running is not None
+        if running.pump is None:
+            pump = self._start_generation_pump(
+                running.generation, running.handle, self._owner_boot
+            )
+            self._owner_running = _RunningGeneration(
+                running.started_at, running.handle, running.generation, pump
+            )
+        handle = self._handle
+        assert handle is not None
+        if not self._owner_adapter.orientation_via_inject:
+            self._owner_phase = "listen"
+            return
+        self._start_phase_operation("settle", handle.wait_until_quiet)
+
+    def _after_owner_settle(self) -> None:
+        running = self._owner_running
+        assert running is not None
+        handle = running.handle
+        if self._should_offer_setup_recovery(
+            handle,
+            self._owner_adapter,
+            self._owner_availability,
+            attached_this_generation=self._owner_attach.should_attach,
+        ):
+            self._setup_recovery_consumed = True
+            self._pending_setup_recovery_attach = True
+            self._setup_recovery_excerpt = handle.output_tail() or None
+            self._harness_dead.set()
+            return
+        if not handle.input_prompt_observed or not self._owner_attach.wired:
+            handle.mark_awaiting_onboarding()
+        prompt = self._owner_prompt
+        self._start_phase_operation("orientation", lambda: handle.inject(prompt))
+
+    def _begin_owner_teardown(self) -> None:
+        reactor = self._watcher
+        assert isinstance(reactor, SummonReactor)
+        reactor.delivery_enabled = False
+        running = self._owner_running
+        if running is None:
+            self._owner_phase = "done"
+            reactor.request_stop()
+            return
+        running.handle.request_close()
+        if reactor._delivery_pending is not None:
+            return
+        if self._owner_phase != "close":
+            self._start_phase_operation("close", running.handle.close)
+
+    def _finish_owner_teardown(self) -> None:
+        running = self._owner_running
+        assert running is not None
+        if running.pump is not None:
+            self._join_pump(
+                running.generation, running.pump, timeout=_PUMP_JOIN_TIMEOUT_SECONDS
+            )
+        else:
+            self._retire_generation(running.generation)
+        self._owner_running = None
+        self._handle = None
+        self._harness_dead.clear()
+        if self._shutdown.is_set():
+            self._owner_phase = "done"
+            assert self._watcher is not None
+            self._watcher.request_stop()
+            return
+        if self._pending_setup_recovery_attach:
+            self._owner_phase = "prepare"
+            return
+        if self._on_ready is not None and not self._ready_callback_invoked:
+            raise DriverError("provider generation exited before foreground readiness")
+        lived = time.monotonic() - running.started_at
+        self._owner_crashes = (
+            1 if lived >= _HEALTHY_RUN_SECONDS else self._owner_crashes + 1
+        )
+        if self._owner_crashes > len(self._backoff):
+            raise DriverError(self._give_up_message(running))
+        self._harness_restart_at = (
+            time.monotonic() + self._backoff[self._owner_crashes - 1]
+        )
+        self._owner_phase = "prepare"
+
+    def _give_up_message(self, running: _RunningGeneration) -> str:
+        message = (
+            f"harness for '{self._owner_boot.member_name}' exited "
+            f"{self._owner_crashes} times in a row "
+            f"(last exit code {running.generation.exit.returncode}); giving up"
+        )
+        try:
+            tail = running.handle.output_tail()
+        except Exception:  # noqa: BLE001 - diagnostics cannot replace provider failure
+            tail = ""
+        if tail:
+            message += f"\nlast screen output:\n{tail}"
+        if self._owner_adapter.supports_attach:
+            message += f"\nrun: taut summon --attach {self._owner_boot.member_name}"
+        return message
+
+    def _owner_delivery_error(self, error: BaseException) -> None:
+        if isinstance(error, AdapterWriteCancelled):
+            return
+        if isinstance(error, AdapterError):
+            self._harness_dead.set()
+            return
+        raise error
+
+    def _queue_rate_nudge(self, text: str) -> None:
+        self._pending_nudge = text
+
+    def _owner_interrupt(self) -> None:
+        handle = self._handle
+        if handle is not None and self._interrupt_worker is None:
+            if self._watcher is not None:
+                self._watcher.delivery_enabled = False
+            if self._phase_worker is not None and self._owner_phase in {
+                "orientation",
+                "nudge",
+            }:
+                self._phase_cancel_requested = True
+            self._start_phase_operation("interrupt", handle.interrupt)
+
+    def _publish_owner_ready(self) -> None:
+        if not self._owner_generation_ready:
+            self._owner_generation_ready = True
+            boot = self._owner_boot
+            logger.info(
+                "summoned '%s' (member %s, provider %s, threads %s)",
+                boot.member_name,
+                boot.member_id,
+                boot.provider,
+                ", ".join(self._request.threads),
+            )
+        if self._on_ready is None or self._ready_callback_invoked:
+            return
+        completion = self._run_completion
+        assert completion is not None
+        boot = self._owner_boot
+        self._ready_callback_invoked = True
+        handle = SummonRunHandle(
+            SummonedMember(
+                member_id=boot.member_id,
+                name=boot.member_name,
+                provider=boot.provider,
+            ),
+            _request_stop=self.request_stop,
+            _completion=completion,
+        )
+        try:
+            self._on_ready(handle)
+        except Exception as error:
+            raise SummonOperationError("summon readiness callback failed") from error
+
+    def _apply_pump_results(self) -> None:
+        while True:
+            try:
+                result = self._pump_results.get_nowait()
+            except queue.Empty:
+                return
+            generation = self._active_generation
+            if generation is None or result.generation != generation.token:
+                continue
+            if result.error is not None:
+                raise DriverError(
+                    f"adapter event stream failed: {result.error}"
+                ) from result.error
+            if isinstance(result.event, ActivityEvent):
+                client = self._owner_client
+                assert client is not None
+                self._owner_last_activity = self._record_activity_event(
+                    result.event, client, self._owner_last_activity
+                )
+            elif isinstance(result.event, ExitEvent):
+                generation.exit.returncode = result.event.returncode
+            if result.retired:
+                self._harness_dead.set()
 
     def _start_generation_pump(
         self,
@@ -924,36 +1390,6 @@ class SummonDriver:
             self._ensure_threads(setup_client, boot.member_id)
         finally:
             setup_client.close()
-
-    def _prepare_generation_attach(
-        self,
-        handle: AdapterHandle,
-        *,
-        boot: _BootstrapResult,
-        attach_decision: _GenerationAttachDecision,
-    ) -> bool:
-        wired = attach_decision.wired
-        result = (
-            self._run_terminal_attach(handle) if attach_decision.should_attach else None
-        )
-        if result == "shutdown":
-            return True
-        if result == "detached":
-            set_wired(
-                self._ledger(),
-                member_id=boot.member_id,
-                value=True,
-                updated_ts=self._ledger().generate_timestamp(),
-            )
-            wired = True
-            logger.info(
-                "provider setup ended for '%s'; starting the Taut listener; "
-                "keep this command running and chat from another terminal",
-                boot.member_name,
-            )
-        if not wired:
-            handle.mark_awaiting_onboarding()
-        return False
 
     def _should_offer_setup_recovery(
         self,
@@ -987,310 +1423,43 @@ class SummonDriver:
             )
         return supported
 
-    def _orient_running_generation(
-        self,
-        running: _RunningGeneration,
-        adapter: ProviderAdapter,
-        system_prompt: str,
-        *,
-        boot: _BootstrapResult,
-        availability: TerminalAvailability | None,
-        attached_this_generation: bool,
-    ) -> str:
-        """Settle, then orient, escalate, or report shutdown.
-
-        Returns ``"oriented"``, ``"shutdown"``, ``"exited"``, or
-        ``"setup-recovery"``. The
-        setup-recovery return has already torn the suspect generation down
-        ([SUM-7.4]: teardown always precedes the acknowledgement request).
-        """
-        if not adapter.orientation_via_inject:
-            return "oriented"
-        try:
-            self._settle_for_orientation(running.handle)
-            if self._shutdown.is_set():
-                return "shutdown"
-            if self._should_offer_setup_recovery(
-                running.handle,
-                adapter,
-                availability,
-                attached_this_generation=attached_this_generation,
-            ):
-                self._setup_recovery_consumed = True
-                self._pending_setup_recovery_attach = True
-                logger.warning(
-                    "provider '%s' settled without an input prompt; offering "
-                    "an acknowledged setup attach instead of injecting",
-                    boot.member_name,
-                )
-                # [SUM-7.4]: capture the suspect screen for the offer before
-                # the teardown that always precedes the acknowledgement. The
-                # tail is diagnostic, so its failure never changes the outcome.
-                try:
-                    tail = running.handle.output_tail()
-                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
-                    tail = ""
-                self._setup_recovery_excerpt = tail or None
-                self._teardown_generation(
-                    running.generation, running.handle, running.pump
-                )
-                return "setup-recovery"
-            if not running.handle.input_prompt_observed:
-                running.handle.mark_awaiting_onboarding()
-                logger.warning(
-                    "provider '%s' settled without an input prompt; injecting "
-                    "orientation anyway (no setup-recovery path available)",
-                    boot.member_name,
-                )
-            running.handle.inject(system_prompt)
-        except AdapterError as exc:
-            try:
-                self._raise_if_control_failed()
-            except DriverError:
-                self._teardown_generation(
-                    running.generation, running.handle, running.pump
-                )
-                raise
-            if not self._shutdown.is_set():
-                if isinstance(exc, AdapterExitedError):
-                    return self._orientation_exit_outcome(running, exc)
-                self._teardown_generation(
-                    running.generation, running.handle, running.pump
-                )
-                raise DriverError(f"cannot orient the harness: {exc}") from exc
-        # Leave the AdapterError scope before shutdown teardown so the caught
-        # write interruption cannot become the primary shutdown failure.
-        return "shutdown" if self._shutdown.is_set() else "oriented"
-
-    def _orientation_exit_outcome(
-        self,
-        running: _RunningGeneration,
-        exc: AdapterExitedError,
-    ) -> str:
-        if self._on_ready is None or self._ready_callback_invoked:
-            return "exited"
-        self._teardown_generation(running.generation, running.handle, running.pump)
-        raise DriverError(
-            "provider generation exited before foreground readiness"
-        ) from exc
-
-    def _finish_orientation_outcome(
-        self,
-        outcome: str,
-        running: _RunningGeneration,
-        boot: _BootstrapResult,
-        consecutive_crashes: int,
-        adapter: ProviderAdapter,
-    ) -> tuple[int, int | None]:
-        if outcome == "shutdown":
-            return consecutive_crashes, self._shutdown_running_generation(running, boot)
-        if outcome == "exited":
-            crashes, _ = self._resume_after_harness_exit(
-                running, boot, consecutive_crashes, adapter=adapter
-            )
-            return crashes, None
-        assert outcome == "setup-recovery"
-        return consecutive_crashes, None
-
-    def _await_running_generation(
-        self, running: _RunningGeneration, boot: _BootstrapResult
-    ) -> None:
-        try:
-            self._watch_until_wake(boot)
-            self._raise_if_pump_failed(running.generation)
-            if self._on_ready is not None and not self._ready_callback_invoked:
-                self._raise_if_readiness_aborted(running.generation.harness_dead)
-        except BaseException:
-            self._teardown_generation(running.generation, running.handle, running.pump)
-            raise
-
-    def _shutdown_running_generation(
-        self, running: _RunningGeneration, boot: _BootstrapResult
-    ) -> int:
-        return self._shutdown_current_generation(
-            running.generation, running.handle, running.pump, boot
-        )
-
-    def _shutdown_before_or_after_readiness(
-        self, running: _RunningGeneration, boot: _BootstrapResult
-    ) -> int:
-        result = self._shutdown_running_generation(running, boot)
-        self._raise_if_foreground_readiness_pending()
-        return result
-
-    def _raise_if_foreground_readiness_pending(self) -> None:
-        if getattr(self, "_on_ready", None) is not None and not getattr(
-            self, "_ready_callback_invoked", False
-        ):
-            raise DriverError("foreground readiness aborted by driver shutdown")
-
-    def _resume_after_harness_exit(
-        self,
-        running: _RunningGeneration,
-        boot: _BootstrapResult,
-        consecutive_crashes: int,
-        *,
-        adapter: ProviderAdapter,
-    ) -> tuple[int, str | None]:
-        self._teardown_generation(running.generation, running.handle, running.pump)
-        lived = time.monotonic() - running.started_at
-        crashes = 1 if lived >= _HEALTHY_RUN_SECONDS else consecutive_crashes + 1
-        if crashes > len(self._backoff):
-            message = (
-                f"harness for '{boot.member_name}' exited {crashes} times in a row "
-                f"(last exit code {running.generation.exit.returncode}); giving up"
-            )
-            # [SUM-11]: the tail is best-effort diagnostics — its failure
-            # never changes the driver outcome.
-            try:
-                tail = running.handle.output_tail()
-            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
-                tail = ""
-            if tail:
-                message += f"\nlast screen output:\n{tail}"
-            if adapter.supports_attach:
-                message += (
-                    "\nprovider may be waiting on interactive setup; "
-                    f"run: taut summon --attach {boot.member_name}"
-                )
-            raise DriverError(message)
-        delay = self._backoff[crashes - 1]
-        logger.warning(
-            "harness exited (code %s); resuming in %.1fs (attempt %d/%d)",
-            running.generation.exit.returncode,
-            delay,
-            crashes,
-            len(self._backoff),
-        )
-        self._shutdown.wait(timeout=delay)
-        if self._shutdown.is_set():
-            return crashes, None
-        return crashes, None
-
     # --- ears: the watch handler ([SUM-5]) ---------------------------------
 
-    def _on_item(self, item: Message | Notification) -> None:
-        if self._halt_ack.is_set() or self._harness_dead.is_set():
-            self._halt_and_raise(None)
+    def _prepare_injection(
+        self, item: Message | Notification
+    ) -> PreparedInjection | None:
+        """Resolve immutable transport work on the owner before worker dispatch."""
         if isinstance(item, Message):
             if item.from_id == self._member_id:
-                return
+                return None
         elif item.actor_id is not None and item.actor_id == self._member_id:
-            return
+            return None
         handle = self._handle
-        if handle is None:  # pragma: no cover - watcher runs only with a handle
-            self._halt_and_raise(None)
-            return
-        line = format_injection(item)
-        try:
-            handle.inject(line)
-        except AdapterWriteCancelled as exc:
-            logger.info("inject cancelled; rebuilding watcher: %s", exc)
-            self._cancel_injection(exc)
-        except AdapterError as exc:
-            logger.warning("inject failed; halting injection: %s", exc)
-            self._halt_and_raise(exc)
-
-    def _cancel_injection(self, cause: AdapterWriteCancelled) -> None:
-        """Stop this watcher attempt while preserving the live generation."""
-
-        watcher = self._watcher
-        if watcher is not None:
-            try:
-                watcher.request_stop()
-            except Exception:  # pragma: no cover - checked join remains authoritative
-                logger.debug(
-                    "watcher stop request during cancellation failed", exc_info=True
-                )
-        self._injection_cancelled.set()
-        self._wake.set()
-        self._halt_ack.wait(timeout=_HALT_ACK_TIMEOUT_SECONDS)
-        raise WatcherRejected("injection cancelled by reusable interrupt") from cause
-
-    def _halt_and_raise(self, cause: Exception | None) -> None:
-        """Adapter death is fatal-and-resume, never a per-message error.
-
-        Signal the watcher before raising so re-delivery, and with it
-        [TAUT-8.4]'s poison-advance budget, cannot run while the supervisor
-        unwinds the failed generation. Final close belongs to the watcher
-        drive owner; an in-handler callback must never close live reactor
-        resources ([SUM-9]). Then wake the supervisor and preserve this
-        delivery's cursor for re-injection on resume ([SUM-5.4]).
-        """
-
-        watcher = self._watcher
-        if watcher is not None:
-            try:
-                watcher.request_stop()
-            except Exception:  # pragma: no cover - defensive signal path
-                logger.debug("watcher stop request during halt failed", exc_info=True)
-        self._harness_dead.set()
-        self._wake.set()
-        self._halt_ack.wait(timeout=_HALT_ACK_TIMEOUT_SECONDS)
-        raise _InjectionHalted("injection halted pending harness resume") from cause
+        if handle is None:
+            raise WatcherRejected("provider is not available for injection")
+        generation = self._active_generation
+        return PreparedInjection(
+            handle, format_injection(item), generation.token if generation else 0
+        )
 
     # --- event pump ([SUM-7.1]) --------------------------------------------
 
     def _activate_generation(self) -> _GenerationContext:
         """Publish one spawn generation and retire any prior token atomically."""
 
-        with self._generation_lock:
-            self._generation_counter += 1
-            generation = _GenerationContext(
-                token=self._generation_counter,
-                completion=threading.Event(),
-                harness_dead=threading.Event(),
-                wake=threading.Event(),
-                exit=_GenerationExit(),
-                failure=_GenerationFailure(),
-            )
-            self._active_generation = generation
-            # Compatibility aliases for the foreground/watch paths. A stale
-            # pump retains only its context objects and can never reach these
-            # aliases after the next generation is published.
-            self._harness_dead = generation.harness_dead
-            self._wake = generation.wake
-            return generation
+        self._generation_counter += 1
+        generation = _GenerationContext(
+            token=self._generation_counter,
+            exit=_GenerationExit(),
+        )
+        self._active_generation = generation
+        self._harness_dead.clear()
+        return generation
 
     def _retire_generation(self, generation: _GenerationContext) -> None:
         """Fence a generation before its handle is abandoned or replaced."""
-
-        with self._generation_lock:
-            if self._active_generation is generation:
-                self._active_generation = None
-
-    def _finish_generation(self, generation: _GenerationContext) -> None:
-        """Publish pump completion only to the generation that produced it."""
-
-        generation.completion.set()
-        generation.harness_dead.set()
-        with self._generation_lock:
-            if self._active_generation is generation:
-                generation.wake.set()
-
-    def _report_pump_failure(
-        self,
-        generation: _GenerationContext,
-        error: BaseException,
-    ) -> None:
-        """Publish a storage/setup failure only to its still-active owner."""
-
-        with self._generation_lock:
-            if self._active_generation is not generation:
-                return
-            if generation.failure.error is None:
-                generation.failure.error = error
-            generation.harness_dead.set()
-            generation.wake.set()
-
-    def _raise_if_pump_failed(self, generation: _GenerationContext) -> None:
-        """Raise a worker failure on the foreground supervision lane."""
-
-        with self._generation_lock:
-            error = generation.failure.error
-        if error is None:
-            return
-        raise DriverError(f"event pump storage failed: {error}") from error
+        if self._active_generation is generation:
+            self._active_generation = None
 
     @staticmethod
     def _add_cleanup_note(primary: BaseException, cleanup: BaseException) -> None:
@@ -1388,56 +1557,19 @@ class SummonDriver:
         db_path: str | None,
         token: str,
     ) -> None:
-        mouth: TautClient | None = None
-        last_activity = 0.0
+        del db_path, token
+        error: BaseException | None = None
         try:
-            with self._generation_lock:
-                if self._active_generation is not generation:
-                    return
-                mouth = TautClient(
-                    db_path=db_path,
-                    token=token,
-                    persistent=True,
-                    inherit_environment_identity=False,
-                )
             for event in handle.events():
-                last_activity = self._pump_event(
-                    event,
-                    mouth,
-                    last_activity,
-                    generation=generation,
+                self._pump_results.put(
+                    _PumpResult(generation.token, event, None, False)
                 )
-        except AdapterError as exc:
-            logger.error("adapter event stream failed: %s", exc)
-        except (BrokerError, TautError) as exc:
-            logger.error("event pump storage failed: %s", exc)
-            self._report_pump_failure(generation, exc)
+                self._publish_owner_activity()
+        except BaseException as exc:  # noqa: BLE001 - transfer every transport failure
+            error = exc
         finally:
-            if mouth is not None:
-                try:
-                    mouth.close()
-                except Exception:  # pragma: no cover - defensive cleanup
-                    logger.debug("event pump client close failed", exc_info=True)
-            self._finish_generation(generation)
-
-    def _pump_event(
-        self,
-        event: AdapterEvent,
-        mouth: TautClient,
-        last_activity: float,
-        *,
-        generation: _GenerationContext,
-    ) -> float:
-        # Hold the generation lock across the side effect. A check followed by
-        # an unlocked write would let retirement race between the two.
-        with self._generation_lock:
-            if self._active_generation is not generation:
-                return last_activity
-            if isinstance(event, ActivityEvent):
-                last_activity = self._record_activity_event(event, mouth, last_activity)
-            elif isinstance(event, ExitEvent):
-                self._record_exit_event(event, generation)
-        return last_activity
+            self._pump_results.put(_PumpResult(generation.token, None, error, True))
+            self._publish_owner_activity()
 
     @staticmethod
     def _record_activity_event(
@@ -1454,25 +1586,7 @@ class SummonDriver:
             logger.debug("activity resolution failed: %s", exc)
         return now
 
-    def _record_exit_event(
-        self, event: ExitEvent, generation: _GenerationContext
-    ) -> None:
-        generation.exit.returncode = event.returncode
-        logger.info("harness exited with code %s", event.returncode)
-
     # --- helpers ------------------------------------------------------------
-
-    def _spawn(
-        self,
-        adapter: ProviderAdapter,
-        system_prompt: str,
-        env: dict[str, str],
-    ) -> AdapterHandle:
-        try:
-            return adapter.spawn(system_prompt=system_prompt, env=env)
-        except AdapterError as exc:
-            # Release is centralized in _run's finally ([SUM-8] cleanup).
-            raise DriverError(f"cannot spawn the harness: {exc}") from exc
 
     def _rejoin(self, handle: AdapterHandle, boot: _BootstrapResult) -> None:
         """Re-anchor presence at the harness child through token-only selection."""
@@ -1505,9 +1619,6 @@ class SummonDriver:
                 continue
             client.join(thread, persona=self._request.persona)
 
-    def _settle_for_orientation(self, handle: AdapterHandle) -> None:
-        handle.wait_until_quiet()
-
     def _should_start_pump_before_bootstrap(
         self,
         request: SummonRequest,
@@ -1521,8 +1632,7 @@ class SummonDriver:
             return False
         if request.detach:
             return True
-        if availability is None:
-            raise DriverError("terminal availability was not resolved")
+        assert availability is not None, "terminal availability was not resolved"
         return availability in {
             TerminalAvailability.NESTED_HOST,
             TerminalAvailability.UNAVAILABLE,
@@ -1566,24 +1676,6 @@ class SummonDriver:
         pump.start()
         return pump
 
-    def _shutdown_current_generation(
-        self,
-        generation: _GenerationContext,
-        handle: AdapterHandle,
-        pump: threading.Thread,
-        boot: _BootstrapResult,
-    ) -> int:
-        self._teardown_generation(
-            generation,
-            handle,
-            pump,
-            timeout=_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS,
-        )
-        # Release + control-thread STOP ack are ordered by _run's finally
-        # ([SUM-9]); nothing to release here.
-        logger.info("dismissed '%s' cleanly", boot.member_name)
-        return 0
-
     def _resolve_generation_attach(
         self,
         *,
@@ -1612,65 +1704,6 @@ class SummonDriver:
         if not should_attach and not wired:
             self._warn_unwired_without_attach(boot, availability)
         return _GenerationAttachDecision(wired=wired, should_attach=should_attach)
-
-    def _prepare_generation_start(
-        self,
-        *,
-        boot: _BootstrapResult,
-        adapter: ProviderAdapter,
-        availability: TerminalAvailability | None,
-        first_generation: bool,
-    ) -> _GenerationAttachDecision | None:
-        decision = self._resolve_generation_attach(
-            boot=boot,
-            adapter=adapter,
-            availability=availability,
-            first_generation=first_generation,
-        )
-        setup_recovery = self._pending_setup_recovery_attach
-        self._pending_setup_recovery_attach = False
-        if not decision.should_attach:
-            return decision
-        if not self._confirm_terminal_attach(boot):
-            if setup_recovery and not self._shutdown.is_set():
-                # [SUM-7.4]: an explicit human decline of the setup-recovery
-                # offer continues the detached path; only shutdown ends here.
-                logger.info(
-                    "declined provider setup recovery for '%s'; continuing detached",
-                    boot.member_name,
-                )
-                return _GenerationAttachDecision(
-                    wired=decision.wired, should_attach=False
-                )
-            logger.info("cancelled provider setup for '%s'", boot.member_name)
-            return None
-        if self._shutdown.is_set():
-            return None
-        return decision
-
-    def _confirm_terminal_attach(self, boot: _BootstrapResult) -> bool:
-        notice = TerminalAttachNotice(
-            member=boot.member_name,
-            provider=boot.provider,
-            detach_hint="Ctrl-\\ Ctrl-\\",
-            screen_excerpt=self._setup_recovery_excerpt,
-        )
-        self._setup_recovery_excerpt = None
-        try:
-            proceed = self._interaction.confirm_terminal_attach(
-                notice,
-                cancel=self._shutdown,
-            )
-        except Exception as exc:
-            raise DriverError(f"terminal acknowledgement failed: {exc}") from exc
-        if type(proceed) is not bool:
-            raise DriverError("terminal interaction returned invalid acknowledgement")
-        if proceed:
-            logger.info(
-                "attaching '%s'; detach with Ctrl-\\ Ctrl-\\",
-                boot.member_name,
-            )
-        return proceed
 
     @staticmethod
     def _require_attach_available(
@@ -1725,7 +1758,6 @@ class SummonDriver:
             if not isinstance(lease, TerminalLease):
                 raise DriverError("terminal interaction returned invalid lease")
             result = handle.attach(
-                wake=self._wake,
                 shutdown=self._shutdown,
                 input_fd=lease.input_fd,
                 output_fd=lease.output_fd,
@@ -1828,265 +1860,6 @@ class SummonDriver:
         assert self._evidence is not None
         return self._evidence
 
-    def _watch_until_wake(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-091] exception
-        self,
-        boot: _BootstrapResult,
-    ) -> None:
-        """Keep the chat watcher alive until shutdown or harness death.
-
-        Watcher storage failures are not harness failures. Rebuild the
-        watcher against the same provider generation first; the provider crash
-        budget belongs to pump exit and injection failure.
-        """
-
-        self._raise_if_control_failed()
-        watcher_failures = 0
-        harness_dead = self._harness_dead
-        readiness_deadline: float | None = None
-        while not (
-            self._shutdown.is_set()
-            or harness_dead.is_set()
-            or self._control_failed.is_set()
-        ):
-            self._watcher_failed.clear()
-            self._watcher_error = None
-            self._injection_cancelled.clear()
-            self._halt_ack.clear()
-            attempt_stop = threading.Event()
-            watcher_ready = threading.Event()
-            watcher_thread = self._start_watcher_thread(
-                db_path=self._db_path,
-                token=boot.token,
-                ready_event=watcher_ready,
-                attempt_stop=attempt_stop,
-                harness_dead=harness_dead,
-            )
-            if readiness_deadline is None:
-                readiness_deadline = time.monotonic() + 30.0
-            while (
-                not watcher_ready.is_set()
-                and not self._watcher_failed.is_set()
-                and not self._injection_cancelled.is_set()
-                and not harness_dead.is_set()
-                and not self._shutdown.is_set()
-                and not self._control_failed.is_set()
-                and time.monotonic() < readiness_deadline
-            ):
-                watcher_ready.wait(timeout=0.05)
-            if (
-                not watcher_ready.is_set()
-                and not self._watcher_failed.is_set()
-                and not self._injection_cancelled.is_set()
-                and not harness_dead.is_set()
-                and not self._shutdown.is_set()
-                and not self._control_failed.is_set()
-            ):
-                self._halt_ack.set()
-                self._request_watcher_attempt_stop(attempt_stop)
-                self._join_watcher_attempt(watcher_thread)
-                raise DriverError("cannot watch chat: watcher did not become ready")
-            if watcher_ready.is_set() and not self._injection_cancelled.is_set():
-                readiness_deadline = None
-                if getattr(self, "_on_ready", None) is not None and not getattr(
-                    self, "_ready_callback_invoked", False
-                ):
-                    try:
-                        self._await_control_and_publish_ready(boot, harness_dead)
-                    except BaseException:
-                        self._halt_ack.set()
-                        self._request_watcher_attempt_stop(attempt_stop)
-                        self._join_watcher_attempt(watcher_thread)
-                        raise
-                logger.info(
-                    "summoned '%s' (member %s, provider %s, threads %s)",
-                    boot.member_name,
-                    boot.member_id,
-                    boot.provider,
-                    ", ".join(self._request.threads),
-                )
-
-            self._await_wake()
-
-            # Watcher coordination owns only watcher stop and checked join.
-            # The signal/control path already requested terminal retirement;
-            # foreground generation teardown owns blocking adapter close.
-            self._halt_ack.set()
-            self._request_watcher_attempt_stop(attempt_stop)
-            self._join_watcher_attempt(watcher_thread)
-
-            self._raise_if_control_failed()
-
-            if (
-                self._injection_cancelled.is_set()
-                and not self._shutdown.is_set()
-                and not harness_dead.is_set()
-            ):
-                if (
-                    readiness_deadline is not None
-                    and time.monotonic() >= readiness_deadline
-                ):
-                    raise DriverError("cannot watch chat: watcher did not become ready")
-                continue
-
-            if (
-                self._watcher_failed.is_set()
-                and not self._shutdown.is_set()
-                and not harness_dead.is_set()
-            ):
-                watcher_failures += 1
-                if watcher_failures > len(_WATCHER_RESTART_BACKOFF):
-                    detail = (
-                        f": {self._watcher_error}"
-                        if self._watcher_error is not None
-                        else ""
-                    )
-                    raise DriverError(
-                        "watcher exited "
-                        f"{watcher_failures} times in a row{detail}; giving up"
-                    )
-                delay = _WATCHER_RESTART_BACKOFF[watcher_failures - 1]
-                logger.warning(
-                    "watcher exited; rebuilding in %.1fs (attempt %d/%d)",
-                    delay,
-                    watcher_failures,
-                    len(_WATCHER_RESTART_BACKOFF),
-                )
-                self._watcher_failed.clear()
-                self._watcher_error = None
-                self._shutdown.wait(timeout=delay)
-                continue
-            return
-        self._raise_if_control_failed()
-
-    def _await_control_and_publish_ready(
-        self,
-        boot: _BootstrapResult,
-        harness_dead: threading.Event,
-    ) -> None:
-        """Join first-generation identity, watcher, and public-control readiness."""
-
-        callback = self._on_ready
-        control_ready = self._control_ready
-        completion = self._run_completion
-        if callback is None or self._ready_callback_invoked:
-            return
-        assert control_ready is not None
-        assert completion is not None
-
-        deadline = time.monotonic() + _FOREGROUND_READINESS_TIMEOUT_SECONDS
-        while not control_ready.is_set():
-            self._raise_if_readiness_aborted(harness_dead)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.request_stop()
-                raise DriverError(
-                    "control loop did not become ready within "
-                    f"{_FOREGROUND_READINESS_TIMEOUT_SECONDS:.1f}s"
-                )
-            control_ready.wait(timeout=min(0.05, remaining))
-
-        self._raise_if_readiness_aborted(harness_dead)
-
-        live_handle = self._handle
-        if live_handle is None:
-            raise DriverError("provider handle disappeared before foreground readiness")
-        member = SummonedMember(
-            member_id=boot.member_id,
-            name=boot.member_name,
-            provider=boot.provider,
-        )
-        run_handle = SummonRunHandle(
-            member,
-            _request_stop=self.request_stop,
-            _completion=completion,
-        )
-        self._ready_callback_invoked = True
-        try:
-            callback(run_handle)
-        except Exception as exc:
-            raise SummonOperationError("summon readiness callback failed") from exc
-
-    def _raise_if_readiness_aborted(self, harness_dead: threading.Event) -> None:
-        self._raise_if_control_failed()
-        if self._shutdown.is_set():
-            raise DriverError("foreground readiness aborted by driver shutdown")
-        if harness_dead.is_set():
-            raise DriverError("provider generation exited before foreground readiness")
-        if self._watcher_failed.is_set():
-            detail = (
-                f": {self._watcher_error}" if self._watcher_error is not None else ""
-            )
-            raise DriverError(f"watcher exited before foreground readiness{detail}")
-
-    def _request_watcher_attempt_stop(
-        self,
-        attempt_stop: threading.Event,
-    ) -> None:
-        """Publish attempt-local stop before signaling a published watcher."""
-
-        attempt_stop.set()
-        watcher = self._watcher
-        if watcher is None:
-            return
-        try:
-            watcher.request_stop()
-        except Exception:  # pragma: no cover - checked join remains authoritative
-            logger.debug("watcher stop request failed", exc_info=True)
-
-    @staticmethod
-    def _join_watcher_attempt(watcher_thread: threading.Thread) -> None:
-        """Require one watcher owner to exit before another can be started."""
-
-        watcher_thread.join(timeout=_WATCHER_JOIN_TIMEOUT_SECONDS)
-        if watcher_thread.is_alive():
-            raise DriverError(
-                f"watcher did not stop within {_WATCHER_JOIN_TIMEOUT_SECONDS:.1f}s"
-            )
-
-    def _start_control_thread(self, boot: _BootstrapResult) -> None:
-        """Start the [SUM-9] control consumer + [SUM-10] rate backstop.
-
-        The loop owns all its db handles, opened on its own thread — the
-        driver hands it only plain values and a stop callback, so no
-        connection is shared across threads.
-        """
-
-        if self._control_thread is not None and self._control_thread.is_alive():
-            return
-        self._raise_if_control_failed()
-
-        self._control_stop.clear()
-        driver_pid, driver_start_time = self._require_evidence()
-        if self._audit_start_ts is None:
-            raise DriverError("rate audit start timestamp was not initialized")
-        loop = ControlLoop(
-            member_id=boot.member_id,
-            db_path=self._db_path,
-            token=boot.token,
-            provider=boot.provider,
-            threads=self._request.threads,
-            handle_provider=lambda: self._handle,
-            request_stop=self.request_stop,
-            shutdown=self._control_stop,
-            shutdown_complete=self._shutdown_complete,
-            shutdown_outcome=self._control_shutdown_outcome,
-            rate_limit=self._request.rate_limit,
-            ledger_queue_name=_LEDGER_QUEUE_NAME,
-            driver_pid=driver_pid,
-            driver_start_time=driver_start_time,
-            audit_start_ts=self._audit_start_ts,
-            ready=self._control_ready,
-        )
-        self._control_loop = loop
-        thread = threading.Thread(
-            target=self._run_control_loop,
-            args=(loop,),
-            daemon=True,
-            name="taut-summon-control",
-        )
-        self._control_thread = thread
-        thread.start()
-
     def _control_shutdown_outcome(self) -> StopShutdownOutcome:
         """Return finalized teardown/release facts after shutdown completion."""
 
@@ -2112,163 +1885,6 @@ class SummonDriver:
         self._stop_shutdown_outcome = outcome
         return outcome
 
-    def _run_control_loop(self, loop: ControlLoop) -> None:
-        """Transfer unexpected [SUM-9]/[SUM-11] control death to the owner."""
-
-        try:
-            loop.run()
-        except BaseException as exc:
-            if self._control_stop.is_set() or self._shutdown.is_set():
-                logger.debug(
-                    "control loop stopped during driver shutdown", exc_info=True
-                )
-                return
-            self._report_control_failure(exc)
-            return
-        if not (self._control_stop.is_set() or self._shutdown.is_set()):
-            self._report_control_failure(
-                RuntimeError("control loop exited unexpectedly without a stop request")
-            )
-
-    def _report_control_failure(self, error: BaseException) -> None:
-        """Publish the primary control error and wake the foreground supervisor."""
-
-        with self._control_failure_lock:
-            if self._control_failed.is_set():
-                return
-            self._control_error = error
-            self._control_failed.set()
-
-        watcher = self._watcher
-        if watcher is not None:
-            try:
-                watcher.request_stop()
-            except Exception:  # pragma: no cover - preserve the primary failure
-                logger.debug(
-                    "watcher stop request after control failure failed", exc_info=True
-                )
-        handle = self._handle
-        if handle is not None:
-            try:
-                handle.request_close()
-            except Exception:  # pragma: no cover - preserve the primary failure
-                logger.debug(
-                    "adapter close request after control failure failed",
-                    exc_info=True,
-                )
-        self._wake.set()
-
-    def _raise_if_control_failed(self) -> None:
-        if not self._control_failed.is_set():
-            return
-        error = self._control_error
-        if error is None:  # pragma: no cover - Event publication follows assignment
-            error = RuntimeError("control loop failed without a diagnostic")
-        raise DriverError(f"control loop failed: {error}") from error
-
-    def _start_watcher_thread(
-        self,
-        *,
-        db_path: str | None,
-        token: str,
-        ready_event: threading.Event,
-        attempt_stop: threading.Event,
-        harness_dead: threading.Event,
-    ) -> threading.Thread:
-        """Open and run the chat watcher on its owning thread."""
-
-        thread = threading.Thread(
-            target=self._run_watcher_attempt,
-            kwargs={
-                "db_path": db_path,
-                "token": token,
-                "ready_event": ready_event,
-                "attempt_stop": attempt_stop,
-                "harness_dead": harness_dead,
-            },
-            daemon=True,
-            name="taut-summon-watcher",
-        )
-        thread.start()
-        return thread
-
-    def _watcher_stop_requested(
-        self, attempt_stop: threading.Event, harness_dead: threading.Event
-    ) -> bool:
-        return (
-            attempt_stop.is_set()
-            or harness_dead.is_set()
-            or self._shutdown.is_set()
-            or self._control_failed.is_set()
-        )
-
-    def _run_watcher_attempt(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-064] exception
-        self,
-        *,
-        db_path: str | None,
-        token: str,
-        ready_event: threading.Event,
-        attempt_stop: threading.Event,
-        harness_dead: threading.Event,
-    ) -> None:
-        """Own one watcher attempt from construction through cleanup."""
-
-        failed = False
-        client: TautClient | None = None
-        watcher: Any | None = None
-        try:
-            client = TautClient(
-                db_path=db_path,
-                token=token,
-                persistent=True,
-                inherit_environment_identity=False,
-            )
-            watcher = client.watch(self._on_item, persistent=True)
-            self._watcher = watcher
-            if self._watcher_stop_requested(attempt_stop, harness_dead):
-                return
-            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
-            if callable(notify_ready):
-                notify_ready(ready_event)
-            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
-                ready_event.set()
-            if self._watcher_stop_requested(attempt_stop, harness_dead):
-                return
-            watcher.run()
-        except Exception as exc:
-            if (
-                not self._watcher_stop_requested(attempt_stop, harness_dead)
-                and not self._halt_ack.is_set()
-                and not self._injection_cancelled.is_set()
-            ):
-                failed = True
-                self._watcher_error = exc
-                self._watcher_failed.set()
-                logger.exception("watcher failed; rebuilding watcher from cursor")
-        finally:
-            if watcher is not None and self._watcher is watcher:
-                self._watcher = None
-            if watcher is not None:
-                try:
-                    watcher.stop(join=False)
-                except Exception:  # pragma: no cover - defensive cleanup
-                    logger.debug("watcher stop during cleanup failed", exc_info=True)
-            if client is not None:
-                try:
-                    client.close()
-                except Exception:  # pragma: no cover - defensive cleanup
-                    logger.debug("watcher client close failed", exc_info=True)
-            if not (
-                self._watcher_stop_requested(attempt_stop, harness_dead)
-                or self._halt_ack.is_set()
-                or self._injection_cancelled.is_set()
-            ):
-                if not failed:
-                    self._watcher_error = None
-                    self._watcher_failed.set()
-                    logger.warning("watcher exited; rebuilding watcher")
-                self._wake.set()
-
     def _release(self) -> None:
         self._release_error = None
         if self._member_id is None or self._evidence is None:
@@ -2293,17 +1909,6 @@ class SummonDriver:
             self._release_confirmed = False
             self._release_error = exc
             logger.error("could not release the driver slot: %s", exc)
-
-    def _await_wake(self) -> None:
-        while not (
-            self._shutdown.is_set()
-            or self._harness_dead.is_set()
-            or self._watcher_failed.is_set()
-            or self._injection_cancelled.is_set()
-            or self._control_failed.is_set()
-        ):
-            self._wake.wait(timeout=0.2)
-            self._wake.clear()
 
     def _install_signals(self) -> dict[int, Any]:
         if threading.current_thread() is not threading.main_thread():
@@ -2348,8 +1953,10 @@ class SummonDriver:
             ) from failures[0][2]
 
     def _on_signal(self, signum: int, _frame: object) -> None:
-        logger.info("received signal %s; stopping", signum)
-        self.request_stop()
+        self._signal_pending = True
+        reactor = self._watcher
+        if reactor is not None:
+            reactor.notify_activity()
 
 
 def run_driver(

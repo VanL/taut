@@ -11,6 +11,10 @@ class TautError(Exception):
     """Base class for all taut user-visible failures."""
 
 
+class ReactionConfigurationError(TautError):
+    """Raised when packaged or project reaction configuration is invalid."""
+
+
 class NotInitializedError(TautError):
     """Raised when no taut database can be resolved."""
 

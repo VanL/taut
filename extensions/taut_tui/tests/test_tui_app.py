@@ -1630,7 +1630,7 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
                 app.query_one("#inspector-body").render()
             )
 
-            app._summon_interaction = object()  # type: ignore[assignment]
+            assert app._summon_interaction is not None
             app._complete_summon_start(
                 SummonStartSubmission(
                     name="agent",

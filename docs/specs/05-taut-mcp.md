@@ -62,8 +62,8 @@ A process reactor on the MCP server's master thread owns the bounded
 workspace registry, rate state, subscription adapters, stop state, aggregate
 resource text, edge trackers, and parent admission slots. Each resident
 workspace reactor owns its Taut client, immutable member binding, command
-inbox, notification queue, and latest completed snapshot on one dedicated
-child thread. Cross-thread payloads use in-memory `queue.Queue` channels.
+inbox, notification queue, and latest completed snapshot in one synchronous
+owner callable, pinned to one executor worker for its entire lifetime. Cross-thread payloads use in-memory `queue.Queue` channels.
 Protocol-session objects, when present for legacy clients, are SDK-owned wire
 state and are not a source of Taut correctness.
 
@@ -131,7 +131,7 @@ and never print participant content. EOF, disconnect, broken pipe, startup
 failure, and normal shutdown begin teardown; cancellation of one request uses
 [MCP-5] and does not by itself stop the process. Orderly teardown stops new
 work, asks every child reactor to stop and wake in parallel, waits at most 10
-seconds for all owner threads, and closes every owned handle exactly once on
+seconds for all owner callables to return, and closes every owned handle exactly once on
 its owner. If a synchronous backend call has not returned by that
 deadline, the supervisor attempts one best-effort low-level write of the fixed
 content-free stderr diagnostic
@@ -319,8 +319,8 @@ retiring candidate performs no further database work beyond owner-thread
 cleanup.
 
 Every retiring entry retains its original locator, optional canonical
-metadata, cap seat, thread/queue references, path exclusion, and membership in
-the process join set until its owner thread clears the raw token, closes any
+metadata, cap seat, completion/queue references, path exclusion, and membership in
+the process join set until its owner callable clears the raw token, closes any
 partial child-owned resources, and exits. The master then reaps it through the
 ordinary event-drain/liveness checks. The distinct
 `candidate_cleanup_deadline` is five monotonic seconds after entry, except a
@@ -437,7 +437,7 @@ If it expires before a canonical resolution event, the master retires the
 generation and returns `workspace resolution timed out; use list_workspaces
 then restart if warned`. The candidate enters the shared hidden `retiring`
 state above with stop/wake once, no possible grant, immediate warning
-eligibility, cap/path/join retention, maintenance reap, and no database open.
+eligibility, cap/path/join retention, completion reap, and no database open.
 A permanently stuck resolver is cleared only by process restart.
 `list_workspaces` reports the fixed content-free stalled-reservation warning
 while any retiring entry's warning is due, so a cap mismatch is visible
@@ -465,16 +465,20 @@ cannot overlap a second client during close. Successful validation
 atomically replaces the matching hidden reservation with the canonical ready
 entry.
 Resolution dispatch is one non-awaiting master sequence after reservation: it
-creates the candidate queue and not-yet-started thread, puts the resolution
-request onto the unbounded inbound queue, and starts the thread. The
-resolution deadline begins only after `Thread.start()` succeeds. If queue
-setup or thread start fails, the master removes the queued request and hidden
-reservation, drops the digest/token references and thread/queue references,
-and returns the fixed attachment failure. MCP cancellation cannot interleave
-inside this sequence. It is retractable before the sequence starts, when no
-child thread exists; after successful thread start, the phase deadline and
-child outcome own the reservation and cancellation drops only the eventual
-response.
+creates the candidate queue, submits the owner callable to the executor, stores
+its completion Future, and only then publishes `Bootstrap` to the inbound queue.
+The resolution deadline begins after successful submission and publication.
+`submit()` can enqueue work before native worker startup raises. On failure the
+master therefore sends the existing `StopWorkspace` control to release any
+uncertain queued or already-running callable's first handshake. That callable
+has never received `Bootstrap`: it cannot resolve a workspace, read configuration,
+or open a client. It only consumes stop and returns; executor worker retirement
+remains the library's concern, and later attachments may reuse the executor.
+The master removes the hidden reservation and drops digest/token references,
+returning the fixed attachment failure. MCP cancellation cannot interleave
+inside this sequence. Before dispatch there is no owner execution; after
+successful submission/publication the phase deadline and child outcome own the
+reservation and cancellation drops only the eventual response.
 
 Validation has a separate fixed 10-second monotonic deadline from the master
 grant. At expiry the process reactor sends stop/wake, retires the candidate
@@ -524,10 +528,11 @@ and ordinary pre- or post-grant failure while its seat remains. Cancellation
 before dispatch and child-start rollback delete the digest with immediate seat
 removal. Validation timeout/tombstone deletes it during canonical publication.
 Ready transfer is the sole hidden-seat transition that preserves
-the same digest. Clean detach, identity loss, or reactor
+the same digest. Live fingerprints are required invariants; absence in a
+live state is an internal assertion failure, not an attachment-recovery branch. Clean detach, identity loss, or reactor
 failure deletes the ready digest; degraded entries never compare
 fingerprints. The process reactor removes its raw-token reference from live
-reactor state immediately after successful candidate-thread dispatch,
+reactor state immediately after successful candidate executor submission,
 completing a direct ready-entry fingerprint comparison, or completing rollback.
 SDK- or host-owned request copies remain the exposure described by [MCP-10].
 Caught internal exception traceback frames may retain a request token or
@@ -550,7 +555,7 @@ continuity token and no name, member id, or alternative identity selector.
 performs no Taut identity operation.
 
 Request decoding and the process reactor may hold host-owned raw token
-strings temporarily. After candidate-thread dispatch, the process reactor
+strings temporarily. After candidate executor submission, the process reactor
 drops its raw reference and keeps only the exact-byte SHA-256 fingerprint
 needed for resident-binding comparison. The workspace child clears its
 bootstrap envelope and local request copy after validation. Its one canonical
@@ -566,21 +571,21 @@ timer. On first admission, the master-thread serial
 point marks the entry `detaching` and non-routable before sending child stop
 and wake; no later ordinary command can enter that generation. The aggregate
 publishes the `detaching` state with an empty notification list. Successful
-detach requires the master to observe owner-thread exit within five seconds.
+detach requires the master to observe owner execution completion within five seconds.
 In its `finally`, the child closes its `TautClient` and every SimpleBroker
 queue, clears its token, drops its reference to the in-memory inbound queue,
 puts a final owner-stopped event when possible, and returns. The event wakes
 the master but is not success by itself. Detach installs a master-owned phase
 latch and an absolute five-second monotonic deadline. Receipt of
-owner-stopped, any ordinary event-queue drain, and each 0.5-second maintenance
-pass perform only nonblocking `Thread.is_alive()` checks. The first check that
-observes false before the latch settles completes detach successfully. When
-the deadline callback runs, it performs one final `is_alive()` check: false
-succeeds; true installs the timeout outcome. The first transition at the
+owner-stopped, owner execution completion, and any ordinary event-queue drain
+perform only nonblocking completion-Future checks. The first check that
+observes completion before the latch settles completes detach successfully.
+The deadline callback performs one final completion check: done succeeds;
+pending installs the timeout outcome. The first transition at the
 master serial point completes the detach future exactly once; later wakes,
 checks, and deadline callbacks are no-ops. The master never calls `join()` on
 its event-loop thread. On success it removes the registry entry, drops parent
-queue/thread references, updates the aggregate resource, and forgets the
+queue/completion references, updates the aggregate resource, and forgets the
 fingerprint. The process-owned event queue remains live for other
 children. The returned detached record retains the last bound member id. A
 missing workspace is a successful idempotent no-op.
@@ -1223,11 +1228,14 @@ timestamp or value that changes merely because it was read. A resource read
 returns the process reactor's latest completed aggregate text. It performs
 no database operation and does not wait on a busy child. A healthy child
 publishes a baseline before attachment succeeds, then publishes after every
-command. Native wakes and the 0.5-second polling backstop recompute locally
-but enqueue a snapshot event only when canonical snapshot/status content
-differs from the child's last published value. Thus a read after an update
-hint includes that change; without a hint, an external change may take up to
-the backstop plus one in-progress synchronous command to appear.
+command except non-mutating `channel_show`. Cursor-qualified notification and
+cache-stale source rows schedule a paced snapshot, with at most one
+source-driven snapshot per 0.5-second interval. Quiet backend returns cause no
+snapshot. Normal Taut peer claims publish a cache-stale hint after their atomic
+claim. A crash before that hint, a raw broker claim or a mixed-version caller
+can leave this advisory cache stale on either backend until a new source row
+or refreshing local command schedules another snapshot. There is no time bound
+for that exceptional gap and no application-owned freshness poll.
 
 A resource read is observational. It does not claim or delete a notification
 pointer, advance any cursor, attach or detach a workspace, create or heal
@@ -1241,7 +1249,9 @@ The resource reports notification pointers only. It is not an unread-thread
 inventory or a full chat-activity feed, and it does not reproduce the CLI
 `watch` command's consuming live-follow behavior.
 
-The resource is a view, not a claim or lease. An agent that wants one-time
+The resource is a view, not a claim or lease. Agent-facing instructions name
+the raw-caller, mixed-version and commit-to-hint gap on both backends and state
+that no freshness timer repairs it. An agent that wants one-time
 handling calls `inbox` with the entry's workspace and its existing token, then
 handles only the notification records returned by that consuming call. It
 does not act from an older resource snapshot after `inbox` returns empty or
@@ -1262,7 +1272,7 @@ opens or uses a Taut database or broker queue.
 
 Each resident workspace has one child reactor on one dedicated thread. The
 child owns its configured `TautClient`, broker queues, token, member binding,
-command execution, and peek-only notification snapshot. It may reuse
+command execution, and peek-only notification snapshot. It reuses
 `BaseReactor`, but it must not reuse `TautWatcher` notification mode unchanged
 because that mode reads and claims pointers. The only cross-thread messages
 are immutable command requests, command results, snapshot/status events, and
@@ -1270,6 +1280,63 @@ stop/wake requests. Their payloads pass only through the declared in-memory
 `queue.Queue` channels. Those channels are the intentional thread-safe bridge;
 no `TautClient`, SimpleBroker queue, database handle, mutable snapshot, or
 child registry object crosses the owner boundary.
+
+Under [TAUT-8.5], the hierarchy repeats the same reactor shape because the
+process manages multiple contexts. Each workspace is a `BaseReactor` subclass
+over the shared exact copy of Weft's `MultiQueueWatcher`. Its fixed broker sources are
+the member notification queue and `taut.cache_stale`, observed as cursor-aware
+PEEK inputs. Its local command queue publishes state and then calls the inherited
+notification seam; it is not a peer Event wait. The process owner may retain
+only that bound notification callback after constructing the inert strategy and
+common stop token; the workspace thread owns strategy startup, waiting and
+cleanup. MCP constructs this inert strategy with SimpleBroker defaults. Its
+scheduling does not interpret per-workspace polling overrides; the previous
+fixed-interval implementation did not support those overrides either. Broker
+target and client configuration still use the resolved workspace snapshot.
+The broker-free process owner uses the asyncio host loop as its arbiter and consumes workspace event streams.
+Higher levels do not introduce independent context watchers or inspect child
+broker/domain state.
+
+A notification or cache-stale source row marks snapshot work pending. The paced
+`peek_inbox` snapshot confirms domain state; source cursors confirm broker
+readiness without consuming notification pointers or leaving retained rows
+permanently ready. The owner records pending snapshot state before advancing the
+source cursor and does not clear it until the snapshot succeeds. The workspace
+does not rebuild its waiter or add a parallel
+wait to defend against an always-ready test double. A pacing deadline represents
+the timed emission itself and exists only while a snapshot is pending. Source
+rows and local wakes carry no domain authority; `peek_inbox()` remains
+authoritative. Local command completion preserves the current synchronous
+refresh or marks a snapshot pending before the next wait.
+
+A normal Taut notification claim commits atomically and then writes the generic
+cache-stale hint. Another workspace sharing that member identity refreshes on
+the hint. Atomic claim prevents duplicate consumption, and one-time handling
+uses only records returned by `inbox`. A crash between claim and hint, a raw
+SimpleBroker claim or a mixed-version caller can leave a cached pointer visible
+on either SQLite or PostgreSQL until a new notification/cache-stale row or a
+refreshing local command schedules the snapshot. A changed SQLite data version
+with no row after either source cursor does not schedule a snapshot. There is
+no unconditional workspace snapshot deadline.
+
+A workspace publishes an immutable event to the parent queue before requesting
+an immediate owner-loop drain. Executor completion requests the same drain
+before reaping the returned owner, including quiet return without a terminal
+event. No permanent parent maintenance clock is installed.
+
+Phase, pacing, recovery and retirement deadlines remain explicit obligations,
+routed through the responsible owner. Preserve queued publication, generation
+admission and actual retirement.
+
+Before the broker reactor exists, the same dedicated child performs two finite
+admission handoffs on its existing command queue: receive `Bootstrap`, resolve
+the workspace and publish its identity, then receive `GrantValidation` or stop.
+These blocking `Queue.get()` handoffs perform no timed polling. The child opens
+its client and constructs the fixed-source `BaseReactor` only after the grant;
+the process owner performs no filesystem or broker work. Commands published
+before reactor startup remain queued, with their local notification latched.
+The same child then enters the shared reactor lifecycle, with no second loop.
+
 Every cross-thread message carries an internal owner generation; command
 requests and outcomes also carry an internal command id recorded in the
 parent admission slot. The process reactor accepts a child event only when
@@ -1285,26 +1352,24 @@ events are ignored so a
 late child cannot repopulate a detached or reattached workspace. Generations
 are never exposed through MCP.
 
-Child threads put immutable events onto the process-owned event queue and
-then call the captured process event loop's `call_soon_threadsafe` with one
-fixed drain callback. That callback is only a readiness wake: it carries no
-child payload and mutates no child state. On the master thread it repeatedly
-calls `get_nowait` until `queue.Empty`, applies each event at the master serial
-point, and resolves the matching master-owned `asyncio.Future` for attach,
-detach, or command handlers. Redundant scheduled callbacks are harmless and
-find the queue empty. The loop handle is captured from the running MCP master
-loop during era-neutral lifespan startup, before any child is started. If
-`call_soon_threadsafe` fails before teardown, the already-enqueued event is
-retained and the 0.5-second maintenance drain is the required recovery path;
-after teardown the failure may be ignored. A missing or wrong running-loop
-handle is a tested process-reactor invariant failure, not a per-workspace
-fallback behavior.
+Child threads publish immutable events to the process-owned queue before they
+request an immediate drain with `call_soon_threadsafe`. The master callback
+drains with `get_nowait` through `queue.Empty`, applying events and settling
+master-owned futures. Redundant callbacks are harmless. The running-loop handle
+is captured during lifespan startup before child start. While it is live this
+callback is the prompt notification path. A `RuntimeError` means the loop is
+closed and may be ignored only during teardown; maintenance on that loop is
+not a recovery path. A missing or wrong loop remains a fatal process invariant.
+Executor completion requests the same drain-before-reap callback. Ensure and
+detach admission also use that path. A queued identity-loss event takes
+precedence over generic owner-return classification, even when the callable
+has returned before the request arrives. A terminal envelope alone is not
+proof of execution completion.
 
 The master thread alone drains and applies events.
 The master puts commands/control messages onto only the selected child's
 inbound queue and then signals that child. The only additional cross-thread
-action is a payload-free readiness wake such as the child's `threading.Event`
-or `BaseReactor` wake; the child obtains every command/stop/control payload by
+action is a payload-free readiness wake through the retained strategy's `notify_activity` callback; the child obtains every command/stop/control payload by
 draining its inbound queue, never from the wake. These are ordinary unbounded
 `queue.Queue(maxsize=0)` instances and every producer uses `put_nowait`; queue
 capacity is not a user setting. No producer blocks waiting on `Queue.put`:
@@ -1328,14 +1393,19 @@ itself unable to drain remains a process-local memory residual and a
 process-reactor failure, not a reason to block a child `put_nowait`.
 
 A child catches top-level reactor failure and sends one content-free terminal
-event in `finally`. Independently, the process loop schedules a fixed
-0.5-second master maintenance callback with `call_later`; it invokes the same
-nonblocking event-queue drain, then checks candidate deadlines and
-`Thread.is_alive()` for every resolving, validating, retiring, ready,
-detaching, identity-lost, and reactor-failed owner thread, performs no
-filesystem/database work, and reschedules
-itself until teardown. This is the fallback if an event wake or terminal
-event fails. A current-generation failure event or unexpected
+event in `finally`. The process uses one standard `ThreadPoolExecutor`, capped
+at eight workers, independently of the host's default executor. Each admitted
+workspace occupies one worker until its callable returns after resource cleanup.
+The executor's completion Future then requests the same nonblocking event drain;
+there is no periodic parent maintenance callback or retirement sampler. The
+Future remains uncancelled when transport requests are cancelled, including
+work queued before execution begins. Resource retirement belongs to callable
+completion; physical pool-thread reuse and termination belong to the executor.
+Whole-process shutdown awaits only these owner completions under its single
+10-second deadline, then releases the executor. It neither waits for unrelated
+host executor jobs nor creates helper threads to join owners.
+
+A current-generation failure event or unexpected
 owner exit from `ready` installs the appropriate degraded state and settles
 any occupied command id under [MCP-5]. An expected exit from `detaching`
 completes detach; a candidate exit completes its current resolution/
@@ -1348,7 +1418,7 @@ command/generation are coalesced or ignored.
 When [TAUT-13] capture is enabled, every workspace-reactor path that converts an
 unexpected `Exception` into `WorkspaceCrashed` first calls the core capture
 handler with that resident owner's frozen `BrokerTarget` and `Config`.
-Stable phase labels distinguish command execution, command refresh, periodic
+Stable phase labels distinguish command execution, command refresh, source-driven
 snapshot, and outer reactor-loop failure. Resolution failures before both
 values exist are not captured. Capture never adds exception content to the
 terminal event and never changes cleanup or parent wake ordering.
@@ -1372,7 +1442,7 @@ snapshot. The process reactor
 atomically replaces the matching generation reservation with the ready entry,
 installs its fingerprint, and recomputes the aggregate. Detach atomically
 marks the entry `detaching` and non-routable
-before requesting stop, then removes it only after observed owner-thread exit;
+before requesting stop, then removes it only after observed owner execution completion;
 a
 timeout installs `reactor_failed` and retires that generation under [MCP-4].
 Child events and attachment changes recompute aggregate text on the master
@@ -1387,13 +1457,12 @@ defined above; from `detaching` it is a wake and the detach latch remains the
 sole phase owner. The final owner-stopped wake remains admissible. Stale notification content can never repopulate
 a `detaching`, `identity_lost`, or `reactor_failed` entry.
 
-A healthy child handles native/database wakes and a 0.5-second polling
-backstop. Its snapshot operation is the `TautClient.peek_inbox()` core
-addition specified by the promoted [TAUT-8.3] amendment: it claims no pointer,
-advances no chat or notification cursor, creates or heals no identity,
-records no acknowledgement, touches no member activity, and changes no member
-anchor or fingerprint. The repeated backstop therefore cannot keep a
-resident identity's activity timestamp artificially current. If this peek
+A healthy child confirms cursor-qualified source rows through the shared
+watcher and schedules a paced `TautClient.peek_inbox()` snapshot. It claims no
+pointer, advances no durable chat or notification cursor, creates or heals no
+identity, records no acknowledgement, touches no member activity, and changes
+no member anchor or fingerprint. Its source cursors are in-memory readiness
+bookmarks only. If this peek
 reports the promoted core API's missing-member identity
 error, the child emits the same atomic `identity_lost` status and empty
 snapshot used for command-discovered loss. After every completed MCP command
@@ -1439,7 +1508,7 @@ a modern client reopens its listen request, just as a legacy client
 resubscribes; no subscription is durable.
 
 The database remains authoritative; the aggregate is the latest completed
-observation under [MCP-7]'s explicit freshness bound. Dropped, duplicated,
+observation under [MCP-7]'s event-driven freshness contract. Dropped, duplicated,
 delayed, or unsupported edge hints do not change tool correctness. Foreign
 threads may only send the declared messages. Child and process shutdown
 are idempotent and use [MCP-3]/[MCP-4] bounds.
@@ -1524,8 +1593,8 @@ These instructions are advisory. The server cannot determine whether the
 agent followed them, create a model callback itself, or require an MCP client
 to start a model turn when a resource update arrives. A periodic fallback
 that itself causes an agent/model turn must run no more frequently than once
-per minute. The 0.5-second internal reactor backstop does not start model
-turns and is a separate mechanism. Tests assert the instruction text and
+per minute. Internal snapshot pacing and process completion callbacks do
+not start model turns and are separate mechanisms. Tests assert the instruction text and
 server behavior, not agent compliance.
 
 An opt-in `--claude-channel` mode declares the experimental
@@ -1650,7 +1719,10 @@ for its canonical path may start while that failed entry remains. Once
 `identity_lost` is installed, a later child terminal event or owner-thread
 exit does not upgrade it to `reactor_failed`; it may settle an occupied
 command id under [MCP-5] but otherwise leaves the recovery instruction and
-public status unchanged until detach.
+public status unchanged until detach. After publishing identity loss, the child
+requests ordinary reactor stop, closes its owned handles and exits. It does not
+retain an idle Event loop or continue backend observation. The parent tombstone
+and any occupied command outcome survive that physical retirement.
 An eligible uncaught child `Exception` is offered to [TAUT-13] before its
 content-free crash conversion. Capture failure is ignored. Identity loss,
 ordinary tool/domain errors, request cancellation, pre-resolution attachment
@@ -1714,7 +1786,7 @@ the commit result, so callers must not blind-retry. Retrying
 any interrupted consuming or mutating operation without inspecting state can
 duplicate or skip allowed work and is a client error. A canceled attachment
 whose non-awaiting resolution-dispatch sequence has not started removes its
-reservation and has no child thread; after successful candidate thread start,
+reservation and has no child thread; after successful candidate executor submission,
 resolution and any granted validation run to their ordinary
 outcome or separate [MCP-4] deadlines. They may remove the reservation,
 publish a ready entry, publish a failed canonical tombstone, or retain a
@@ -1741,7 +1813,7 @@ ready-publication event is ignored even if its grant was issued earlier. The
 still-hidden generation is never promoted: it transitions to stop/retiring
 cleanup and remains in the process join set. The server may return a fixed process-unavailable error only
 while its transport remains writable; EOF or broken transport drops pending
-outcomes. Exit 0 requires every owner thread to join and close within the
+outcomes. Exit 0 requires every owner callable to close and return within the
 10-second process deadline. The hard-exit path may interrupt committed work
 before its final snapshot reaches the parent, so the operation and aggregate
 cache are both non-authoritative after restart; callers inspect database
@@ -2049,7 +2121,7 @@ Required proof includes:
 - hidden candidate cap/reservation behavior; progress by commands and
   lifecycle work for other workspaces while resolution or validation is
   blocked; a separate 10-second stalled-resolution result, fixed list warning,
-  transition into the same retiring maintenance/join/reap state, cap-seat
+  transition into the same retiring completion/reap state, cap-seat
   retention, no database open, and automatic reap after delayed
   thread exit; a separate 10-second stalled-validation tombstone and
   retry-detach recovery; and proof that ordinary pre- or post-grant failure
@@ -2079,7 +2151,7 @@ Required proof includes:
   one cleanup interval/list/restart recovery; and distinct independently
   advanced `candidate_cleanup_deadline` and `detach_join_deadline` latches
 - detach exit observation on owner-stopped wake, ordinary queue drain,
-  maintenance pass, and final deadline check; `Thread.is_alive()` false/true
+  completion callback, and final deadline check; completion pending/done
   cases; no master-thread `join`; one phase winner/future completion; and
   deterministic fake-monotonic proof that the deadline callback makes the
   final nonblocking check rather than a flaky wall-clock slop assertion
@@ -2099,15 +2171,14 @@ Required proof includes:
   block MCP framing, lifecycle work, or another child
 - real unbounded `queue.Queue` command/control and shared child-event channels;
   event-before-wake ordering; a payload-free `call_soon_threadsafe` callback;
-  payload-free child `Event`/reactor wakes after inbound queue puts;
+  payload-free retained-strategy notification after inbound queue puts;
   master `get_nowait` drain through `queue.Empty`; master-owned future
   resolution; harmless redundant wakes; loop-closed suppression only during
-  teardown; and a 0.5-second master queue-drain/liveness/deadline audit that
-  detects a missed event wake and checks every candidate/published owner
-  without touching filesystems or databases
-- captured-running-loop setup before child start; forced pre-teardown
-  `call_soon_threadsafe` failure with maintenance-only event delivery before
-  the applicable phase deadline; and wrong-loop capture as a fatal tested
+  teardown; and executor completion draining events before reaping each
+  candidate/published owner, without periodic liveness sampling or touching
+  filesystems or databases
+- captured-running-loop setup before child start; prompt live-loop drain,
+  loop-closed suppression during teardown, and completion drain-before-reap; and wrong-loop capture as a fatal tested
   process-reactor invariant
 - aggregate resource snapshots for zero, one, and multiple workspaces;
   canonical path sorting; mixed ready/identity-lost/reactor-failed status;
@@ -2116,7 +2187,8 @@ Required proof includes:
   workspace entry; resource reads consume nothing; and one-time handling uses
   only records claimed by the matching workspace/token `inbox`
 - cached-resource freshness after attachment, detach, commands, native wake,
-  external consumption, and the 0.5-second backstop, with direct state proof
+  normal Taut peer claims through cache-stale publication on both backends,
+  with direct state proof
   that resource reads cause no pointer, cursor, identity, activity,
   acknowledgement, attachment, or edge-tracker mutation, and elapsed-time
   proof that repeated child peeks do not change activity, member anchors, or
@@ -2127,8 +2199,12 @@ Required proof includes:
   status with `reactor_failed`
 - native-wake burst pacing at no more than one native-only snapshot event per
   child per 0.5-second interval, while command completions and terminal events
-  remain immediate and the latest level state appears within the freshness
-  bound
+  remain immediate and pending state survives pacing until successful snapshot
+- no snapshot on quiet backend returns or a SQLite data-version change without
+  a cursor-qualified source row; raw/mixed-version and commit-to-hint claim gaps
+  on both backends remain stale until a source row or refreshing command;
+  pre-start commands remain queued and notified across the two finite admission
+  handoffs without broker access before validation grant
 - subscribed aggregate updates on child and resident-owner changes, coalesced
   duplicate child events, legacy update-on-subscribe after an unsubscribed
   change, duplicate-subscribe idempotence, unmatched-unsubscribe no-op,
@@ -2158,8 +2234,11 @@ Required proof includes:
   flag, leaks the admission slot, or completes the command id twice
 - cancellation before the non-awaiting resolution-dispatch sequence leaves no
   started thread, queue reference, reservation, digest, or token reference;
-  queue setup/`Thread.start` failure rolls all of them back; cancellation after
-  successful start leaves the phase owner and deadline intact
+  queue setup/executor submission failure removes the reservation and secrets;
+  actual native thread-start failure leaves an unadmitted callable with only
+  Stop, whether still queued or already claimed by an existing worker, never
+  filesystem/client authority; a later attachment succeeds; cancellation after
+  successful submission/publication leaves the phase owner and deadline intact
 - a candidate crash before emitting an ordinary resolution/validation outcome
   returns fixed `workspace attachment failed; use list_workspaces before
   retrying`, enters retiring, and is reaped
@@ -2248,6 +2327,17 @@ wheel to register its `mcp` manifest.
 | [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, `extensions/taut_mcp/tests/test_stdio_server.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
 
 ## Related Plans
+
+- `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
+  each workspace as a thin `BaseReactor` subclass over the copied Weft scheduler.
+  Notification and `taut.cache_stale` queues are cursor-aware PEEK sources;
+  frontend commands publish to the same local latch; paced snapshots confirm
+  domain state. SQLite `data_version` triggers cursor-aware source confirmation;
+  own commands explicitly refresh. The observational backstop is removed on both
+  backends. Normal Taut claims emit the generic cache-stale hint; missing hints,
+  raw claims and mixed-version callers can leave either backend's cache stale
+  until an explicit refresh trigger. Atomic claim still prevents duplicate delivery. `_wake_master()`
+  remains immediate child-to-parent event notification; parent retirement reuses executor completion; there is no maintenance timer.
 
 - `docs/plans/2026-09-15-broker-session-integration-plan.md` — binds resident
   workspace BrokerSession cleanup to each workspace owner.

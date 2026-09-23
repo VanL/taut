@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-09-19-reactor-restoration-plan.md` | completed | no | Class 5 reactor restoration and cruft audit; core, Summon, MCP, and TUI changes reviewed and locally verified. Native Windows/Linux qualification remains an explicit platform limit. |
 | `2026-09-16-windows-lifecycle-determinism-plan.md` | active | no | Class 4 correction of Windows lifecycle/test boundaries; S1-S3 and S5 implemented, native S2/S5 qualification passed, and final review found no new code blocker. S4 DM-navigation cause remains unresolved and blocks closure/release. |
 | `2026-09-16-coordinated-0-9-8-preparation-plan.md` | completed | no | Class 5+P coordinated 0.9.8 preparation: synchronized metadata, dependency-floor reconciliation, release-gate isolation, PG lifecycle-test alignment, final checks, artifact build, and independent review passed. |
 | `2026-09-15-reactor-worker-cache-compatibility-plan.md` | completed | no | Owner-thread cache retirement repaired; real peer proof on 8.2.2 and 8.3.0, Summon consumers verified, independent review passed. Publication remains separate. |

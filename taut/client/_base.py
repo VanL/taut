@@ -19,9 +19,11 @@ from simplebroker import (
 )
 
 from taut import addressing, identity
+from taut._cache_stale import publish_cache_stale
 from taut._cleanup import capture_cleanup_failure
 from taut._config import load_config
 from taut._constants import (
+    CACHE_STALE_QUEUE_NAME,
     MEMBER_ID_RE,
     META_QUEUE_NAME,
     NO_DATABASE_MESSAGE,
@@ -158,6 +160,9 @@ class _ClientBase(ABC):
     _transient_meta_queue: Queue | None
     _reaction_values: tuple[str, ...]
     _state: TautState
+
+    def _publish_cache_stale(self, reason: str) -> None:
+        publish_cache_stale(lambda: self.queue(CACHE_STALE_QUEUE_NAME), reason=reason)
 
     def __init__(
         self,

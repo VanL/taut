@@ -134,13 +134,16 @@ class AdapterHandle(Protocol):
     def attach(
         self,
         *,
-        wake: threading.Event,
         shutdown: threading.Event,
         input_fd: int = 0,
         output_fd: int = 1,
         detach_chord: bytes = b"\x1c\x1c",
     ) -> str:
-        """Bridge a human terminal when supported, else raise AdapterError."""
+        """Bridge a human terminal when supported, else raise AdapterError.
+
+        Shutdown is the cancellation input. The bridge observes it between
+        native waits; there is no separate wake event.
+        """
         ...
 
 

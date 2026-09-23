@@ -37,6 +37,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "NotFoundError",
     "Notification",
     "PersistenceComponentReport",
+    "ReactionConfigurationError",
     "SchemaVersionError",
     "SearchHit",
     "WatcherRejected",

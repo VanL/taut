@@ -63,7 +63,11 @@ def test_persistent_reactor_recycles_and_closes_postgres_session(
 
     assert not thread.is_alive()
     assert len(recycle_calls) == 1
-    assert close_calls == recycle_calls
+    assert len(close_calls) == 1
+    assert close_calls[0][0] is recycle_calls[0][0]
+    # The copied inventory recycles construction state before handoff. Its
+    # owner-thread session.close then recycles internally and retires leases.
+    assert recycle_calls[0][1] == threading.get_ident()
     assert close_calls[0][1] == thread.ident
     assert peer.join("survives").thread == "survives"
     peer.close()

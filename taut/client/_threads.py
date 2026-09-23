@@ -125,6 +125,7 @@ class ThreadsMixin(_ClientBase):
             last_seen_ts=ts,
             expected_thread_created_ts=current_thread["created_ts"],
         )
+        self._publish_cache_stale("membership")
         if persona is not None:
             updated = self._state.update_member_persona(member["member_id"], persona)
             if updated is not None:
@@ -160,6 +161,7 @@ class ThreadsMixin(_ClientBase):
             raise MembershipError(
                 f"{member['display_name']} is not a member of {thread}"
             )
+        self._publish_cache_stale("membership")
         queue = self.queue(thread)
         return self._write_message(
             queue=queue,
@@ -279,6 +281,7 @@ class ThreadsMixin(_ClientBase):
             affected=affected,
             updated_ts=updated_ts,
         )
+        self._publish_cache_stale("membership")
         renamed = self._state.get_thread(new_name)
         if renamed is None:
             raise RuntimeError("renamed channel could not be read back")
@@ -332,6 +335,7 @@ class ThreadsMixin(_ClientBase):
             affected=affected,
             updated_ts=updated_ts,
         )
+        self._publish_cache_stale("membership")
         renamed = self._state.get_thread(marker["new_name"])
         if renamed is None:
             raise RuntimeError("renamed channel could not be read back")

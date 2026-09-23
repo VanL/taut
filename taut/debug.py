@@ -350,26 +350,23 @@ def _write_local(
 
 
 def _send_to_action(payload: str) -> None:
-    try:
-        argv = shlex.split(os.environ[DEBUG_ACTION_ENV], posix=True)
-        if not argv:
-            return
-        env = os.environ.copy()
-        env[DEBUG_ACTION_ACTIVE_ENV] = "1"
-        subprocess.run(
-            argv,
-            input=payload + "\n",
-            text=True,
-            encoding="utf-8",
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            timeout=_ACTION_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    argv = shlex.split(os.environ[DEBUG_ACTION_ENV], posix=True)
+    if not argv:
         return
+    env = os.environ.copy()
+    env[DEBUG_ACTION_ACTIVE_ENV] = "1"
+    subprocess.run(
+        argv,
+        input=payload + "\n",
+        text=True,
+        encoding="utf-8",
+        shell=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        timeout=_ACTION_TIMEOUT_SECONDS,
+        check=False,
+    )
 
 
 __all__ = ["DEBUG_QUEUE_NAME", "capture_exception"]

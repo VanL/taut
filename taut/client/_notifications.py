@@ -60,6 +60,8 @@ class NotificationsMixin(_ClientBase):
         queue = self.queue(addressing.notification_queue_name(member["member_id"]))
         read = queue.read_many if consume else queue.peek_many
         rows = read(limit, with_timestamps=True)
+        if consume and rows:
+            self._publish_cache_stale("notification_claim")
         return [notification_from_body(body, ts) for body, ts in rows]
 
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None:

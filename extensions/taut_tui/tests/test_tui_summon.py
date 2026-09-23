@@ -676,6 +676,59 @@ def test_host_shutdown_requests_the_run_stop_before_refusing(
     assert late.is_set()
 
 
+def test_successful_confirmation_leaves_no_cancel_thread() -> None:
+    """A normal answer must not retain a cancellation waiter."""
+
+    import threading
+
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.summon import TerminalAttachConfirmationRequest, TuiSummonInteraction
+
+    def cancel_threads() -> list[threading.Thread]:
+        return [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "taut-tui-attach-cancel" and thread.is_alive()
+        ]
+
+    def notice() -> TerminalAttachNotice:
+        return TerminalAttachNotice(
+            member="kimi",
+            provider="kimi",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+
+    before = len(cancel_threads())
+    for _ in range(5):
+        request = TerminalAttachConfirmationRequest(notice())
+        entered = Event()
+        real_wait = request.resolved.wait
+
+        def wait(
+            timeout: float | None = None,
+            *,
+            real_wait: Callable[..., bool] = real_wait,
+            entered: Event = entered,
+        ) -> bool:
+            entered.set()
+            return bool(real_wait(timeout))
+
+        request.resolved.wait = wait  # type: ignore[method-assign]
+
+        def answer(
+            request: TerminalAttachConfirmationRequest = request,
+            entered: Event = entered,
+        ) -> None:
+            assert entered.wait(2)
+            request.resolve(True)
+
+        Thread(target=answer, daemon=True).start()
+        TuiSummonInteraction._wait_for_confirmation(request, Event())
+        assert request.decision is True
+    assert len(cancel_threads()) == before
+
+
 def test_foreground_return_releases_confirmed_prelease_reservation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2000,7 +2053,29 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
 
     import asyncio
 
+    # Flushed input does not imply that the child has processed it. Hold the
+    # orientation completion until the real PTY pump retires, making this
+    # explicitly the pre-readiness death case instead of racing two workers.
+    from taut_summon._driver import SummonDriver
+
     from taut_tui.screens import ConfirmationScreen
+
+    original_start = SummonDriver._start_phase_operation
+
+    def start_after_exit(self: Any, name: str, operation: Any) -> None:
+        if name == "orientation":
+            original_operation = operation
+            pump = self._owner_running.pump
+
+            def operation() -> Any:
+                value = original_operation()
+                pump.join(15)
+                assert not pump.is_alive(), "real PTY pump did not retire"
+                return value
+
+        original_start(self, name, operation)
+
+    monkeypatch.setattr(SummonDriver, "_start_phase_operation", start_after_exit)
 
     monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1")
     terminal = HostTerminal.open()

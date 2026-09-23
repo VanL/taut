@@ -548,7 +548,6 @@ class _AttachSession:
         self,
         owner: WindowsPtyHandle,
         *,
-        wake: threading.Event,
         shutdown: threading.Event,
         input_fd: int,
         output_fd: int,
@@ -556,7 +555,6 @@ class _AttachSession:
     ) -> None:
         self.owner = owner
         self.api = owner._api
-        self.wake = wake
         self.shutdown = shutdown
         self.input_handle = self.api.duplicate_fd_handle(input_fd)
         try:
@@ -642,8 +640,6 @@ class _AttachSession:
         while True:
             if self.shutdown.is_set():
                 return "shutdown"
-            if self.wake.is_set():
-                self.wake.clear()
             try:
                 item = self.chunks.get(timeout=0.05)
             except queue.Empty:
@@ -895,7 +891,6 @@ class WindowsPtyHandle:
     def attach(
         self,
         *,
-        wake: threading.Event,
         shutdown: threading.Event,
         input_fd: int = 0,
         output_fd: int = 1,
@@ -903,7 +898,6 @@ class WindowsPtyHandle:
     ) -> str:
         return _AttachSession(
             self,
-            wake=wake,
             shutdown=shutdown,
             input_fd=input_fd,
             output_fd=output_fd,

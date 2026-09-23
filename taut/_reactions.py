@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from taut._constants import REACTION_SLUG_RE
-from taut._exceptions import TautError
+from taut._exceptions import ReactionConfigurationError
 
 _PACKAGED_CONFIG_ERROR: Final[str] = "reaction configuration is unavailable"
 _PROJECT_CONFIG_ERROR: Final[str] = (
@@ -45,7 +45,7 @@ def load_reaction_values(config_path: Path | None) -> tuple[str, ...]:
         ValueError,
         tomllib.TOMLDecodeError,
     ):
-        raise TautError(_PROJECT_CONFIG_ERROR) from None
+        raise ReactionConfigurationError(_PROJECT_CONFIG_ERROR) from None
 
 
 def _load_packaged_values() -> tuple[str, ...]:
@@ -64,7 +64,7 @@ def _load_packaged_values() -> tuple[str, ...]:
         ValueError,
         tomllib.TOMLDecodeError,
     ):
-        raise TautError(_PACKAGED_CONFIG_ERROR) from None
+        raise ReactionConfigurationError(_PACKAGED_CONFIG_ERROR) from None
 
 
 def _validate_values(value: object) -> tuple[str, ...]:

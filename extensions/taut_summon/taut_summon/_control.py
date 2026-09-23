@@ -3,13 +3,12 @@
 Congruent with Weft's task control-queue contract (``command``/``request_id``
 JSON subset; verbs STOP / STATUS / PING). Two roles live here:
 
-- **Driver side** (:class:`ControlLoop`): a reactor-owned consumer lane that
+- **Driver side** (:class:`ControlPolicy`): a reactor-owned consumer lane that
   reads ``sys.ctl_<member-id>`` with the public ``simplebroker`` queue surface,
   dispatches the verbs, and replies on the requester's
   **per-request** queue ``sys.rsp_<member-id>_<request_id>`` (see below).
   ``TautClient.watch`` is chat-only and knows nothing about ``sys.*``
-  ([SUM-9]). The same thread runs the [SUM-10] rate backstop audit on its
-  cadence, because the watch stream is not a complete source for the member's
+  ([SUM-9]). The owner runs the [SUM-10] rate audit when its reactor deadline is due, because the watch stream is not a complete source for the member's
   own sends ([TAUT-7.4]).
 - **Client side** (:class:`ControlClient`): what ``taut-summon stop`` and
   ``taut-summon status`` use to write a request and await its reply. Each
@@ -34,15 +33,14 @@ import json
 import logging
 import os
 import secrets
-import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
-from simplebroker import Config, Queue
-from simplebroker.ext import BrokerError, StopWatching
+from simplebroker import Queue
+from simplebroker.ext import BrokerError
 
 from taut import TautClient, TautError
 from taut.envelope import decode_envelope
@@ -50,6 +48,7 @@ from taut.watcher import (
     BaseReactor,
     QueueMessageContext,
     QueueMode,
+    TautWatcher,
 )
 from taut_summon._adapter import AdapterError, AdapterHandle
 
@@ -63,12 +62,8 @@ _KNOWN_COMMANDS = frozenset({CONTROL_STOP, CONTROL_STATUS, CONTROL_PING})
 
 _DEFAULT_RATE_LIMIT = 60
 _RATE_WINDOW_SECONDS = 60.0
-_STOP_ACK_TIMEOUT_SECONDS = 60.0
 _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
 _IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
-_RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
-_CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
-_CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
 _STATUS_RESERVED_KEYS = frozenset(
     {
         "command",
@@ -80,23 +75,13 @@ _STATUS_RESERVED_KEYS = frozenset(
         "provider",
         "thread_count",
         "cursor_lag",
-        "control_health",
-        "health_detail",
     }
 )
 _CONTROL_FAULT_PLANE_ATTR = "_taut_summon_control_fault_plane"
 
 
-def _tag_control_fault(exc: Exception, plane: str) -> Exception:
-    try:
-        setattr(exc, _CONTROL_FAULT_PLANE_ATTR, plane)
-    except Exception:  # pragma: no cover - unusual immutable exception object
-        logger.debug("could not tag control fault plane", exc_info=True)
-    return exc
-
-
-def _is_broker_surface_failure(exc: Exception) -> bool:
-    return isinstance(exc, (BrokerError, OSError))
+def _tag_control_fault(exc: Exception, plane: str) -> None:
+    setattr(exc, _CONTROL_FAULT_PLANE_ATTR, plane)
 
 
 # --- queue derivation (beside taut.addressing's shapes) -----------------------
@@ -217,7 +202,7 @@ def encode_control_reply(
     return json.dumps(payload, separators=(",", ":"))
 
 
-# --- driver-side control loop -------------------------------------------------
+# --- driver-side control policy -------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,8 +212,6 @@ class StatusSnapshot:
     provider: str
     thread_count: int
     cursor_lag: dict[str, int]
-    control_health: str
-    health_detail: str | None
     rate_limited: bool
     rate_breaches: int
 
@@ -240,10 +223,7 @@ class StatusSnapshot:
             "provider": self.provider,
             "thread_count": self.thread_count,
             "cursor_lag": self.cursor_lag,
-            "control_health": self.control_health,
         }
-        if self.health_detail is not None:
-            fields["health_detail"] = self.health_detail
         return fields
 
 
@@ -270,593 +250,145 @@ class StopShutdownOutcome:
         return None
 
 
-@dataclass(frozen=True)
-class _BrokerHandles:
-    client: TautClient
-    ctl_in: Queue
-    ctl_out: Queue
-    ledger: Queue
-    thread_queues: dict[str, Queue]
-    control_reactor: _ControlReactor | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _PendingControlFault:
-    """A control-owner fault that may only be resolved between turns."""
-
-    where: str
-    primary: Exception
-    recoverable: bool
-
-
-class _ControlReactor(BaseReactor):
-    """BaseTask-shaped control reactor for one summon control queue."""
-
-    def __init__(
-        self,
-        owner: ControlLoop,
-        *,
-        db: Any,
-        config: Config,
-    ) -> None:
-        self._owner = owner
-        self._queue_name = control_in_queue_name(owner._member_id)
-        self._protected_aux_queues = frozenset(
-            {
-                self._queue_name,
-                control_out_queue_name(owner._member_id),
-                owner._ledger_queue_name,
-            }
-        )
-        super().__init__(
-            {
-                self._queue_name: {
-                    "handler": self._handle_control_message,
-                    "mode": QueueMode.READ,
-                    "error_handler": self._handle_control_error,
-                }
-            },
-            db=db,
-            stop_event=threading.Event(),
-            persistent=True,
-            inactive_probe_interval=owner._interval,
-            config=config,
-        )
-        self._queue(self._queue_name)
-
-    def retire_auxiliary_queue(self, queue_name: str) -> None:
-        """Close one owner-thread audit handle without changing topology.
-
-        Control and configured watcher queues belong to the reactor lifecycle;
-        only auxiliary audit handles may be retired independently ([SUM-10]).
-        """
-
-        if queue_name in self._protected_aux_queues or queue_name in self._queues:
-            raise ValueError(f"cannot retire protected reactor queue: {queue_name}")
-        queue = self._queue_cache.pop(queue_name, None)
-        if queue is not None:
-            queue.close()
-
-    def _handle_control_message(
-        self, body: str, timestamp: int, context: QueueMessageContext
-    ) -> None:
-        self._owner._handle_control_message(body, timestamp, context)
-
-    def _handle_control_error(
-        self, exc: Exception, _message: str, _timestamp: int
-    ) -> bool | None:
-        return self._owner._handle_control_error(exc, _message, _timestamp)
-
-    def _drain_queue(self) -> None:
-        if self._owner._pending_stop_seen:
-            return
-        before_failures = self._owner._control_drain_recoverable_failures
-        super()._drain_queue()
-        if (
-            self._owner._control_drain_recoverable_failures == before_failures
-            and not self._owner._pending_stop_seen
-        ):
-            self._owner._control_drain_recoverable_failures = 0
-
-
-class ControlLoop:
-    """Driver-side control consumer + rate backstop, on one dedicated thread."""
+class ControlPolicy:
+    """Control and rate policy invoked by the single Summon reactor owner."""
 
     def __init__(
         self,
         *,
+        client: TautClient,
+        reactor: TautWatcher,
         member_id: str,
-        db_path: str | None,
-        token: str,
         provider: str,
         threads: Sequence[str],
         handle_provider: Callable[[], AdapterHandle | None],
         request_stop: Callable[[], None],
-        shutdown: threading.Event,
-        shutdown_complete: threading.Event,
-        shutdown_outcome: Callable[[], StopShutdownOutcome],
+        send_nudge: Callable[[str], None],
+        interrupt: Callable[[], None],
         rate_limit: int | None,
         ledger_queue_name: str,
         driver_pid: int,
         driver_start_time: str,
         audit_start_ts: int = 0,
-        ready: threading.Event | None = None,
     ) -> None:
+        self._client = client
+        self._reactor = reactor
         self._member_id = member_id
-        self._db_path = db_path
-        self._token = token
         self._provider = provider
         self._threads = tuple(threads)
         self._handle_provider = handle_provider
         self._request_stop = request_stop
-        self._shutdown = shutdown
-        self._shutdown_complete = shutdown_complete
-        self._shutdown_outcome = shutdown_outcome
+        self._send_nudge = send_nudge
+        self._interrupt = interrupt
         self._rate_limit = _DEFAULT_RATE_LIMIT if rate_limit is None else rate_limit
-        self._ledger_queue_name = ledger_queue_name
         self._driver_pid = driver_pid
         self._driver_start_time = driver_start_time
         self._audit_start_ts = audit_start_ts
-        self._ready = ready
-        # The control/audit cadence. Kept gentle by default so the audit's
-        # peeks do not add db contention; tests that exercise stop/status
-        # latency or the rate backstop lower it via the env var.
-        self._interval = float(os.environ.get("TAUT_SUMMON_CONTROL_INTERVAL", "1.0"))
+        self._ledger = reactor._queue(ledger_queue_name)
+        self._interval = max(
+            0.01, float(os.environ.get("TAUT_SUMMON_CONTROL_INTERVAL", "1"))
+        )
+        self._next_rate_audit_at = time.monotonic() + self._interval
         self._pending_stop: str | None = None
         self._pending_stop_reply_to: str | None = None
         self._pending_stop_seen = False
-        # Post-retry-budget failure detail; None while healthy ([SUM-9]).
-        self._unhealthy: str | None = None
-        # Rate backstop state (driver-local, in-memory). The breaker
-        # re-arms: _hard_breached clears once the windowed own-post rate
-        # falls back under the limit, so a resumed harness that floods
-        # again is interrupted again ([SUM-10] circuit-breaker intent).
         self._audit_cursor: dict[str, int] = {}
         self._own_posts: deque[int] = deque()
         self._own_posts_seen: set[int] = set()
         self._nudged = False
         self._hard_breached = False
         self._hard_breach_count = 0
-        self._control_drain_recoverable_failures = 0
-        self._control_reply_recoverable_failures = 0
-        self._rate_audit_recoverable_failures = 0
-        self._pending_control_fault: _PendingControlFault | None = None
-        self._next_rate_audit_at = 0.0
-        # All db handles are opened ON THIS THREAD in _open and reused for the
-        # loop's life. Queue-operation retry belongs to SimpleBroker; this loop
-        # owns only handle lifetime and live control state.
-        self._client: TautClient | None = None
-        self._control_reactor: _ControlReactor | None = None
-        self._ctl_in: Queue | None = None
-        self._ctl_out: Queue | None = None
-        self._ledger: Queue | None = None
         self._thread_queues: dict[str, Queue] = {}
 
-    def run(self) -> None:
-        try:
-            self._open()
-            self._publish_ready()
-            while not self._shutdown.is_set() and not self._pending_stop_seen:
-                if self._pending_control_fault is not None:
-                    self._recover_control_fault_or_backoff()
-                    continue
-
-                reactor = self._control_reactor
-                if reactor is None:
-                    raise RuntimeError("control reactor disappeared while running")
-                turn_result = self._process_control_turn(reactor)
-                if turn_result is False:
-                    break
-                if turn_result is None:
-                    continue
-
-                if self._pending_control_fault is not None:
-                    continue
-                self._control_drain_recoverable_failures = 0
-
-                # Rate audit is control-owner policy. It runs only after the
-                # reactor turn has fully unwound and before the wait deadline
-                # is computed.
-                self._audit_if_due()
-                if self._pending_control_fault is not None:
-                    continue
-
-                if not self._wait_for_control_activity(reactor):
-                    break
-            if self._pending_stop_seen:
-                self._reply_to_pending_stop()
-        finally:
-            self._close()
-
-    def _publish_ready(self) -> None:
-        """Fence initial handle installation for an awaiting foreground host."""
-
-        if self._ready is not None:
-            self._ready.set()
-
-    def _recover_control_fault_or_backoff(self) -> None:
-        if self._recover_pending_control_fault():
-            return
-        delay = min(
-            5.0,
-            max(self._interval, 0.25)
-            * (2 ** max(0, self._control_fault_failure_count() - 1)),
+    def install(self) -> None:
+        self._reactor.add_queue(
+            control_in_queue_name(self._member_id),
+            self._handle_control_message,
+            mode=QueueMode.READ,
+            error_handler=self._handle_control_error,
         )
-        self._shutdown.wait(delay)
-
-    def _process_control_turn(self, reactor: _ControlReactor) -> bool | None:
-        """Return true after a turn, false on expected stop, or None on recovery."""
-
-        try:
-            reactor.process_once()
-        except StopWatching:
-            if self._pending_control_fault is not None:
-                return None
-            if self._shutdown.is_set() or self._pending_stop_seen:
-                return False
-            raise
-        except (BrokerError, OSError) as exc:
-            self._mark_control_drain_failure(exc)
-            return None
-        return True
-
-    def _wait_for_control_activity(self, reactor: _ControlReactor) -> bool:
-        try:
-            reactor.wait_for_activity(timeout=self._next_control_wait_timeout())
-        except StopWatching:
-            if self._pending_control_fault is not None:
-                return True
-            if self._shutdown.is_set() or self._pending_stop_seen:
-                return False
-            raise
-        except (BrokerError, OSError) as exc:
-            self._record_control_fault("control wait", exc, recoverable=True)
-        return True
-
-    def _reply_to_pending_stop(self) -> None:
-        """Reply only after the driver slot release outcome is known ([SUM-9])."""
-
-        completed = self._shutdown_complete.wait(timeout=_STOP_ACK_TIMEOUT_SECONDS)
-        outcome: StopShutdownOutcome | None = None
-        release_error: str | None = None
-        if completed:
-            try:
-                outcome = self._shutdown_outcome()
-            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
-                release_error = f"driver slot release confirmation failed: {exc}"
-                logger.error("%s", release_error)
-        outcome_error = outcome.error_detail() if outcome is not None else None
-        if completed and outcome is not None and outcome_error is None:
-            reply = encode_control_reply(
-                CONTROL_STOP, "ack", request_id=self._pending_stop
-            )
-        else:
-            error = (
-                "shutdown timed out"
-                if not completed
-                else (
-                    release_error
-                    or outcome_error
-                    or "driver slot release could not be confirmed"
-                )
-            )
-            reply = encode_control_reply(
-                CONTROL_STOP,
-                "error",
-                request_id=self._pending_stop,
-                error=error,
-            )
-        self._reply(reply, reply_to=self._pending_stop_reply_to)
-
-    def _audit_if_due(self) -> None:
-        if self._pending_stop_seen:
-            return
-        now = time.monotonic()
-        if now < self._next_rate_audit_at:
-            return
-        self._next_rate_audit_at = now + max(self._interval, 0.01)
-        try:
-            self._audit_pass()
-        except (BrokerError, OSError) as exc:
-            self._mark_rate_audit_failure(exc)
-        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
-            self._record_control_fault("rate audit", exc, recoverable=False)
-            self._mark_unhealthy("rate audit", exc)
-        else:
-            self._rate_audit_recoverable_failures = 0
-
-    def _next_control_wait_timeout(self) -> float:
-        """Bound the inherited wait by both probe and audit deadlines."""
-
-        now = time.monotonic()
-        probe_bound = max(self._interval, 0.01)
-        audit_remaining = max(0.0, self._next_rate_audit_at - now)
-        if audit_remaining == 0.0:
-            # ``run`` calls ``_audit_if_due`` first. This floor makes a
-            # misconfigured zero interval fail safe without a hot loop.
-            return min(probe_bound, 0.01)
-        return min(probe_bound, audit_remaining)
 
     def _handle_control_message(
         self, body: str, timestamp: int, context: QueueMessageContext
     ) -> None:
-        self._dispatch(body if isinstance(body, str) else str(body))
-        if context.mode is QueueMode.PEEK:
-            self._ack_control_message(context.queue, context.queue_name, timestamp)
-
-    def _ack_control_message(
-        self, queue: Queue, queue_name: str, timestamp: int
-    ) -> None:
-        try:
-            queue.delete(message_id=timestamp)
-        except (BrokerError, OSError, RuntimeError):
-            logger.debug(
-                "failed to acknowledge control message for %s",
-                queue_name,
-                exc_info=True,
-            )
+        del timestamp, context
+        self._dispatch(body)
 
     def _handle_control_error(
         self, exc: Exception, _message: str, _timestamp: int
     ) -> bool | None:
-        if _is_broker_surface_failure(exc):
-            self._mark_control_drain_failure(exc)
-            return True
-        self._record_control_fault("control dispatch", exc, recoverable=False)
-        self._mark_unhealthy("control dispatch", exc)
-        logger.error(
-            "control dispatch failed with non-broker exception",
-            exc_info=(type(exc), exc, exc.__traceback__),
-        )
-        return False
+        raise exc
 
-    def _mark_unhealthy(self, where: str, exc: Exception) -> None:
-        detail = f"{where}: {type(exc).__name__}: {exc}"
-        self._unhealthy = detail
-        logger.error(
-            "control plane degraded — %s; STATUS will report 'degraded'",
-            detail,
-        )
-
-    def _mark_control_drain_failure(self, exc: Exception) -> None:
-        self._record_control_fault("control drain", exc, recoverable=True)
-
-    def _mark_rate_audit_failure(self, exc: Exception) -> None:
-        self._record_control_fault("rate audit", exc, recoverable=True)
-
-    def _record_control_fault(
-        self,
-        where: str,
-        exc: Exception,
-        *,
-        recoverable: bool,
-    ) -> None:
-        """Record a primary fault without replacing live handles in-stack."""
-
-        if self._pending_control_fault is None:
-            self._pending_control_fault = _PendingControlFault(
-                where=where,
-                primary=exc,
-                recoverable=recoverable,
-            )
-
-    def _control_fault_failure_count(self) -> int:
-        fault = self._pending_control_fault
-        if fault is not None and fault.where == "rate audit":
-            return self._rate_audit_recoverable_failures
-        return self._control_drain_recoverable_failures
-
-    def _recover_pending_control_fault(self) -> bool:
-        """Resolve one pending fault at the between-turn supervisor seam.
-
-        Returns ``True`` only after a complete replacement is installed. A
-        failed replacement leaves the old complete bundle installed and the
-        primary fault pending. Fatal faults and exhausted recovery propagate to
-        the driver wrapper.
-        """
-
-        fault = self._pending_control_fault
-        if fault is None:
-            return False
-        if not fault.recoverable:
-            self._pending_control_fault = None
-            raise fault.primary
-
-        if fault.where == "rate audit":
-            self._rate_audit_recoverable_failures += 1
-            failures = self._rate_audit_recoverable_failures
-            threshold = _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-        else:
-            self._control_drain_recoverable_failures += 1
-            failures = self._control_drain_recoverable_failures
-            threshold = _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-
-        if self._reopen_broker_handles(fault.where, fault.primary):
-            if fault.where == "rate audit":
-                self._rate_audit_recoverable_failures = 0
-            else:
-                self._control_drain_recoverable_failures = 0
-            if self._unhealthy is not None and self._unhealthy.startswith(
-                f"{fault.where} reopen:"
-            ):
-                self._unhealthy = None
-            self._pending_control_fault = None
-            return True
-
-        if failures >= threshold:
-            self._mark_unhealthy(
-                f"{fault.where} ({failures} consecutive broker failures)",
-                fault.primary,
-            )
-            self._pending_control_fault = None
-            raise RuntimeError(
-                f"{fault.where} recovery exhausted after {failures} attempts"
-            ) from fault.primary
-
-        logger.warning(
-            "%s recovery failed (%d/%d); no further control turn will run: %s",
-            fault.where,
-            failures,
-            threshold,
-            fault.primary,
-        )
-        return False
-
-    def _mark_control_reply_failure(self, exc: Exception) -> None:
-        self._control_reply_recoverable_failures += 1
-        if (
-            self._control_reply_recoverable_failures
-            >= _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-        ):
-            self._mark_unhealthy(
-                "control reply "
-                f"({self._control_reply_recoverable_failures} consecutive "
-                "broker failures)",
-                exc,
-            )
+    def turn(self) -> None:
+        now = time.monotonic()
+        if self._pending_stop_seen or now < self._next_rate_audit_at:
             return
+        self._next_rate_audit_at = now + self._interval
+        self._audit_pass()
 
-        logger.warning(
-            "control reply skipped after broker error "
-            "(%d/%d); idempotent STATUS/PING clients will retry: %s",
-            self._control_reply_recoverable_failures,
-            _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-            exc,
-        )
-
-    # --- setup / teardown -------------------------------------------------
-
-    def _open(self) -> None:
-        logger.debug("control loop opening broker handles")
-        self._install_broker_handles(self._make_broker_handles())
-        logger.debug("control loop open complete")
-
-    def _close(self) -> None:
-        self._close_handles()
-
-    def _reopen_broker_handles(self, where: str, exc: Exception) -> bool:
-        old_client = self._client
-        old_reactor = self._control_reactor
-        old_ctl_in = self._ctl_in
-        old_ctl_out = self._ctl_out
-        old_ledger = self._ledger
-        old_thread_queues = dict(self._thread_queues)
+    def _reply(self, body: str, *, reply_to: str | None = None) -> None:
+        queue: Queue | None = None
         try:
-            handles = self._make_broker_handles()
-        except Exception as reopen_exc:  # STATUS should expose the reopen failure.
-            logger.exception(
-                "control broker handle reopen failed after %s error: %s",
-                where,
-                exc,
+            queue = self._client.queue(
+                reply_to or control_out_queue_name(self._member_id), persistent=False
             )
-            self._mark_unhealthy(f"{where} reopen", reopen_exc)
-            return False
-        self._install_broker_handles(handles)
-        self._close_queue_handles(
-            client=old_client,
-            control_reactor=old_reactor,
-            ctl_in=old_ctl_in,
-            ctl_out=old_ctl_out,
-            ledger=old_ledger,
-            thread_queues=old_thread_queues,
-        )
-        return True
-
-    def _make_broker_handles(self) -> _BrokerHandles:
-        client = TautClient(
-            db_path=self._db_path,
-            token=self._token,
-            persistent=True,
-            inherit_environment_identity=False,
-        )
-        reactor: _ControlReactor | None = None
-        try:
-            reactor = _ControlReactor(self, db=client.target, config=client.config)
-            return _BrokerHandles(
-                client=client,
-                control_reactor=reactor,
-                ctl_in=reactor._queue(control_in_queue_name(self._member_id)),
-                ctl_out=reactor._queue(control_out_queue_name(self._member_id)),
-                ledger=reactor._queue(self._ledger_queue_name),
-                thread_queues={
-                    thread: reactor._queue(thread) for thread in self._threads
-                },
+            queue.write(body)
+        except (BrokerError, OSError) as error:
+            logger.warning(
+                "control reply skipped after broker error; "
+                "idempotent STATUS/PING clients may retry: %s",
+                error,
             )
-        except Exception:
-            if reactor is not None:
-                try:
-                    reactor.cleanup()
-                except Exception:
-                    logger.debug(
-                        "partial control reactor cleanup failed", exc_info=True
-                    )
-            client.close()
-            raise
-
-    def _install_broker_handles(self, handles: _BrokerHandles) -> None:
-        self._client = handles.client
-        self._control_reactor = handles.control_reactor
-        self._ctl_in = handles.ctl_in
-        self._ctl_out = handles.ctl_out
-        self._ledger = handles.ledger
-        self._thread_queues = handles.thread_queues
-
-    def _close_handles(self) -> None:
-        self._close_queue_handles(
-            client=self._client,
-            control_reactor=self._control_reactor,
-            ctl_in=self._ctl_in,
-            ctl_out=self._ctl_out,
-            ledger=self._ledger,
-            thread_queues=self._thread_queues,
-        )
-        self._client = None
-        self._control_reactor = None
-        self._ctl_in = None
-        self._ctl_out = None
-        self._ledger = None
-        self._thread_queues = {}
-
-    def _close_queue_handles(
-        self,
-        *,
-        client: object | None,
-        control_reactor: _ControlReactor | None = None,
-        ctl_in: Queue | None,
-        ctl_out: Queue | None,
-        ledger: Queue | None,
-        thread_queues: dict[str, Queue],
-    ) -> None:
-        # Do not hard-delete sys.* queues during shutdown. Commands and replies
-        # that completed were already claim-consumed via read_one(); leftovers
-        # are invisible to core, and delete-all maintenance under high process
-        # churn is a worse failure mode than an inert stale control row.
-        if control_reactor is not None:
-            try:
-                control_reactor.cleanup()
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("control reactor cleanup failed", exc_info=True)
-
-        close_client = getattr(client, "close", None)
-        if callable(close_client):
-            try:
-                close_client()
-                return
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("control client close failed", exc_info=True)
-
-        queues: list[Queue | None] = [ctl_in, ctl_out, ledger]
-        queues.extend(thread_queues.values())
-        for queue in queues:
+        finally:
             if queue is not None:
-                try:
-                    queue.close()
-                except Exception:  # pragma: no cover - defensive
-                    logger.debug("control queue close failed", exc_info=True)
+                queue.close()
+
+    def finish_stop(self, outcome: StopShutdownOutcome) -> None:
+        if not self._pending_stop_seen:
+            return
+        error = outcome.error_detail()
+        fields: dict[str, Any] = {} if error is None else {"error": error}
+        self._reply(
+            encode_control_reply(
+                CONTROL_STOP,
+                "ack" if error is None else "error",
+                request_id=self._pending_stop,
+                **fields,
+            ),
+            reply_to=self._pending_stop_reply_to,
+        )
+
+    def _reconcile_audit_threads(self) -> None:
+        current = self._reactor._chat_queue_names
+        self._thread_queues = {
+            name: managed
+            for name in sorted(current)
+            if (managed := self._reactor.get_queue(name)) is not None
+        }
+        self._threads = tuple(self._thread_queues)
+
+    def _soft_breach(self, count: int, limit: int) -> None:
+        self._nudged = True
+        logger.warning("rate backstop: %d posts (limit %d); nudging", count, limit)
+        self._send_nudge(
+            f"[system] you have posted {count} messages recently "
+            f"(soft limit {limit}); slow down and post only when it adds value."
+        )
+
+    def _hard_breach(self, count: int, limit: int) -> None:
+        self._hard_breached = True
+        self._hard_breach_count += 1
+        logger.error(
+            "rate backstop HARD breach #%d: %d > %d",
+            self._hard_breach_count,
+            count,
+            limit,
+        )
+        self._interrupt()
 
     def _dispatch(self, body: str) -> None:
         request = parse_control_request(body)
-        logger.debug("control loop dispatching %s", request.command or "<invalid>")
+        logger.debug("control policy dispatching %s", request.command or "<invalid>")
         if request.command in _KNOWN_COMMANDS and not self._matches_driver(request):
             logger.info(
                 "dropping stale control command %s for driver evidence %r/%r",
@@ -929,16 +461,12 @@ class ControlLoop:
             provider=self._provider,
             thread_count=len(self._threads),
             cursor_lag=self._cursor_lag(),
-            control_health="ok" if self._unhealthy is None else "degraded",
-            health_detail=self._unhealthy,
             rate_limited=self._hard_breached,
             rate_breaches=self._hard_breach_count,
         )
 
     def _cursor_lag(self) -> dict[str, int]:
         client = self._client
-        if client is None:  # pragma: no cover - open() always runs first
-            return {}
         wanted = set(self._threads)
         lag: dict[str, int] = {}
         try:
@@ -954,70 +482,8 @@ class ControlLoop:
             logger.debug("cursor-lag read failed: %s", exc)
         return lag
 
-    def _reply(self, body: str, *, reply_to: str | None = None) -> None:
-        # A request carrying reply_to gets its answer on its own per-request
-        # queue (concurrent clients never cross replies); requests without
-        # one, and the requester-less RATE report, fall back to the shared
-        # sys.rsp_<member> queue.
-        client = self._client
-        if reply_to is not None and client is not None:
-            queue: Queue | None = None
-            try:
-                queue = client.queue(reply_to, persistent=False)
-                queue.write(body)
-                logger.debug("per-request control reply wrote to %s", reply_to)
-                self._control_reply_recoverable_failures = 0
-            except (BrokerError, OSError) as exc:
-                logger.warning("per-request control reply failed: %s", exc)
-                self._mark_control_reply_failure(exc)
-            except Exception as exc:
-                self._mark_unhealthy("control reply", exc)
-                raise
-            finally:
-                if queue is not None:
-                    try:
-                        queue.close()
-                    except Exception:  # pragma: no cover - defensive
-                        logger.debug("per-request reply close failed", exc_info=True)
-            return
-        ctl_out = self._ctl_out
-        if ctl_out is None:  # pragma: no cover - open() always runs first
-            return
-        try:
-            ctl_out.write(body)
-            logger.debug("shared control reply wrote to %s", ctl_out.name)
-            self._control_reply_recoverable_failures = 0
-        except (BrokerError, OSError) as exc:
-            logger.warning("control reply write failed: %s", exc)
-            self._mark_control_reply_failure(exc)
-        except Exception as exc:
-            self._mark_unhealthy("control reply", exc)
-            raise
-
-    # --- rate backstop ([SUM-10]) -----------------------------------------
-    #
-    # Membership reconciliation uses TautClient's read-only selector. It must
-    # stay on this control owner thread with the handles it mutates; watcher
-    # callbacks never open or retire audit queues ([SUM-10]).
-
-    def _reconcile_audit_threads(self) -> None:
-        client = self._client
-        reactor = self._control_reactor
-        if client is None or reactor is None:
-            raise RuntimeError("rate audit handles are not open")
-        current = set(client.joined_thread_names())
-        existing = set(self._thread_queues)
-        for thread in sorted(existing - current):
-            self._thread_queues.pop(thread)
-            reactor.retire_auxiliary_queue(thread)
-        for thread in sorted(current - existing):
-            self._thread_queues[thread] = reactor._queue(thread)
-        self._threads = tuple(sorted(current))
-
     def _audit_pass(self) -> None:
         ledger = self._ledger
-        if ledger is None:  # pragma: no cover - audit runs only after _open
-            raise RuntimeError("rate audit ledger is not open")
         now_ts = ledger.generate_timestamp()
         cutoff = now_ts - int(_RATE_WINDOW_SECONDS * 1_000_000_000)
         self._reconcile_audit_threads()
@@ -1036,11 +502,9 @@ class ControlLoop:
         highest = cursor
         # A direct log-semantics peek after the driver-local audit cursor —
         # never touching the member cursor ([SUM-10]/[TAUT-7.4]).
-        rows = self._audit_peek_many(
-            queue, cursor=cursor, what=f"rate audit peek {thread}"
-        )
+        rows = queue.peek_many(with_timestamps=True, after_timestamp=cursor)
         for row in rows:
-            body, ts = cast("tuple[str, int]", row)
+            body, ts = row
             highest = max(highest, ts)
             if (
                 ts >= cutoff
@@ -1050,12 +514,6 @@ class ControlLoop:
                 self._own_posts.append(ts)
                 self._own_posts_seen.add(ts)
         self._audit_cursor[thread] = highest
-
-    def _audit_peek_many(
-        self, queue: Queue, *, cursor: int, what: str
-    ) -> list[str] | list[tuple[str, int]]:
-        del what
-        return queue.peek_many(with_timestamps=True, after_timestamp=cursor)
 
     def _prune(self, cutoff: int) -> None:
         # Per-thread audit cursors are ordered within each thread, but the
@@ -1085,50 +543,83 @@ class ControlLoop:
         if not self._nudged:
             self._soft_breach(count, limit)
 
-    def _soft_breach(self, count: int, limit: int) -> None:
-        self._nudged = True
-        logger.warning(
-            "rate backstop: %d posts in the last %ds (limit %d); nudging",
-            count,
-            int(_RATE_WINDOW_SECONDS),
-            limit,
-        )
-        handle = self._handle_provider()
-        if handle is None:
-            return
-        nudge = (
-            f"[system] you have posted {count} messages recently "
-            f"(soft limit {limit}); slow down and post only when it adds value."
-        )
-        try:
-            handle.inject(nudge)
-        except AdapterError as exc:
-            logger.debug("rate nudge inject failed: %s", exc)
-
-    def _hard_breach(self, count: int, limit: int) -> None:
-        self._hard_breached = True
-        self._hard_breach_count += 1
-        # Surfaced via STATUS (rate_limited / rate_breaches) and the log —
-        # NOT written to ctrl_out. A requester-less ctrl_out message has no
-        # consumer, so it would sit unclaimed forever (auto-vacuum reclaims
-        # only claimed rows); STATUS is the pull channel a monitor uses.
-        logger.error(
-            "rate backstop HARD breach #%d: %d posts in the last %ds "
-            "(limit %d); interrupting the harness",
-            self._hard_breach_count,
-            count,
-            int(_RATE_WINDOW_SECONDS),
-            limit,
-        )
-        handle = self._handle_provider()
-        if handle is not None:
-            try:
-                handle.interrupt()
-            except AdapterError as exc:  # pragma: no cover - defensive
-                logger.debug("rate hard-breach interrupt failed: %s", exc)
-
 
 # --- client side (stop / status) ----------------------------------------------
+
+
+class _ReplyReactor(BaseReactor):
+    """One request, one reply source, and owned timeout/retry deadlines."""
+
+    def __init__(
+        self,
+        reply_queue: Queue,
+        request_queue: Queue,
+        body: str,
+        *,
+        timeout: float,
+        retry: bool,
+    ) -> None:
+        self._reply_queue = reply_queue
+        self._request_queue = request_queue
+        self._request_body = body
+        self._deadline = time.monotonic() + timeout
+        self._retry = retry
+        self._next_retry = time.monotonic() + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
+        self.result: dict[str, Any] | None = None
+        super().__init__(
+            {
+                reply_queue.name: {
+                    "handler": self._receive,
+                    "mode": QueueMode.READ,
+                    "error_handler": self._fail,
+                }
+            },
+            db=reply_queue.db_target,
+            persistent=True,
+        )
+
+    def _receive(self, body: str, timestamp: int, context: QueueMessageContext) -> None:
+        del timestamp, context
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if isinstance(payload, dict):
+            self.result = payload
+            self.request_stop()
+
+    @staticmethod
+    def _fail(error: Exception, _body: str, _timestamp: int) -> bool | None:
+        raise error
+
+    def _fetch_next_message(self, config: Any) -> tuple[str, int] | None:
+        del config
+        try:
+            body = self._reply_queue.read_one()
+        except Exception as exc:
+            _tag_control_fault(exc, "control_read")
+            raise
+        return (str(body), 0) if body is not None else None
+
+    def _process_reactor_turn(self) -> None:
+        now = time.monotonic()
+        if now >= self._deadline:
+            self.request_stop()
+            return
+        if self._retry and now >= self._next_retry:
+            try:
+                self._request_queue.write(self._request_body)
+            except Exception as exc:
+                _tag_control_fault(exc, "control_write")
+                raise
+            self._next_retry = now + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
+        super()._process_reactor_turn()
+
+    def next_wait_timeout(self) -> float | None:
+        deadline = (
+            min(self._deadline, self._next_retry) if self._retry else self._deadline
+        )
+        return max(0.0, deadline - time.monotonic())
 
 
 class ControlClient:
@@ -1172,43 +663,29 @@ class ControlClient:
             driver_pid=self._driver_pid,
             driver_start_time=self._driver_start_time,
         )
+        reactor: _ReplyReactor | None = None
         try:
             try:
                 self._ctl_in.write(body_out)
             except Exception as exc:
-                raise _tag_control_fault(exc, "control_write") from exc
-            deadline = time.monotonic() + timeout
-            next_retry = time.monotonic() + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
-            while time.monotonic() < deadline:
-                try:
-                    body = reply_queue.read_one()
-                except Exception as exc:
-                    raise _tag_control_fault(exc, "control_read") from exc
-                if body is None:
-                    now = time.monotonic()
-                    if retry_on_timeout and now >= next_retry:
-                        try:
-                            self._ctl_in.write(body_out)
-                        except Exception as exc:
-                            raise _tag_control_fault(exc, "control_write") from exc
-                        next_retry = now + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
-                    time.sleep(0.03)
-                    continue
-                try:
-                    payload = json.loads(body if isinstance(body, str) else str(body))
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(payload, dict):
-                    return payload
-            return None
+                _tag_control_fault(exc, "control_write")
+                raise
+            reactor = _ReplyReactor(
+                reply_queue,
+                self._ctl_in,
+                body_out,
+                timeout=timeout,
+                retry=retry_on_timeout,
+            )
+            reactor.run()
+            return reactor.result
         finally:
-            # Successful replies have already been claim-consumed by read_one().
-            # Timeout leftovers use a random per-request sys.* queue name and
-            # are inert; avoid delete-all maintenance in the hot control path.
             try:
+                if reactor is not None:
+                    reactor.stop(join=False)
+            finally:
+                # Claims consume replies; timeout leftovers remain inert.
                 reply_queue.close()
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("reply queue close failed", exc_info=True)
 
     def close(self) -> None:
         if not self._owns_request_queue:

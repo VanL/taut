@@ -33,7 +33,7 @@ step 6. Claude and Grok were refreshed through that workflow on this machine;
 the remaining statuses predate the skill's adoption and should be re-derived
 before use.
 
-Last refreshed: 2026-09-15 (Codex failure note; Claude 2026-09-14)
+Last refreshed: 2026-09-22 (Claude reactor implementation reviews; other family statuses unchanged)
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
@@ -45,6 +45,21 @@ Last refreshed: 2026-09-15 (Codex failure note; Claude 2026-09-14)
 | Grok | verified usable; review-eligible; completion-signal drift observed | `/Users/van/.local/bin/grok`, version 1.0.3. A Class 5 plan review completed under the OS-enforced read-only sandbox on 2026-08-14 with no sandbox fail-open warning or repository write; focused tests ran and the response contained an explicit `BLOCKED` verdict with source-backed findings. JSON still reported lowercase `end_turn` rather than the `EndTurn` spelling documented by `skills/call-agent/SKILL.md`. Do not treat the lowercase signal alone as a passing gate until the invocation guidance is reconciled; inspect the explicit verdict and select another review-eligible family when a required PASS is unavailable. Write-attempt containment was verified when the skill was adopted. |
 
 ## Review Preference
+
+2026-09-22: the unchanged Claude 2.1.273 safe-mode/Read-Grep-Glob invocation
+completed core/MCP and Summon implementation reviews in 561 and 583 seconds,
+both success/end_turn, terminal_reason=completed, is_error=false. An attempted
+review write was denied by the restricted tool set. Findings and dispositions
+are in the reactor-restoration plan; final integration review uses the same
+containment and checks completion signals independently of process exit.
+
+2026-09-19: Claude 2.1.273 passed a combined file-read/write-containment
+probe for the reactor-restoration plan. Invocation used safe mode, plan mode,
+matched Read/Grep/Glob tool sets, strict MCP configuration, no session persistence,
+JSON output, closed stdin and a 120-second bound. Result: PROBE-OK with the
+core-spec heading, WRITE-UNAVAILABLE, no probe file, exit 0, success/end_turn,
+terminal_reason=completed, is_error=false. Reviewer resolved to
+claude-opus-4-8[1m]. Full review outcome is recorded in the restoration plan.
 
 2026-09-16: Claude 2.1.273 passed a fresh combined file-read/write-containment
 probe with safe mode, plan mode, matched Read/Grep/Glob tool sets, strict MCP
@@ -127,3 +142,14 @@ bound); scoped round-2 verification passed in 342 seconds (540-second bound).
 Both exited 0 with success/end_turn and terminal_reason=completed. Findings
 and dispositions are recorded in the BrokerSession plan. No unexpected
 repository writes occurred.
+
+
+### Reactor restoration Addendum C review (2026-09-22)
+
+The installed Claude CLI 2.1.273 completed the bounded read-only review with
+safe mode, plan permissions, Read/Grep/Glob only, strict MCP configuration and
+no session persistence. Exit 0, success subtype, is_error false and end_turn
+were checked. Verdict: no blocker. The full response and disposition live in
+`docs/plans/2026-09-19-reactor-restoration-plan.md`, Addendum C. The final executor
+submission rollback also received an independent slice review and real executor
+failure tests after the broad review dispatch.

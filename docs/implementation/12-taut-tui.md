@@ -381,8 +381,12 @@ Ownership uses both the operation-layer record and a UI token set. Closing
 before readiness makes the late exact handle stop itself without publishing a
 ready event. Worker return retires the UI token before presentation, so a
 queued readiness callback cannot resurrect a finished run. Scheduled logging
-and readiness projection contain their own presentation failures; scheduling
-alone is not a sufficient exception boundary.
+and readiness projection report ordinary presentation failures through the
+existing safe `notify` path; scheduling alone is not a sufficient exception
+boundary. Return also settles its own operation state before rendering. If the
+error view fails, the notification retains both the primary worker failure and
+the presentation error. Renderer control-flow exceptions propagate; a completed
+worker's stored control-flow exception still follows the worker-error view.
 
 Terminal attachment uses a pre-spawn confirmation followed by the existing
 two-event lease handoff. Both the native Summon form and textual `:summon`
@@ -535,3 +539,25 @@ unchanged.
   remediation after the coordinated 0.9.0 review.
 - `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — original TUI
   implementation, contract promotion, and retained visual acceptance record.
+
+
+### Reactor restoration audit (2026-09-22)
+
+Under [TUI-4.1]/[TAUT-8.5], `session.py` keeps one public watcher for the active
+conversation. Its serialized executor owns ordinary public-client operations;
+Textual owns presentation and generation admission. The one-shot
+`_monitor_watcher_exit` thread only joins the watcher then publishes its real
+retirement to the executor. It performs no broker inspection and remains
+necessary evidence distinct from a final callback emitted before thread exit.
+
+`system.py` workers own explicit actor-free operations. `summon.py` supervises
+finite invocation/control operations and marshals results to Textual. Its
+terminal acquired/release/restored Events protect one exclusive suspension
+scope. Attach confirmation samples cancellation on the worker that is
+already blocked in the wait. A normal answer resolves the request and leaves
+no extra thread; cancellation has no separate owned waiter. Host shutdown
+still sets the driver's stop event before the refusal is visible. The sample
+is not a broker observer. Existing replacement,
+timed-out watcher cleanup, terminal lease and cancellation tests are the
+behavioral audit gates. The governing map is
+`docs/plans/2026-09-19-reactor-restoration-plan.md` S0-TUI/S5.

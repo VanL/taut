@@ -80,7 +80,8 @@ candidate seats, parent command slots, rate state, response futures,
 aggregate resource text, legacy edge tracking, modern bus publication, and
 teardown.
 
-Each resident workspace has one dedicated child thread. That thread alone
+Each resident workspace has one synchronous owner callable on a worker of the
+process-owned standard eight-worker executor. That callable alone
 resolves the selected project, constructs and uses one persistent configured
 `TautClient`, owns its broker queues and activity waiter, runs synchronous
 Taut operations, observes notifications, and closes its handles. A blocked
@@ -99,9 +100,13 @@ resolution, notification queue naming, persistent handle reuse, and close.
 MCP neither reaches through private identity helpers nor derives `notify.*`
 names.
 
-Cross-thread payloads use unbounded `queue.Queue` instances. Payload-free
-`threading.Event` and `call_soon_threadsafe` wakes tell the receiving owner to
-drain its queue. The master never calls a child client or broker queue and
+Cross-thread payloads use unbounded `queue.Queue` instances. The parent retains only the inert strategy's bound `notify_activity` callback;
+command publication precedes that notification. The inert strategy uses
+SimpleBroker constructor defaults. The previous workspace multiplexer used
+hardcoded intervals, so no existing per-workspace polling override is lost.
+Do not reinitialize that published strategy while producers can notify it. `call_soon_threadsafe` requests
+a prompt master drain after the child publishes its event. Neither wake carries
+a payload. The master never calls a child client or broker queue and
 never blocks its event loop on `Thread.join()`.
 
 ### Two launch adapters, one process runner
@@ -278,11 +283,41 @@ stores one canonical JSON string. Reading the resource returns that string
 without database work, identity activity, cursor movement, or notification
 consumption.
 
-Native database activity wakes and the 0.5-second observational backstop both
-lead the child to recompute. Wakes are hints only; content always comes from
-`peek_inbox`. The waiter listens to the public activity queue handle only; it
-does not infer notification meaning from queue bodies. Non-ready entries stay
-visible with empty notifications and no backend diagnostic.
+The workspace subclasses core `BaseReactor` over the exact Weft watcher copy.
+Its fixed PEEK sources are the public member notification queue and
+`taut.cache_stale`. Core owns cursor-qualified fetch/pending checks, source
+waiting and cleanup. Workspace handlers record `snapshot_pending` before
+advancing their in-memory source cursors. `peek_inbox` remains the only domain
+snapshot authority; the source bodies are not interpreted.
+
+The only workspace deadline is pacing while a snapshot is pending. Quiet
+backend passes and native idle-safety returns cause no snapshot query. Commands
+still refresh synchronously, except non-mutating `channel_show`. Normal peer
+claims publish the generic cache hint after the atomic claim. Raw claims,
+older callers and a crash in that publication gap can leave stale pointers on
+both backends until another source row or refreshing command arrives. A SQLite
+data-version change alone does not schedule a snapshot. Nothing adds a timer
+to repair that deliberate advisory gap.
+
+Before source ownership exists, the same child performs exactly two finite
+blocking command-queue handoffs: Bootstrap and validation grant/stop. Resolution
+stays off the master, and client construction follows admission. The retained
+strategy latch preserves commands already queued before its startup. Source
+cursors are sampled before the baseline peek, so no concurrent newer row is
+lost. Normal shared lifecycle cleanup closes watcher resources before the
+client lease. Identity loss publishes its terminal event and retires that child;
+the parent retains the identity-lost tombstone until detach.
+
+Executor completion requests the existing parent event drain, which applies
+terminal reasons before reaping returned owners. No parent maintenance timer
+or shutdown retirement poll remains. A terminal event is not completion:
+the executor Future becomes done only after the callable returns and its
+resources are closed. Pool-thread reuse/termination belongs to the executor.
+The dedicated eight-worker capacity avoids starvation by unrelated default
+executor jobs. Shutdown awaits only owner completions under one timeout;
+request cancellation never cancels those completions. A closed-loop wake is
+harmless during teardown, not recoverable by a timer on the closed loop.
+Non-ready entries stay visible with empty notifications and no backend diagnostic.
 
 One aggregate comparison independently offers a semantic change to:
 
@@ -493,3 +528,45 @@ changelog, and plan evidence whenever ownership or rationale changes.
 - `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`
+
+
+### Reactor restoration verification (2026-09-22)
+
+The source/owner map and exact promotion belong to
+`docs/plans/2026-09-19-reactor-restoration-plan.md` S0-MCP/S4. The new
+`extensions/taut_mcp/tests/test_reactor_restoration.py` fires SQLite and live
+PostgreSQL peer-claim freshness, the unpublished-claim gap, atomic no-duplicate
+claim and pre-start command admission. Resource tests prove quiet turns do no
+snapshot work, cursor-aware pacing and native fallback through the shared core.
+Parent tests preserve queue-before-notification, retirement, failure conversion
+and content-free identity-loss classification.
+
+### Terminal event ordering at lifecycle admission
+
+Ensure and detach drain the shared child-event queue before inspecting executor
+completion. This preserves the terminal reason already published by a retired
+child: identity loss must not become a generic reactor failure merely because
+a new lifecycle request beats the scheduled event callback. The child uses its
+turn result to stop after a terminal event; it needs no parallel degraded flag.
+The parent retains the published terminal status after the child stops.
+
+
+### Admission metadata and error boundaries
+
+Ready carries only validated identity and initial snapshot. Canonical path,
+directory identity and backend are already frozen on the admitted candidate;
+the parent reuses them while retaining generation, phase and alias arbitration.
+Private command dispatch extracts schema-validated values and supplies defaults;
+the MCP server remains the shape-validation boundary, and core retains domain
+validation. Reaction configuration and workspace-resolution failures use typed
+exceptions rather than private message comparisons.
+
+
+Executor submission is not itself an atomic admission boundary: CPython queues
+the work item before trying to start a new worker. Publish Bootstrap only after
+submit returns and the completion Future is retained. Failed submission sends
+Stop through the existing first handshake, so even a callable already claimed
+by an older worker has no workspace authority. No retry supervisor, helper
+waiter, private executor inspection, or second completion protocol is needed.
+Real native-start failure tests cover both queued and already-running cases,
+including successful later attachment without resolving the failed locator.

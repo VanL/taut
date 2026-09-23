@@ -1798,3 +1798,63 @@ def test_paired_case_installs_both_wheels_and_runs_full_control_probe(
 
     assert installed == [(core, summon)]
     assert '"case":"paired_control"' in capsys.readouterr().out
+
+
+def test_paired_probe_preserves_ledger_failure_and_retires_child(
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run the shipped probe's lifecycle block through a failing ledger read."""
+    import ast
+    import textwrap
+
+    monkeypatch.setattr(
+        wheel_matrix_module,
+        "_create_environment",
+        lambda **_kwargs: (tmp_path, tmp_path / "python"),
+    )
+    monkeypatch.setattr(wheel_matrix_module, "_install", lambda **_kwargs: None)
+    outcomes: list[subprocess.CompletedProcess[str]] = []
+
+    def execute_probe(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        tree = ast.parse(str(kwargs["code"]))
+        lifecycle = next(node for node in tree.body if isinstance(node, ast.Try))
+        harness = textwrap.dedent("""\
+            import subprocess
+            from types import SimpleNamespace
+            def list_live():
+                print("read")
+                raise RuntimeError("ledger read failed")
+            clock = iter((0.0, 1.0, 50.0))
+            time = SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda _: None)
+            SummonController = lambda **kwargs: SimpleNamespace(list_live=list_live)
+            db = "probe.db"
+            driver = SimpleNamespace(
+                poll=lambda: None,
+                terminate=lambda: print("terminate"),
+                wait=lambda **kwargs: print("wait"),
+            )
+        """)
+        completed = subprocess.run(
+            [sys.executable, "-c", harness + ast.unparse(lifecycle)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        outcomes.append(completed)
+        return completed
+
+    monkeypatch.setattr(wheel_matrix_module, "_run_python_probe", execute_probe)
+    wheel_matrix_module._case_paired_control_smoke(
+        new_core=tmp_path / "core.whl",
+        new_summon=tmp_path / "summon.whl",
+        work=tmp_path,
+        env={},
+        uv="uv",
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].returncode == 1
+    assert "RuntimeError: ledger read failed" in outcomes[0].stderr
+    assert outcomes[0].stdout.splitlines() == ["read", "terminate", "wait"]

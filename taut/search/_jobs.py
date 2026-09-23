@@ -412,10 +412,6 @@ class JobQueues:
 
         if now is None:
             now = self.clock_ns()
-        if isinstance(now, bool) or not isinstance(now, int):
-            raise TypeError("now must be an integer timestamp")
-        if isinstance(limit, bool) or not isinstance(limit, int):
-            raise TypeError("limit must be an integer")
         if limit < 1:
             raise ValueError("limit must be positive")
         rows = self.claimed.peek_many(limit, with_timestamps=True)

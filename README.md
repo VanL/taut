@@ -190,7 +190,7 @@ python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
 Requirements: Python 3.11+. Base runtime dependencies are
-`simplebroker>=8.3.1` (which itself has none) and `psutil` for cross-platform
+`simplebroker>=8.4.0` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
 extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
@@ -738,6 +738,12 @@ watcher.stop()
 thread.join(timeout=2)
 ```
 
+Watchers refresh membership from the coalesced `taut.cache_stale` broker hint,
+without a periodic membership timer. Current Taut writers publish this hint
+after membership changes and notification claims. Raw broker writes, older
+writers, or a failed hint can leave a running cache stale until a later hint
+or explicit refresh on either backend.
+
 Dump/load are actor-free class methods and do not require a client instance:
 
 ```python
@@ -926,7 +932,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=8.3.1` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=8.4.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The TUI ships as a separate `taut-tui` extension; the optional

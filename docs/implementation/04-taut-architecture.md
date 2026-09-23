@@ -711,29 +711,76 @@ unions `taut_members.name_key` with `taut_member_aliases.alias_key`. This keeps
 presentation out of uniqueness decisions and lets an alias-owned candidate
 advance to the next name instead of failing the same insert repeatedly.
 
-`BaseReactor` is the shared lifecycle mechanism for Taut's long-lived queue
-owners. It follows SimpleBroker 5.2.0's executable reference-reactor pattern:
-one reactor instance claims one drive thread; inherited final templates own
-process, wait, stop signaling, joining, and exactly-once close. A foreign stop
-request only signals and wakes. The owner finalizes after a live turn unwinds.
-The SIGINT handler follows the same split: it publishes stop and wake state,
-then raises `KeyboardInterrupt`; it never closes queues, waiters, or runtime
-handles from signal context. `run_forever()` restores the prior handler and
-owns exactly-once cleanup from an outer boundary that also covers handler
-installation, running-state publication, and drive-owner claim; the CLI's
-`finally` remains an idempotent backstop. This keeps native waiter locks and
-coverage shutdown hooks outside asynchronous signal re-entry.
-Persistent reactors hold one public `BrokerSession` solely for thread-cache
-lifetime. Their changing queue topology remains directly constructed and
-owned by the active maps, so retired membership and auxiliary queues close
-immediately instead of accumulating in the scope. Owner cleanup closes the
-strategy, asks the scope to recycle the current thread, closes every direct
-queue independently, then closes the scope. Recycling precedes close so an
-open same-key operation schedules cache release even when scope close refuses;
-the retained scope and incomplete marker permit an explicit retry after
-operation unwind. Ordinary cleanup failure is attached to an active run
-failure rather than replacing it. A never-driven reactor may close on its
-caller; foreign stop cannot recycle a live worker's cache.
+`BaseReactor` is the shared lifecycle template for broker-owning Taut contexts.
+It subclasses Weft's `MultiQueueWatcher` pinned at `9fc913c1`. Scheduler class
+bodies are copied verbatim except the reviewed two-line `yield_strategy`
+validation retained from Taut's public contract and `_TopologyStopping`, a private
+`RuntimeError` subclass replacing only the three synchronous stop rejections.
+Weft release 0.9.106 (`cfa5bb21`) still has untyped checks. Taut's internal
+membership reconciliation catches only the typed rejection, so stop winning
+admission or publication exits cleanly without suppressing unrelated failures.
+The existing transaction owns rollback; this adds no retry, waiter or lock.
+Queued foreign-request retirement remains the upstream `RuntimeError` path. Module shims preserve a supplied
+configuration snapshot and defer cwd target resolution when an explicit target
+already exists. The upstream file SHA-256 is
+`3afa84fc7998644cc63d40374fad9326236b73ba3e408a86086a6dc33089da89`;
+its `QueueMode`-through-EOF block SHA-256 is
+`fcf28f656ab15b0552de409069db70b6eeee29d63204999066f8030db9673244`.
+
+Reproduce the source comparison from the Taut checkout (the sibling is only
+needed for inspection, never at runtime):
+
+```bash
+uv run --no-sync python - <<'PY'
+import ast
+import subprocess
+from pathlib import Path
+source = subprocess.check_output([
+    "git", "-C", "../weft", "show",
+    "9fc913c1:weft/core/tasks/multiqueue_watcher.py",
+], text=True)
+upstream = {n.name: ast.get_source_segment(source, n)
+            for n in ast.parse(source).body if isinstance(n, ast.ClassDef)}
+local = Path("taut/watcher.py").read_text()
+exception = ('        if yield_strategy != "round_robin":\n'
+             '            raise ValueError("yield_strategy must be \'round_robin\'")\n')
+for node in ast.parse(local).body:
+    if isinstance(node, ast.ClassDef) and node.name in upstream:
+        body = ast.get_source_segment(local, node).replace(exception, "")
+        if node.name == "MultiQueueWatcher":
+            local_stop = 'raise _TopologyStopping("watcher topology is stopping")'
+            assert body.count(local_stop) == 3
+            body = body.replace(local_stop,
+                                'raise RuntimeError("watcher topology is stopping")')
+        assert body == upstream[node.name], node.name
+print("Copied classes match; only yield validation and three stop types differ.")
+PY
+```
+
+One retained `PollingStrategy` arbitrates backend hints, local publication and
+actual domain deadlines. The owned loop calls the inherited wait body, including
+an unbounded wait when no deadline exists. There is no parallel Event wait,
+universal refresh clock or independent Taut waiter-replacement implementation.
+The public manual `wait_for_activity(None)` wrapper still returns immediately.
+Source adapters publish state before `notify_activity()`; a wake does not carry
+payload or establish delivery. SimpleBroker 8.4 bounds native waits using the
+remaining deadline, while SQLite fallback still uses its configured cadence.
+
+The final process/stop templates retain one non-reentrant drive owner. The custom
+loop enters and leaves the copied topology-owner scope so foreign mutations run
+on that owner and pending requests fail during retirement. Dynamic mutation on
+the owner is legal only between dispatch passes. The copied inventory owns the
+single broker session, fixed and dynamic queues, and native waiter retirement.
+`BaseReactor` owns no parallel broker session or queue cache. Session retirement
+recycles the owner thread; it may idempotently close an already-closed queue lease.
+Cleanup failures preserve the active exception and permit an explicit retry.
+A live turn must unwind before a foreign stop caller can close its resources.
+
+SIGINT assigns plain state and raises promptly outside topology publication.
+Inside that atomic boundary it records a deferred interrupt, which the copied
+transaction delivers after coherent publication. No Event lock or resource
+cleanup is entered from the signal frame. The run boundary restores the prior
+handler even when startup or cleanup fails.
 
 Persistent clients lazily acquire a separate scope at their first persistent
 queue request, including a notification activity queue on an otherwise
@@ -753,71 +800,56 @@ converts the failure into a normal assertion before a following same-worker
 sentinel. Do not put a thread-mode `pytest-timeout` marker around a real-signal
 proof: its timeout path exits the entire xdist worker and reports an opaque
 `node down` instead of isolating the faulty probe.
-Fixed topology is the default; `TautWatcher` is the explicit owner-thread-only
-dynamic-topology policy. A constructor-time compatibility check rejects legacy
-subclasses that override lifecycle templates before queue construction while
-the `TautBaseWatcher` alias preserves import compatibility.
+Fixed topology is the default; `TautWatcher` opts into inherited dynamic
+topology. A constructor-time compatibility check rejects subclasses overriding
+final lifecycle templates. `TautBaseWatcher` remains an import alias.
 
-Each reactor owns one optional native waiter through its `PollingStrategy`;
-the rule is per reactor, not process-global. Initial setup calls
-`PollingStrategy.start()` once. When the owner commits a later TautWatcher
-topology generation, it builds a candidate for the complete queue set and uses
-`replace_activity_waiter()` without restarting callback or local-wake state.
-Only after replacement succeeds does Taut publish its matching waiter cache and
-generation. Taut closes the returned displaced waiter once. Summon's separate
-fixed-topology control reactor keeps its own strategy and never needs this
-replacement path.
+`BaseReactor` owns the reusable in-memory PEEK cursor map and cursor-qualified
+fetch/pending hooks. A domain subclass advances its source cursor only after
+fulfilling or recording its authoritative obligation. `TautWatcher` adds durable
+chat cursor persistence after the user callback returns. For `taut watch`, that
+means stdout has accepted and flushed the complete record. `WatcherRejected`
+and `StopWatching` preserve the cursor and are not poison; ordinary user-handler
+errors retain the existing three-strike policy. Notification inboxes remain READ
+sources and are never converted to retained chat history.
 
-Returning no native waiter is a supported path, not an error-only fallback.
-The polling strategy still performs authoritative cursor-aware pending checks,
-the timer refreshes membership topology, and handler success persists the
-cursor. The PostgreSQL reactor suite forces this capability result to `None`
-while keeping the real database, Queue objects, watcher loop, topology change,
-post-refresh write, cursor persistence, and shutdown. The existing companion
-test keeps the native LISTEN/NOTIFY topology-rebind path covered.
+Membership refresh now follows the fixed `taut.cache_stale` PEEK source. The
+initial hint timestamp is captured before the initial membership snapshot, so a
+concurrent update remains observable. Every later hint refreshes authoritative
+membership before advancing its cursor, even a self-written hint or one naming
+an unrelated reason. Payload filtering would be incorrect because bounded
+keep-writes can replace an unseen peer hint. Refresh runs before dispatch, where
+the copied topology transaction permits membership additions/removals. An
+explicit dynamic-chat set prevents refresh from deleting fixed cache/control
+sources. The inherited removal path owns queue retirement.
 
-The callback-topology regression proof freezes the module-local monotonic clock:
-it verifies replacement occurs before the second strategy wait without turning
-runner throughput inside an arbitrary 100 ms window into part of [TAUT-8.5].
+Membership writers and notification claimers publish advisory cache hints after
+the authoritative operation. The watcher also publishes immediately after a READ
+notification claim, before decoding or dispatch. A failed hint write reports a
+bounded diagnostic without reversing an already-successful claim. Raw broker
+claims, older Taut writers and crashes between commit and hint may leave a cache
+stale until a later event explicitly schedules its refresh. No repair timer is
+added. Unrelated SQLite data-version changes do not refresh membership; settled
+quiet waits do no per-chat pending queries. The copied transient-SQLite fallback
+still confirms real rows because fresh connections cannot retain data-version
+history.
 
-`TautWatcher` subclasses `BaseReactor`, which itself extends a copied Weft
-`MultiQueueWatcher`, and changes
-the peek behavior at the taut boundary for chat queues: fetch uses
-`peek_many(..., after_timestamp=cursor)`, pending checks use
-`has_pending(after_timestamp=cursor)`, and cursor advancement happens inside the
-taut handler wrapper after the user handler returns. For `taut watch`, that
-return means a complete record has also been flushed to stdout. A closed output
-pipe becomes Taut's public `WatcherRejected`; the Taut error policy translates
-that sentinel to SimpleBroker's internal `StopWatching` mechanism. It stops
-notification, initial-chat, and refresh-added queues immediately, while the
-chat wrapper keeps the cursor in place and does not count the sink as poison
-content. Ordinary handler exceptions retain the three-strike poison rule.
-Notification queues are a separate consumable inbox path and must not be forced
-through chat-history cursor semantics. The vendored multi-queue watcher installs
-its fan-in activity waiter through SimpleBroker's watcher lifecycle hook rather
-than cloning the base retry loop. Membership refresh is wired both to
-SimpleBroker's data-version
-callback and to a timer that deliberately counts as pending work, so an idle
-watcher still reaches the refresh code on backends whose native waiters only wake
-for queue writes. The copied watcher primitive is not edited for Taut cursor semantics;
-those adaptations live in `TautWatcher`. Its data-version callback is a wake
-hint and membership-refresh trigger, not a `last_ts` cache refresh, because
-delivery is governed by taut cursors. `TautWatcher`
-keeps persistent owned SimpleBroker queue handles because it is a long-lived
-actor that may be queried repeatedly. `TautClient.watch()` returns the exact
-instance later driven by `start()`; there is no background proxy or clone. Its
-watcher-owned runtime has a separate persistent metadata Queue and state
-adapter, so closing the source client cannot invalidate the live watcher and
-closing the watcher cannot close the source client. It closes removed
-membership handles with `Queue.close()` and closes all owned handles on the
-drive owner at watcher shutdown. A `TautClient` constructed directly defaults
-to non-persistent queues; the CLI's `CommandContext` constructs its
-one-command client with `persistent=True` because it owns that client for
-exactly one command and closes it in the dispatcher's `finally`, so the
-command's state and queue calls share one broker session instead of
-bootstrapping a connection per sidecar call. Taut does not add a retry classifier
-around queue operations; SimpleBroker owns lock/busy retry, and Taut owns only
-handle lifetime and taut-specific state.
+The pinned Weft scheduler has one capability gap for persistent backends: a
+successful `None` native-waiter result leaves degraded-source confirmation off,
+assuming SQLite's data-version source exists. PostgreSQL has no data-version
+capability, so that combination otherwise waits forever despite a cache hint.
+`BaseReactor._activity_hint_action` checks this capability only without a native
+source and reuses the inherited degraded confirmation path. It adds no timer or
+second loop, and rebinding cannot erase the decision because each strategy return
+rechecks it. The real PostgreSQL forced-no-waiter test covers membership refresh,
+newly-added queue delivery, cursor persistence and retirement. Settled SQLite
+quiet-query tests retain their zero per-chat probe assertion.
+
+The watcher keeps its independent runtime and remains the exact instance returned
+by `client.watch()` and driven by `start()`. Closing the source client does not
+invalidate it. The optional public `watcher_type` construction seam permits a
+TautWatcher subclass to reuse this ownership without importing private client
+factories. SimpleBroker remains responsible for queue-operation retries.
 
 `TautClient.watch()` builds a client-owned `TautWatchRuntime` adapter before it
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local

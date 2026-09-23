@@ -302,10 +302,17 @@ class TautClient(
         *,
         threads: list[str] | None = None,
         persistent: bool = True,
+        watcher_type: type[TautWatcher] | None = None,
     ) -> TautWatcher:
         from taut.client._watching import _watch_runtime_for_client
         from taut.watcher import TautWatcher
 
+        watcher_class = TautWatcher if watcher_type is None else watcher_type
+        if watcher_type is not None and (
+            not isinstance(watcher_type, type)
+            or not issubclass(watcher_type, TautWatcher)
+        ):
+            raise TypeError("watcher_type must be a TautWatcher subclass")
         self.last_thread_display_names.clear()
         self._ensure_no_incomplete_channel_rename()
         parsed_threads = (
@@ -343,7 +350,7 @@ class TautClient(
         )
         watcher: TautWatcher | None = None
         try:
-            watcher = TautWatcher(
+            watcher = watcher_class(
                 runtime,
                 member["member_id"],
                 handler,

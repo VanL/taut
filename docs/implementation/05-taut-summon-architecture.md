@@ -6,7 +6,7 @@ This document explains the implementation boundary of the `taut-summon`
 extension (`extensions/taut_summon/`): how a summoned agent harness is hosted
 as an ordinary workspace member without a daemon, a bespoke agent protocol, or
 any change to frozen core state. It covers the ears/mouth split, the
-   captive-process/free-agent posture, the driver's three-thread runtime, the
+   captive-process/free-agent posture, the driver's single foreground reactor, the
    two-table session ledger, the `sys.*` control queues, and the
    SimpleBroker-handle ownership boundary the extension holds to.
 
@@ -39,7 +39,7 @@ required persistent-session visibility behavior; 5.3.0 added the live waiter
 replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
 properties Summon requires. Version 5.6.1 added core reaction fanout; the
-repository-wide supported floor is now `simplebroker>=8.3.1`, aligned with
+repository-wide supported floor is now `simplebroker>=8.4.0`, aligned with
 `simplebroker-pg>=4.3.1`. The pair also exposes closeable public Queue
 iterators with same-thread synchronous operation cleanup. Version 8.0.0 makes
 ascending public message id the default retrieval order and advances the
@@ -222,88 +222,49 @@ telemetry and diagnostics, never parsed into speech.
 Sealing (`--exec "docker run -i ..."`) is composition over this boundary,
 not architecture.
 
-### The three-thread driver ([SUM-5], [SUM-7.1], [SUM-9])
+### One foreground reactor ([SUM-5], [SUM-7.1], [SUM-9])
 
-One foreground process per summoned member ([TAUT-2] holds end to end),
-running three concurrent lanes that a cold reader must keep distinct:
+`SummonReactor` derives from the public `TautClient.watch` watcher class. Its
+foreground owner performs chat policy, cursor commits, control dispatch, rate
+audits, liveness updates, readiness, and provider generation transitions. It
+inherits the common process/wait/stop lifecycle and one data-version or PG
+listener source. There is no separate control reactor, chat watcher thread,
+supervisor Event wait, or second membership poll.
 
-1. **Ears — the watch handler.** A `TautClient.watch` handler that is
-   exactly self-filter → format ([SUM-5.2]) → `inject()` → return. The
-   watcher's handler-return contract *is* the injection ledger: it advances a
-   thread's cursor only after the handler returns ([TAUT-8.4]). The driver
-   therefore contains **zero cursor code** ([SUM-5.4]). A failed `inject()`
-   raises out of the handler, the cursor stays, and the message re-injects —
-   at-least-once to the process boundary. Adapter death is fatal-and-resume:
-   the handler halts injection (blocking until the driver stops the watcher)
-   so [TAUT-8.4]'s three-strikes poison advance can never skip live chat.
-   PTY orientation settling spends one aggregate deadline across reader start
-   and quiet observation. It waits for the reader to observe at least one byte
-   from the child before treating a quiet interval as settled; if a harness
-   never prints a prompt, the bounded settle deadline remains the fallback.
-   Terminal retirement and master closure wake this wait through the handle's
-   synchronized settle event, so STOP does not spend the remaining budget.
-   This keeps slow-starting PTY children from losing orientation during process
-   startup while preserving a hard upper bound.
-   The driver's readiness boundary is the watcher's initial drain, not thread
-   construction: `TautWatcher.notify_ready_after_initial_drain()` signals after
-   the polling strategy is started and the first drain has completed, and only
-   then does the driver log `summoned ...`. Tests and operators may use that log
-   as a readiness marker because it is downstream of the consumer-ready event,
-   not because logging itself synchronizes the watcher.
-   `TautWatcher` uses persistent owned queue handles because the watcher is a
-   long-lived actor that may be re-queried. It still spends little time in
-   locked database sections: reads and cursor writes are short SimpleBroker
-   operations, removed membership handles are closed with `Queue.close()`, and
-   shutdown closes the owned client. If the watcher exits, the supervisor
-   rebuilds the watcher over the same live provider generation. Reusable write
-   cancellation stops and joins that watcher attempt, then rebuilds it over the
-   same handle without spending watcher or harness failure budgets. Before
-   readiness, replacement attempts share the original bounded deadline. A real
-   pump exit or genuine injection failure still spends the harness crash budget.
-   Transient CLI clients remain non-persistent.
-   Multiline chat remains one user-role event. `format_injection()` indents
-   every continuation line without stripping content, so `[system]`,
-   `[notify]`, or a speaker-like prefix stays visibly inside the originating
-   frame. This is attribution hygiene, not prompt-injection prevention.
-   Notification events retain inbox claim semantics and are therefore at most
-   once; the referenced source chat remains durable.
-2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
-   life of the child ([SUM-7.1]): `activity` updates member liveness via a
-   rate-limited token-selected `whoami()` (the public [IAN-3.3] side effect,
-   never a private `_state` reach), and `exit` enters the [SUM-11] fresh-
-   generation recovery path. An undrained stream is a child-output deadlock; the
-   pump exists to prevent it and participates in shutdown ordering. Each pump
-   captures one immutable generation context; a lock-backed active-token check
-   is atomic with every ledger, control, presence, chat, driver-field, and wake
-   effect. A checked join retires the token and forbids the next spawn if the
-   pump remains alive. Adapter stream failure may use the provider resume path;
-   broker/storage failure is stored on the generation and transferred to the
-   foreground as a fatal driver error after teardown, never as an unhandled
-   thread exception or a provider crash.
-3. **Control plane — its own consumer thread.** See below.
+Formatting and self filtering run synchronously on that owner. One bounded
+injection worker receives an immutable handle, generation, and formatted text;
+it performs only native injection and publishes a completion. Until the owner
+accepts success, the chat cursor is retained and all non-control acquisition
+is gated, including claim-based notifications. Failure and cancellation do not
+advance the cursor or spend malformed-content poison strikes. A checked join
+establishes real worker retirement before source retirement or provider replacement.
 
-The backstop audit ([SUM-10]) rides the control thread, not the ears. The watch
-stream is not a complete source for own sends: [TAUT-7.4] normally catches the
-sender up after commit, though an intervening unread row can leave an own send
-visible. Counting in the handler would therefore be incomplete and unstable.
+The continuous PTY event pump owns native output draining. It publishes frozen
+generation-tagged activity, exit, and retirement records; it never constructs a
+Taut client. The foreground rejects stale generations and performs liveness
+writes. Spawn, settle, attach, orientation, and close likewise use bounded
+native workers. Successful native results remain pending until the owner's
+broker acceptance succeeds. If acceptance fails, terminal cleanup still owns
+that result and cannot strand a newly spawned provider handle. Ownership is published before pump startup.
 
-`_driver.py` deliberately remains the cohesive owner of bootstrap, harness
-generation, event pump, watcher, and their generation fences. These are one
-live state machine, with named transition tests. Splitting the file by size
-would hide the side-effect fences between transitions and make stale-generation
-writes easier to introduce.
+Native workers notify the same retained arbiter after publication. The POSIX
+adapter's select/quiet-child observation and Windows cancellation/ConPTY waits
+remain because they own OS readiness and process retirement. They are not
+broker schedulers. The response bound starts at immutable publication and is
+one strategy pass; it does not claim that a native operation finishes instantly.
 
-Shutdown ordering (shared by SIGINT and control STOP): publish shutdown →
-request terminal close on the adapter → stop and checked-join the watcher →
-foreground `close()` while the event pump drains → checked pump join →
-ownership-checked ledger release → exit 0. Signal and control paths call only
-nonblocking `request_close()`; they never wait, join, reap, or release streams.
-Assignment plus a post-publication shutdown/control-failure recheck covers both
-spawn/stop orders without another driver lock. `_teardown_generation()` is the
-only blocking adapter finalizer. A fatal control error remains primary when it
-races an adapter failure: generation teardown still runs inside the control
-error's exception scope, and cleanup failures attach as notes rather than
-replacing the control diagnostic.
+Readiness requires control installation, orientation completion, and the
+watcher's initial drain with no pending injection. Its bounded initial-drain
+clock starts after orientation, preserving the earlier boundary. The inline
+host callback must return promptly; a peer thread may issue blocking STATUS.
+SIGINT/SIGTERM publish scalar intent and the SimpleBroker 8.4 safe notification
+latch; ordinary owner execution performs cancellation and teardown.
+
+Shutdown closes native work, checks worker/pump retirement, releases the owned
+ledger slot, and only then constructs the correlated STOP outcome. One source
+and one `ControlPolicy` are created for the run. Escaping broker or OS failures
+end that run after cleanup; no enclosing source-replacement loop remains.
+Only a harness exit schedules the existing bounded harness-restart deadline.
 
 ### Owned process domains ([SUM-7.1])
 
@@ -406,7 +367,7 @@ XTVERSION, OSC color, and kitty keyboard query. Kitty keyboard mode sets and
 cursor-style sets are consumed as no-reply mode changes so they do not become
 false `awaiting_query` diagnostics. Unknown report-shaped queries get no
 fabricated reply and instead surface `awaiting_query` through
-`AdapterHandle.status_fields()`. The control loop merges those fields into
+`AdapterHandle.status_fields()`. The control policy merges those fields into
 STATUS after checking reserved keys. Incomplete CSI/OSC retention is capped;
 oversized prefixes are discarded or reduced to the last bounded plausible ESC
 suffix, and deterministic byte-scan tests keep parser work linear.
@@ -586,9 +547,9 @@ closing its native handle, and cleanup preserves the first failure. The 100 ms
 wait is an event-observation cadence, never a success condition or substitute
 for line/cancel evidence.
 
-The bridge is a single select loop over the human tty, PTY master, and a
-shutdown waker pipe. It is not two blocking copy threads, because STOP must be
-observable during attach. It never intercepts `ESC` sequences. In `finally`, it
+The POSIX bridge is one bounded select loop over the human tty and PTY master.
+It checks shutdown between passes, so STOP remains observable during attach
+without a polling thread forwarding an Event into a pipe. It never intercepts `ESC` sequences. In `finally`, it
 writes a fixed reset blast to the local tty and restores termios, because the
 harness keeps running and will not clean up the user's terminal after detach.
 PTY test peers must drain that blast before joining the bridge: the deliberate
@@ -702,60 +663,21 @@ the ledger cannot alias an audited chat queue. The pre-hardening
 `taut_summon_state` queue may remain as inert broker metadata after upgrade;
 the durable summon rows live in sidecar tables and require no row migration.
 
-The driver consumes control with fixed-topology `_ControlReactor`, a policy
-subclass of core's shared `BaseReactor`. It inherits the guarded process/wait/
-stop templates unchanged, owns directly constructed persistent queue handles,
-and holds an independent BrokerSession scope for owner-thread cache lifetime.
-That preserves at-most-once command semantics: a
-command lost to a driver crash is moot, STOP on a dead driver is meaningless,
-and STATUS/PING requesters retry. `TautClient.watch` is chat-only and knows
-nothing about `sys.*`. Replies go to a **per-request** queue
-`sys.rsp_<member-id>_<request_id>` so concurrent clients from different
-terminals never consume each other's answers. Control reads and writes call
-SimpleBroker queues directly. The only retry Taut owns here is semantic:
-idempotent STATUS/PING clients may resend the same correlated request after no
-reply on the same reply queue. Broker exceptions are not retried by substring.
-The control thread stays responsive while an `inject()` is blocked on a stalled
-harness because STOP calls nonblocking `request_close()`. That operation
-publishes permanent retirement and cancels the in-flight write under [SUM-7.1];
-the foreground alone performs blocking finalization.
+`ControlPolicy` installs a fixed READ source in the same `SummonReactor`.
+Control stays dispatchable while injection is pending. STOP requests native
+cancellation; STATUS/PING report the same owner's current state. Public requests
+use a bounded `_ReplyReactor(BaseReactor)` with inherited `run()`, correlated
+READ delivery, and deadline/retry policy. STATUS/PING may resend the same
+request; STOP never does. Replies use isolated per-request queues so concurrent
+requesters cannot consume each other's response.
 
-`ControlLoop` is a thin supervisor around replaceable reactor generations.
-Dispatch, native wait, and rate-audit faults are recorded while their current
-stack is live, then classified only after the turn or wait unwinds. A pending
-recoverable fault gates the loop: it builds a complete persistent handle bundle
-off to the side, installs it atomically, closes the retired complete bundle,
-and continues from loop head so no method runs on the old reactor. Partial
-construction closes every resource already created. Failed replacement uses a
-stop-interruptible capped backoff and permits no further old-reactor turn;
-threshold exhaustion is fatal. The rate audit runs at the same between-turn
-seam before the wait timeout is computed, and the timeout is bounded by both
-the inactive probe and next audit deadline.
-
-The driver wraps the control thread with a separate failure event and primary
-exception. Initial open failure, programming failure, exhausted replacement,
-or an unexpected clean return stops the watcher, requests terminal close on
-the adapter, wakes the foreground supervisor, and exits nonzero after
-foreground teardown and normal release cleanup. Expected STOP and driver
-shutdown remain clean exits. Control failure never spends the watcher-rebuild
-or provider-resume budgets.
-
-Before publishing `shutdown_complete`, the foreground freezes one immutable
-STOP outcome with three distinct facts: teardown error, release exception, and
-release confirmation. The control owner maps those facts to an ACK only when
-teardown is clean and release is confirmed. Failures keep their actual plane in
-the correlated reply; teardown and ledger failures are never collapsed into a
-generic release boolean. The event is the publication fence, so the control
-thread never reads a partially assembled result.
-
-Each chat-watcher attempt also has attempt-local stop state and captures the
-current harness-generation death event. The foreground publishes that stop
-before reading `self._watcher`; the owner publishes its watcher, rechecks stop,
-generation death, shutdown, and control failure, then alone registers readiness
-or enters `run()`. Foreground callers use `request_stop()` only. The owner
-performs close in `finally`, and a checked bounded join is fatal if the owner
-does not exit, preventing rebuild or a later harness generation from starting
-over a live stale watcher.
+Broker faults escaping the owner turn unwind the driver. Partial source
+construction closes all acquired resources. A successful native phase result
+remains owned during failed broker acceptance, so terminal cleanup can retire
+it. The source is never reconstructed to retry the turn. Terminal unwind joins pending
+native work and closes even a spawned handle not yet accepted by the owner.
+The existing bootstrap client sends the final STOP reply after source retirement
+and release; no persistent reply-only client is created.
 
 Control cleanup closes broker handles but does not hard-delete control queues.
 Completed commands and replies are already claim-consumed by `read_one`; every
@@ -766,16 +688,28 @@ unregistered `sys.*` queue. That inert residue is preferable to running
 delete-all maintenance in the same high-churn SQLite window as driver, provider,
 and CLI subprocesses.
 
-The rate backstop ([SUM-10]) is a circuit breaker, not a content policy. Before
-each due pass, the control owner calls read-only
-`TautClient.joined_thread_names()` and reconciles auxiliary persistent handles.
-Left-thread handles close on that owner; rejoin gets a fresh handle while the
-retained audit cursor and active-window timestamp dedupe survive. Never-seen
-threads start at the later of driver audit start and the moving window floor,
-never at current head. A soft breach injects a nudge and logs; a hard breach
-interrupts the harness and surfaces through STATUS plus logs — never posting
-to chat and never leaving an unconsumed control reply. It limits posting volume;
-it does not detect a semantic loop below the configured rate.
+The rate backstop ([SUM-10]) reads the existing reactor's managed chat queues
+at its owner deadline. Membership follows the watcher's authoritative cache
+hint refresh; the policy does not discover membership or open auxiliary chat
+leases. Departures therefore follow the same bounded source lifecycle. Audit
+cursors and active-window timestamp dedupe belong to that run's single policy. Never-seen
+threads start at the later of driver audit start and the moving window floor.
+A soft breach schedules a native nudge; a hard breach interrupts the harness
+and updates STATUS. Neither operation posts to chat. Interrupt uses the same
+native-operation helper and result queue as other phases, with one separately
+retained worker because cancellation must overlap the write it cancels. It adds
+no loop, timer or event source. The owner records cancellation intent before
+submission, gates new delivery/phases until retirement, and treats only its own
+cancelled orientation/nudge as expected. Terminal cleanup uses nonblocking
+`request_close()` and checked worker retirement.
+
+POSIX attach reads shutdown in its existing bounded native `select` pass; the
+Event-to-pipe forwarder and its polling thread are gone. Windows console cleanup
+retries only actual interruption (`KeyboardInterrupt`, `SystemExit`, or
+`InterruptedError`); deterministic failures preserve the primary error and end
+cleanup instead of spinning. Generation state holds only the fencing token and
+exit result. Run-owned latches replace generation aliases; no lock serializes
+owner-only generation updates.
 
 POSIX PTY and Windows ConPTY mechanics remain separate because their resources
 and cancellation primitives differ. STATUS reserved keys remain separate from
@@ -788,25 +722,22 @@ answer the same ownership question; those other similar-looking sets do not.
 Summon follows the same ownership rule as Weft's `BaseTask`: SimpleBroker owns
 queue mechanics and retry; Taut owns domain state, control correlation, and
 handle lifetime. `TautClient.queue()` returns a plain `simplebroker.Queue`.
-Long-lived actors use persistent owned handles: the chat watcher, summon
-control loop, driver ledger client, and watcher client. One-shot paths use
+Long-lived owners use persistent handles: the shared Summon reactor and its
+client, plus the bootstrap ledger client. One-shot paths use
 transient handles: ordinary `taut say`, CLI
 `status`/`stop`, per-request reply queues, and short support reads outside
 loops. Owned lifetime ends with `Queue.close()`, reactor scope close, or
-`TautClient.close()`. Replacement may install a new complete owner before the
-old scope closes; same-thread cache recycling leaves the replacement's handles
-usable. Dynamic audit queues remain direct, are evicted on leave, and are not
-retained by the reactor scope.
+`TautClient.close()`. A source failure retires that scope and ends the run.
+Audit reads borrow managed chat queues; they never add auxiliary leases.
 
-If a broker fault surfaces on a long-lived control path, summon records health
-detail and defers complete handle replacement to the control owner's
-between-turn seam. It never closes a reactor from its handler, error callback,
-or inherited wait template. It does not classify
-`malformed`, magic mismatch, disk I/O, timestamp row-shape, or
-`malformed summon session row` errors as transient in Taut. If SimpleBroker
+A broker or OS error escaping the owner turn closes the source and provider
+and ends the run. Cleanup attempts source stop and client close while retaining
+the original failure. A reply-write fault alone is logged and dropped after
+closing its transient handle; the requester's timeout owns its disposition.
+There is no permanent control-health state or failure count. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-`simplebroker>=8.3.1` is the minimum supported runtime. Its reference reactor
+`simplebroker>=8.4.0` is the minimum supported runtime. Its reference reactor
 and public BrokerSession design provide process-shared keyed resources with
 owner-thread-local cores; cancellation can interrupt watcher bootstrap while
 PhaseLock or SQLite connection setup is blocked; runner cleanup does not infer
@@ -935,7 +866,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, exit-code mapping, and standalone unexpected-exception capture boundary |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, nonblocking terminal-close request, foreground finalization; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
-| `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
+| `extensions/taut_summon/taut_summon/_control.py` | Same-owner `ControlPolicy`, bounded `_ReplyReactor`, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_process_domain_posix.py` | POSIX atomic spawn boundary, capability-minimal process I/O view, non-reaping group owner, and one leader reap ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.11/3.12 |
@@ -963,9 +894,31 @@ require a separately drained subprocess pipe.
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_pty_posix.py`, `extensions/taut_summon/taut_summon/_pty_windows.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, platform primitive cases in `extensions/taut_summon/tests/test_pty_posix.py` and `extensions/taut_summon/tests/test_pty_windows.py`, plus driver, interaction, and live-harness cases |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |
-| [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |
+| [SUM-9], [SUM-10], [SUM-11], control and recovery | `_control.py::ControlPolicy`, `_ReplyReactor`, `_driver.py::_open_owner_source` | `test_control.py`, `test_owner_lifecycle.py`, real process `test_driver.py` |
 | [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
-| [SUM-13], [SUM-13.1], typed embedding, exact-run readiness, and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py` real scripted readiness, control, resume, rename, replacement, and callback-failure cases; `extensions/taut_summon/tests/test_driver.py` readiness timeout/session precedence and callback-absent gate; `extensions/taut_summon/tests/test_control.py` control-open publication ordering; `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases; `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
+| [SUM-13], [SUM-13.1], typed embedding, exact-run readiness, and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py` real scripted readiness, control, resume, rename, replacement, and callback-failure cases; `extensions/taut_summon/tests/test_owner_lifecycle.py` readiness deadline, real broker failure without replacement, and partial acquisition cleanup; `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases; `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
+
+### Restoration verification map
+
+The removed driver tests named peer-control threads, watcher publication gates,
+halt acknowledgements, and pump-owned clients. Those mechanisms no longer exist.
+Their observable obligations now fire in `test_owner_lifecycle.py`: partial
+source acquisition cleanup, real broker failure and ledger release, retained
+spawn acceptance, pump-start failure ownership, terminal late-spawn cleanup,
+stale-generation rejection, cancellation, harness-restart deadline STOP precedence,
+held-lock physical signals, readiness clock continuity, teardown error truth,
+and bounded audit leases under membership churn. `test_reactor.py` pins one
+injection, owner formatting, retained cursor, pending notification non-claim,
+and infrastructure failure classification. `test_control.py` uses real broker
+request/reply traffic while delivery is blocked. Existing real process driver,
+controller, interaction, and conformance tests retain provider exit, resume,
+ledger release, STOP and attach behavior.
+
+The TUI decline test now causally holds orientation completion until the real
+PTY exit publication. The old exact-spawn count raced injection flush against
+child processing; it accidentally assumed a pre-readiness exit. The updated
+fixture proves that case explicitly, while normal crash tests exercise exits
+after readiness. No production readiness padding was added.
 
 ## Change Guidance
 
@@ -1083,5 +1036,5 @@ from manufacturing invalid evidence.
   SimpleBroker handle ownership, integrity probes, and watcher handle lifetime
   proof
 - `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — implemented shared
-  reactor lifecycle, Summon inter-turn recovery, native control wake, and
+  reactor lifecycle, Summon owner-turn failure propagation, native control wake, and
   fatal control-lane supervision

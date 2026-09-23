@@ -630,3 +630,27 @@ def test_reversed_generated_markers_fail_without_writing(tmp_path: Path) -> None
     assert result.returncode == 1
     assert "markers are reversed" in result.stderr
     assert spec.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.parametrize("relative", ["taut/watcher.py", "taut/other.py"])
+@pytest.mark.parametrize(
+    "code,upstream,local",
+    [("C901", "045", "093"), ("SIM102", "242", "094"), ("BLE001", "339", "095")],
+)
+def test_vendored_markers_are_scoped_and_mapped_to_local_registry(
+    tmp_path: Path, relative: str, code: str, upstream: str, local: str
+) -> None:
+    source = tmp_path / relative
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"def mutation():  # noqa: {code} approved [TS-3.1] [RUFF-SUP-{upstream}] exception\n"
+        "    pass\n"
+    )
+    if relative == "taut/watcher.py":
+        directives = ruff_suppression_index.scan_source_directives(tmp_path, [source])
+        assert len(directives) == 1
+        assert directives[0].group_id == f"RUFF-SUP-{local}"
+        assert directives[0].codes == frozenset({code})
+    else:
+        with pytest.raises(ruff_suppression_index.PolicyMismatch, match="malformed"):
+            ruff_suppression_index.scan_source_directives(tmp_path, [source])

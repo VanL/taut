@@ -784,7 +784,6 @@ def test_bare_watch_labels_dm_created_after_watcher_construction(
     try:
         alice.log("lobby")
         bob.say("@alice", "created while watching")
-        watcher._next_membership_refresh_at = 0
         for _ in range(4):
             watcher.process_once()
             if labels_seen:

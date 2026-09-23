@@ -232,6 +232,13 @@ before handoff, and the watcher drive thread releases its own cache and scopes
 before exiting. Client shutdown does not close a surviving watcher's queues,
 including when its bounded stop times out.
 
+Runtime owners follow [TAUT-8.5]. The active conversation's public watcher owns
+its broker source and uses `PollingStrategy` as its wake arbiter. The Textual
+loop owns broker-free presentation state and is the host-loop arbiter only for
+that state. Serialized workers and the one-shot watcher-retirement observer
+publish immutable results into Textual; they do not observe broker state or
+become peer schedulers.
+
 No TUI worker is a user-managed daemon. Normal shutdown stops and joins owned
 watchers, restores any logging and terminal state, and resolves every active
 TUI-owned operation according to this spec. Abrupt process or OS termination
@@ -878,7 +885,11 @@ and preserve drafts and selection.
 A primary domain failure wins over cleanup, toast, focus, logging, or redraw
 failure. A successful domain mutation remains successful even if an auxiliary
 presentation update fails; the TUI refreshes from public state and reports the
-presentation failure separately.
+presentation failure separately. Summon callbacks report ordinary presentation
+errors through the existing safe notification path, retaining the primary
+worker failure when its error view also fails. Worker return retires the owned
+token and its Summon operation state before rendering. Control-flow exceptions
+raised by rendering propagate rather than being silently swallowed.
 
 When enabled under [TAUT-13], an `Exception` raised out of `TautApp.run()`
 reaches the installed command's core dispatch boundary. Textual 8.2.8 instead
@@ -1034,6 +1045,14 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned ownership audit;
+  the active public watcher inherits the shared copied scheduler path. The
+  plan retains the one-shot watcher-retirement observer and bounded confirmation
+  cancellation adapter as valid broker-free local work, while allowing the
+  existing request Event to become cancellation-complete if S0 proves the same
+  ordering. It proposes a [TUI-4.1] citation to core [TAUT-8.5]. Spec corrections
+  await promotion.
 
 - `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md` — plans viewport
   ownership corrections and native input/navigation diagnosis under existing contracts.

@@ -4212,6 +4212,7 @@ class _InterruptingWatch:
 
 class _InterruptingWatchClient:
     def __init__(self, items: list[Message | Notification]) -> None:
+        self.last_thread_display_names: dict[str, str] = {}
         self.items = items
         self.watcher: _InterruptingWatch | None = None
         self.closed = False

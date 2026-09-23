@@ -297,15 +297,13 @@ def _run(
     *,
     cwd: Path,
     env: dict[str, str],
-    expected_returncode: int | None = 0,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
-    terminate_process_group: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     print(f"[wheel-matrix] + {_format_command(command)}")
-    start_new_session = terminate_process_group and os.name == "posix"
+    start_new_session = os.name == "posix"
     creationflags = (
         int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        if terminate_process_group and os.name == "nt"
+        if os.name == "nt"
         else 0
     )
     try:
@@ -324,24 +322,16 @@ def _run(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        if terminate_process_group:
-            _terminate_owned_process_group(process)
-        else:  # pragma: no cover - every production command owns its group
-            process.kill()
-            process.communicate()
+        _terminate_owned_process_group(process)
         _fail(f"command timed out after {timeout:g}s: {_format_command(command)}")
     except KeyboardInterrupt:
-        if terminate_process_group:
-            _terminate_owned_process_group(process)
-        else:  # pragma: no cover - every production command owns its group
-            process.kill()
-            process.communicate()
+        _terminate_owned_process_group(process)
         raise
     completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     detail = _process_detail(completed)
-    if expected_returncode is not None and completed.returncode != expected_returncode:
+    if completed.returncode != 0:
         _fail(
-            f"command exited {completed.returncode}, expected {expected_returncode}: "
+            f"command exited {completed.returncode}, expected 0: "
             f"{_format_command(command)}{': ' + detail if detail else ''}"
         )
     if detail == "subprocess emitted a Python traceback":
@@ -526,7 +516,6 @@ def _run_python_probe(
         cwd=cwd,
         env=env,
         timeout=CONTROL_SMOKE_TIMEOUT_SECONDS,
-        terminate_process_group=True,
     )
 
 
@@ -738,10 +727,7 @@ try:
                 f"summon driver exited before readiness rc={driver.returncode} "
                 f"stdout={stdout!r} stderr={stderr!r}"
             )
-        try:
-            live = controller.list_live()
-        except Exception:
-            live = ()
+        live = controller.list_live()
         if any(member.name == "artifact-probe" for member in live):
             break
         time.sleep(0.05)

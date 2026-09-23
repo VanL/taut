@@ -606,6 +606,13 @@ class TuiSummonInteraction:
         request: TerminalAttachConfirmationRequest,
         cancel: threading.Event | None,
     ) -> None:
+        """Sample cancellation on this worker until the request is resolved.
+
+        A normal answer resolves the request and leaves no extra thread.
+        Cancellation has no separate owned waiter, so this same blocked
+        worker observes it between short waits and refuses the prompt.
+        """
+
         while not request.resolved.wait(timeout=0.05):
             if cancel is not None and cancel.is_set():
                 request.resolve(False)

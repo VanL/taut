@@ -52,7 +52,7 @@ class LogCommand:
             quiet=context.quiet,
             stdout=context.stdout,
             stderr=context.stderr,
-            thread_labels=getattr(client, "last_thread_display_names", None),
+            thread_labels=client.last_thread_display_names,
         )
         return 0
 

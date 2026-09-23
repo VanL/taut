@@ -1,140 +1,83 @@
-"""Unit tests for the control-plane shapes ([SUM-9]).
+"""Control protocol and owner-called policy proofs ([SUM-9], [SUM-10]).
 
-Contract under test: docs/specs/04-summon.md [SUM-9] — the ``sys.ctl_`` /
-``sys.rsp_`` queue derivation from the member id, the single-line JSON
-bodies keyed ``command``/``request_id``, and replies correlating by
-``request_id`` with a ``status`` field. The mirrored weft subset is
-copied by shape (../weft/weft/core/tasks/base.py), never by code.
-
-The driver-side loop and client round-trips against a *live* driver are
-exercised end-to-end in ``test_driver.py`` with the real scripted provider.
+The single SummonReactor drives control alongside chat. This suite preserves
+protocol, rate, ordering, fault and final STOP obligations without reconstructing
+the retired ControlLoop/_ControlReactor scheduling layer.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 import threading
-import time
-import weakref
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import taut_summon._control as control_module
 from simplebroker import Queue
-from simplebroker.ext import (
-    DatabaseError,
-    OperationalError,
-    StopWatching,
-)
+from simplebroker.ext import DatabaseError, OperationalError
 from taut_summon._control import (
-    _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-    _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-    _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     ControlClient,
-    ControlLoop,
+    ControlPolicy,
     StopShutdownOutcome,
-    _BrokerHandles,
     control_in_queue_name,
     control_out_queue_name,
     encode_control_command,
     encode_control_reply,
     parse_control_request,
 )
+from taut_summon._reactor import PreparedInjection, SummonReactor
 
+from taut.client import TautClient
 from taut.envelope import encode_envelope
 from taut.watcher import BaseReactor
 
 pytestmark = pytest.mark.sqlite_only
 
 
-class _FakeControlQueue:
-    def __init__(self, name: str, harness: _FakeControlQueues) -> None:
-        self.name = name
-        self._harness = harness
-
-    def write(self, body: str) -> None:
-        self._harness.writes.append((self.name, json.loads(body)))
-
-    def read_one(self) -> str | None:
-        return self._harness.read_reply(self.name)
-
-    def delete(self) -> None:
-        self._harness.deleted.append(self.name)
-
-    def close(self) -> None:
-        self._harness.closed.append(self.name)
-
-
-class _FakeControlQueues:
-    def __init__(self, *, reply_after_writes: int | None) -> None:
-        self.reply_after_writes = reply_after_writes
-        self.writes: list[tuple[str, dict[str, object]]] = []
-        self.deleted: list[str] = []
-        self.closed: list[str] = []
-
-    def queue(self, name: str) -> _FakeControlQueue:
-        return _FakeControlQueue(name, self)
-
-    def read_reply(self, name: str) -> str | None:
-        ctl_writes = [
-            payload
-            for queue_name, payload in self.writes
-            if queue_name.startswith("sys.ctl_")
-        ]
-        if self.reply_after_writes is None:
-            return None
-        if len(ctl_writes) < self.reply_after_writes:
-            return None
-        latest = ctl_writes[-1]
-        reply_to = latest.get("reply_to")
-        if reply_to != name:
-            return None
-        return encode_control_reply(
-            str(latest["command"]), "ok", request_id=str(latest["request_id"])
-        )
+def _make_policy(rate_limit: int) -> ControlPolicy:
+    # Pure rate/status tests own no storage. Integration tests below use real
+    # client/runtime/reactor owners, not a fake scheduler.
+    return ControlPolicy(
+        client=cast(Any, SimpleNamespace(list_threads=lambda **kwargs: [])),
+        reactor=cast(Any, SimpleNamespace(_queue=lambda _name: None)),
+        member_id="m_" + "a" * 26,
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=lambda: None,
+        send_nudge=lambda _text: None,
+        interrupt=lambda: None,
+        rate_limit=rate_limit,
+        ledger_queue_name="taut_meta",
+        driver_pid=123,
+        driver_start_time="driver-start",
+        audit_start_ts=0,
+    )
 
 
-class _ReplyOnlyQueues(_FakeControlQueues):
-    def __init__(
-        self, *, reply_after_writes: int | None, requests: _FakeControlQueues
-    ) -> None:
-        super().__init__(reply_after_writes=reply_after_writes)
-        self._requests = requests
-
-    def read_reply(self, name: str) -> str | None:
-        ctl_writes = [
-            payload
-            for queue_name, payload in self._requests.writes
-            if queue_name.startswith("sys.ctl_")
-        ]
-        if self.reply_after_writes is None:
-            return None
-        if len(ctl_writes) < self.reply_after_writes:
-            return None
-        latest = ctl_writes[-1]
-        reply_to = latest.get("reply_to")
-        if reply_to != name:
-            return None
-        return encode_control_reply(
-            str(latest["command"]), "ok", request_id=str(latest["request_id"])
-        )
-
-
-class _CloseableQueue:
-    def __init__(self) -> None:
-        self.closed = False
-        self.deleted = False
-
-    def close(self) -> None:
-        self.closed = True
-
-    def delete(self) -> None:
-        self.deleted = True
+def _install_policy(client: TautClient, reactor: SummonReactor) -> ControlPolicy:
+    policy = ControlPolicy(
+        client=client,
+        reactor=reactor,
+        member_id=client.whoami().member_id,
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=reactor.request_stop,
+        send_nudge=lambda _text: None,
+        interrupt=lambda: None,
+        rate_limit=60,
+        ledger_queue_name="taut_meta",
+        driver_pid=123,
+        driver_start_time="driver-start",
+        audit_start_ts=0,
+    )
+    policy.install()
+    reactor.control_queue_name = control_in_queue_name(policy._member_id)
+    reactor.owner_turn = policy.turn
+    return policy
 
 
 class _FailingReplyQueue:
@@ -175,224 +118,6 @@ class _ReplyClient:
         self.names.append(name)
         self.persistent_flags.append(persistent)
         return self.queue_obj
-
-
-class _FlakyStatusControl:
-    def __init__(self, failures: int) -> None:
-        self.failures = failures
-        self.calls = 0
-
-    def request(self, command: str, *, timeout: float) -> dict[str, Any] | None:
-        assert command == "STATUS"
-        assert timeout == 1.0
-        self.calls += 1
-        if self.calls <= self.failures:
-            raise OperationalError("database is locked")
-        return {"status": "ok"}
-
-
-def _fake_broker_handles() -> _BrokerHandles:
-    return _BrokerHandles(
-        client=cast(Any, object()),
-        ctl_in=cast(Queue, _CloseableQueue()),
-        ctl_out=cast(Queue, _CloseableQueue()),
-        ledger=cast(Queue, _CloseableQueue()),
-        thread_queues={"general": cast(Queue, _CloseableQueue())},
-    )
-
-
-def _make_loop(rate_limit: int) -> ControlLoop:
-    # A control loop with no db handles (never .run()/._open()'d): enough to
-    # exercise the pure in-memory rate-backstop and health logic. The audit
-    # and reply paths tolerate the None handles defensively.
-    return ControlLoop(
-        member_id="m_" + "a" * 26,
-        db_path=None,
-        token="taut-tok",
-        provider="scripted",
-        threads=("general",),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=threading.Event(),
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=rate_limit,
-        ledger_queue_name="taut_meta",
-        driver_pid=123,
-        driver_start_time="driver-start",
-        audit_start_ts=0,
-    )
-
-
-def test_control_ready_publication_follows_open_and_precedes_first_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ready = threading.Event()
-    shutdown = threading.Event()
-    loop = _make_loop(60)
-    loop._ready = ready
-    loop._shutdown = shutdown
-    events: list[str] = []
-
-    class Reactor:
-        def process_once(self) -> None:
-            assert ready.is_set()
-            events.append("turn")
-            shutdown.set()
-
-        def wait_for_activity(self, *, timeout: float) -> None:
-            del timeout
-
-    def open_loop() -> None:
-        assert not ready.is_set()
-        events.append("open")
-        loop._control_reactor = cast(Any, Reactor())
-
-    monkeypatch.setattr(loop, "_open", open_loop)
-    monkeypatch.setattr(loop, "_close", lambda: events.append("close"))
-    monkeypatch.setattr(loop, "_audit_if_due", lambda: None)
-
-    loop.run()
-
-    assert ready.is_set()
-    assert events == ["open", "turn", "close"]
-
-
-def test_control_ready_is_not_published_when_initial_open_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ready = threading.Event()
-    loop = _make_loop(60)
-    loop._ready = ready
-    failure = OSError("control open failed")
-
-    def fail_open() -> None:
-        raise failure
-
-    monkeypatch.setattr(loop, "_open", fail_open)
-    monkeypatch.setattr(loop, "_close", lambda: None)
-
-    with pytest.raises(OSError) as caught:
-        loop.run()
-
-    assert caught.value is failure
-    assert not ready.is_set()
-
-
-def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[SUM-10]: membership is live, while cursors survive handle churn."""
-
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    bot = control_module.TautClient(db_path=db_path, as_name="bot")
-    bot.join("general")
-    created = bot.last_created_member
-    assert created is not None and created.token is not None
-    with Queue("audit-clock", db_path=str(db_path)) as clock:
-        audit_start = clock.generate_timestamp()
-
-    loop = ControlLoop(
-        member_id=created.member_id,
-        db_path=str(db_path),
-        token=created.token,
-        provider="scripted",
-        threads=("general",),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=threading.Event(),
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=100,
-        ledger_queue_name="taut.summon_state",
-        driver_pid=123,
-        driver_start_time="driver-start",
-        audit_start_ts=audit_start,
-    )
-    # Keep identity without extending object lifetime: CPython may reuse a
-    # closed queue's id for a later audit handle.
-    closed: list[weakref.ReferenceType[Queue]] = []
-    real_close = Queue.close
-
-    def close_spy(queue: Queue) -> None:
-        closed.append(weakref.ref(queue))
-        real_close(queue)
-
-    monkeypatch.setattr(Queue, "close", close_spy)
-    actor = control_module.TautClient(db_path=db_path, token=created.token)
-    try:
-        loop._open()
-        loop._audit_pass()
-
-        actor.join("ops")
-        actor.say("ops", "late post")
-        loop._audit_pass()
-        first_handle = loop._thread_queues["ops"]
-        assert loop._status_snapshot().thread_count == 2
-        assert any(ts > audit_start for ts in loop._own_posts)
-
-        actor.leave("ops")
-        loop._audit_pass()
-        assert "ops" not in loop._thread_queues
-        assert any(queue_ref() is first_handle for queue_ref in closed)
-
-        actor.join("ops")
-        actor.say("ops", "after rejoin")
-        loop._audit_pass()
-        second_handle = loop._thread_queues["ops"]
-        assert second_handle is not first_handle
-        assert loop._status_snapshot().thread_count == 2
-        assert len(loop._own_posts) == len(set(loop._own_posts))
-    finally:
-        loop._close()
-        actor.close()
-        bot.close()
-
-
-def test_control_handle_recovery_with_cwd_discovery_keeps_same_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A db_path=None recovery re-runs the same public cwd resolver."""
-
-    monkeypatch.chdir(tmp_path)
-    control_module.TautClient.init()
-    bot = control_module.TautClient(as_name="bot")
-    bot.join("general")
-    created = bot.last_created_member
-    assert created is not None and created.token is not None
-    loop = ControlLoop(
-        member_id=created.member_id,
-        db_path=None,
-        token=created.token,
-        provider="scripted",
-        threads=("general",),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=threading.Event(),
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=60,
-        ledger_queue_name="taut.summon_state",
-        driver_pid=123,
-        driver_start_time="driver-start",
-        audit_start_ts=0,
-    )
-    try:
-        loop._open()
-        first_client = loop._client
-        assert first_client is not None
-        target = first_client.target
-
-        assert loop._reopen_broker_handles(
-            "rate audit", OperationalError("forced recovery")
-        )
-        assert loop._client is not first_client
-        assert loop._client is not None
-        assert loop._client.target == target
-    finally:
-        loop._close()
-        bot.close()
 
 
 class _ExplodingLedger:
@@ -461,10 +186,6 @@ class _WriteFailingControlQueue:
         return None
 
 
-def _reopen_ok(_where: str, _exc: Exception) -> bool:
-    return True
-
-
 def test_control_reactor_derived_roles_are_distinct() -> None:
     member_id = "m_" + "a" * 26
     request_id = "request-1"
@@ -480,141 +201,14 @@ def test_control_reactor_derived_roles_are_distinct() -> None:
     assert len(set(roles.values())) == len(roles), roles
 
 
-def test_control_reactor_pending_command_waits_for_first_driven_turn(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    seen: list[str] = []
-    cast(Any, loop)._dispatch = seen.append
-    with Queue(control_in_queue_name(loop._member_id), db_path=str(db_path)) as writer:
-        writer.write("queued-before-construction")
-
-    client = control_module.TautClient(db_path=db_path, persistent=True)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    try:
-        assert seen == []
-        reactor.process_once()
-        assert seen == ["queued-before-construction"]
-    finally:
-        reactor.stop(join=False)
-        client.close()
-
-
-def test_control_reactor_consumes_in_order_without_handler_overlap(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    seen: list[str] = []
-    active = False
-
-    def dispatch(body: str) -> None:
-        nonlocal active
-        assert active is False
-        active = True
-        seen.append(body)
-        active = False
-
-    cast(Any, loop)._dispatch = dispatch
-    client = control_module.TautClient(db_path=db_path, persistent=True)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    with Queue(control_in_queue_name(loop._member_id), db_path=str(db_path)) as writer:
-        writer.write("one")
-        writer.write("two")
-    try:
-        reactor.process_once()
-        reactor.process_once()
-        assert seen == ["one", "two"]
-    finally:
-        reactor.stop(join=False)
-        client.close()
-
-
-def test_control_reactor_rejects_second_drive_caller(tmp_path: Path) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    client = control_module.TautClient(db_path=db_path, persistent=True)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    errors: list[BaseException] = []
-    try:
-        reactor.process_once()
-
-        def drive() -> None:
-            try:
-                reactor.process_once()
-            except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-                errors.append(exc)
-
-        thread = threading.Thread(target=drive)
-        thread.start()
-        thread.join(timeout=3.0)
-        assert not thread.is_alive()
-        assert len(errors) == 1
-        assert isinstance(errors[0], RuntimeError)
-        assert "single-owner" in str(errors[0])
-    finally:
-        reactor.stop(join=False)
-        client.close()
-
-
-@pytest.mark.parametrize("operation", ["add", "remove"])
-def test_control_reactor_rejects_dynamic_topology(
-    tmp_path: Path,
-    operation: str,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    client = control_module.TautClient(db_path=db_path, persistent=True)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    try:
-        with pytest.raises(NotImplementedError, match="fixed at construction"):
-            if operation == "add":
-                reactor.add_queue("other", lambda *_args: None)
-            else:
-                reactor.remove_queue(control_in_queue_name(loop._member_id))
-    finally:
-        reactor.stop(join=False)
-        client.close()
-
-
 def test_status_snapshot_never_reads_session_ledger() -> None:
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
     loop._ledger = cast(Queue, _ExplodingLedger())
 
     fields = loop._status_snapshot().as_fields()
 
     assert "session_id" not in fields
     assert fields["driver"] == "alive"
-
-
-def test_control_reactor_inherits_shared_lifecycle_templates() -> None:
-    reactor_cls = control_module._ControlReactor
-
-    assert reactor_cls.process_once is BaseReactor.process_once
-    assert reactor_cls.wait_for_activity is BaseReactor.wait_for_activity
-    assert reactor_cls.stop is BaseReactor.stop
-    assert reactor_cls.cleanup is BaseReactor.cleanup
 
 
 def test_control_client_tags_write_fault_plane() -> None:
@@ -632,10 +226,11 @@ def test_control_client_tags_write_fault_plane() -> None:
         getattr(caught.value, control_module._CONTROL_FAULT_PLANE_ATTR)
         == "control_write"
     )
+    assert caught.value.__cause__ is not caught.value
 
 
 def test_rate_audit_does_not_layer_retry_over_peek_many_failure() -> None:
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
     queue = _FlakyPeekQueue()
 
     with pytest.raises(OperationalError, match="locked"):
@@ -647,7 +242,7 @@ def test_rate_audit_does_not_layer_retry_over_peek_many_failure() -> None:
 
 
 def test_rate_audit_uses_plain_queue_peek_many_once() -> None:
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
     queue = _RecordingPeekQueue()
 
     loop._audit_thread("general", cast(Queue, queue), cutoff=0)
@@ -658,7 +253,7 @@ def test_rate_audit_uses_plain_queue_peek_many_once() -> None:
 
 
 def test_rate_audit_excludes_old_backlog_at_inclusive_hybrid_cutoff() -> None:
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
 
     loop._audit_thread("general", cast(Queue, _BacklogPeekQueue()), 100)
 
@@ -674,7 +269,7 @@ def test_rate_audit_derives_one_cutoff_from_public_broker_timestamp() -> None:
             self.calls += 1
             return int(control_module._RATE_WINDOW_SECONDS * 1_000_000_000) + 100
 
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
     ledger = TimestampQueue()
     loop._ledger = cast(Queue, ledger)
     loop._thread_queues = {"general": cast(Queue, _BacklogPeekQueue())}
@@ -720,7 +315,7 @@ def test_rate_audit_prunes_expired_posts_across_interleaved_threads() -> None:
                 )
             ]
 
-    loop = _make_loop(rate_limit=60)
+    loop = _make_policy(rate_limit=60)
     loop._ledger = cast(Queue, TimestampQueue())
     loop._thread_queues = {
         "general": cast(Queue, ThreadQueue(200)),
@@ -733,90 +328,6 @@ def test_rate_audit_prunes_expired_posts_across_interleaved_threads() -> None:
     loop._audit_pass()
 
     assert list(loop._own_posts) == [200]
-
-
-def test_control_client_retries_status_with_same_reply_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
-    queues = _FakeControlQueues(reply_after_writes=2)
-    client = ControlClient(
-        cast(Any, queues.queue),
-        "m_abc",
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-
-    reply = client.request("STATUS", timeout=1.0)
-
-    assert reply is not None
-    assert reply["status"] == "ok"
-    ctl_payloads = [
-        payload
-        for queue_name, payload in queues.writes
-        if queue_name == "sys.ctl_m_abc"
-    ]
-    assert len(ctl_payloads) == 2
-    assert ctl_payloads[0]["request_id"] == ctl_payloads[1]["request_id"]
-    assert ctl_payloads[0]["reply_to"] == ctl_payloads[1]["reply_to"]
-    assert ctl_payloads[0]["driver_pid"] == 123
-    assert ctl_payloads[0]["driver_start_time"] == "driver-start"
-    assert queues.deleted == []
-    assert ctl_payloads[0]["reply_to"] in queues.closed
-
-
-def test_control_client_can_split_persistent_request_from_transient_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
-    request_queues = _FakeControlQueues(reply_after_writes=None)
-    reply_queues = _ReplyOnlyQueues(reply_after_writes=1, requests=request_queues)
-    client = ControlClient(
-        cast(Any, request_queues.queue),
-        "m_abc",
-        reply_queue_factory=cast(Any, reply_queues.queue),
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-
-    reply = client.request("STATUS", timeout=1.0)
-
-    assert reply is not None
-    assert reply["status"] == "ok"
-    assert [name for name, _payload in request_queues.writes] == ["sys.ctl_m_abc"]
-    assert cast(str, request_queues.writes[0][1]["reply_to"]).startswith(
-        "sys.rsp_m_abc_"
-    )
-    assert reply_queues.writes == []
-    assert request_queues.closed == []
-    assert request_queues.writes[0][1]["reply_to"] in reply_queues.closed
-    client.close()
-    assert request_queues.closed == ["sys.ctl_m_abc"]
-
-
-def test_control_client_does_not_retry_stop_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
-    queues = _FakeControlQueues(reply_after_writes=None)
-    client = ControlClient(
-        cast(Any, queues.queue),
-        "m_abc",
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-
-    assert client.request("STOP", timeout=0.08) is None
-
-    ctl_payloads = [
-        payload
-        for queue_name, payload in queues.writes
-        if queue_name == "sys.ctl_m_abc"
-    ]
-    assert len(ctl_payloads) == 1
-    assert ctl_payloads[0]["command"] == "STOP"
-    assert queues.deleted == []
-    assert ctl_payloads[0]["reply_to"] in queues.closed
 
 
 def _assert_stop_error_reply(
@@ -836,60 +347,6 @@ def _assert_stop_error_reply(
     error = str(payload["error"])
     for fragment in causal_fragments:
         assert fragment in error
-
-
-def test_stop_replies_error_when_driver_release_is_unconfirmed() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    loop._pending_stop = "req-release-error"
-    loop._pending_stop_seen = True
-    loop._pending_stop_reply_to = "sys.rsp_release_error"
-    loop._shutdown_complete.set()
-    loop._shutdown_outcome = lambda: StopShutdownOutcome(release_confirmed=False)
-    replies: list[tuple[dict[str, Any], str | None]] = []
-    dynamic_loop = cast(Any, loop)
-    dynamic_loop._open = lambda: None
-    dynamic_loop._close = lambda: None
-    dynamic_loop._reply = lambda body, *, reply_to: replies.append(
-        (json.loads(body), reply_to)
-    )
-
-    loop.run()
-
-    _assert_stop_error_reply(
-        replies,
-        request_id="req-release-error",
-        reply_to="sys.rsp_release_error",
-        causal_fragments=("release", "confirm"),
-    )
-
-
-def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    loop._pending_stop = "req-release-exception"
-    loop._pending_stop_seen = True
-    loop._pending_stop_reply_to = "sys.rsp_release_exception"
-    loop._shutdown_complete.set()
-    loop._shutdown_outcome = lambda: (_ for _ in ()).throw(
-        OperationalError("release ledger unavailable")
-    )
-    replies: list[tuple[dict[str, Any], str | None]] = []
-    dynamic_loop = cast(Any, loop)
-    dynamic_loop._open = lambda: None
-    dynamic_loop._close = lambda: None
-    dynamic_loop._reply = lambda body, *, reply_to: replies.append(
-        (json.loads(body), reply_to)
-    )
-
-    loop.run()
-
-    _assert_stop_error_reply(
-        replies,
-        request_id="req-release-exception",
-        reply_to="sys.rsp_release_exception",
-        causal_fragments=("release", "confirm", "release ledger unavailable"),
-    )
 
 
 @pytest.mark.parametrize(
@@ -930,22 +387,17 @@ def test_stop_replies_with_structured_finalized_shutdown_failure(
     outcome: StopShutdownOutcome,
     causal_fragments: tuple[str, ...],
 ) -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
+    loop = _make_policy(rate_limit=60)
     loop._pending_stop = "req-exact-shutdown-error"
     loop._pending_stop_seen = True
     loop._pending_stop_reply_to = "sys.rsp_exact_shutdown_error"
-    loop._shutdown_complete.set()
-    loop._shutdown_outcome = lambda: outcome
     replies: list[tuple[dict[str, Any], str | None]] = []
     dynamic_loop = cast(Any, loop)
-    dynamic_loop._open = lambda: None
-    dynamic_loop._close = lambda: None
     dynamic_loop._reply = lambda body, *, reply_to: replies.append(
         (json.loads(body), reply_to)
     )
 
-    loop.run()
+    loop.finish_stop(outcome)
 
     _assert_stop_error_reply(
         replies,
@@ -958,7 +410,7 @@ def test_stop_replies_with_structured_finalized_shutdown_failure(
 def test_rate_breaker_rearms_after_flood_subsides() -> None:
     # [SUM-10] circuit-breaker: hard breach is not one-shot. Once the rate
     # falls back under the limit the breaker re-arms and can trip again.
-    loop = _make_loop(rate_limit=2)
+    loop = _make_policy(rate_limit=2)
     loop._own_posts.extend([0] * 6)  # 6 > 2*limit -> hard breach
     loop._enforce()
     assert loop._hard_breached is True
@@ -971,920 +423,6 @@ def test_rate_breaker_rearms_after_flood_subsides() -> None:
     loop._own_posts.extend([0] * 6)  # floods again
     loop._enforce()
     assert loop._hard_breached is True  # trips a second time
-
-
-def test_status_reports_degraded_control_health_detail() -> None:
-    # Repeated broker errors mark the control plane unhealthy, and STATUS
-    # surfaces the detail ([SUM-9]) instead of swallowing the failure.
-    loop = _make_loop(rate_limit=60)
-    healthy = loop._status_snapshot().as_fields()
-    assert healthy["control_health"] == "ok"
-    assert "health_detail" not in healthy
-
-    loop._mark_unhealthy("control drain", DatabaseError("disk I/O error"))
-    degraded = loop._status_snapshot().as_fields()
-    assert degraded["control_health"] == "degraded"
-    assert "disk I/O error" in degraded["health_detail"]
-
-
-def test_single_rate_audit_broker_failure_does_not_degrade_status() -> None:
-    # The rate audit is a safety backstop, not the STOP/STATUS control drain.
-    # One broker-surface failure in the safety audit should skip that audit and
-    # let the next cadence try again rather than permanently poisoning control
-    # health.
-    loop = _make_loop(rate_limit=60)
-    cast(Any, loop)._reopen_broker_handles = _reopen_ok
-
-    loop._mark_rate_audit_failure(OperationalError("database is locked"))
-
-    healthy = loop._status_snapshot().as_fields()
-    assert healthy["control_health"] == "ok"
-    assert "health_detail" not in healthy
-
-
-def test_repeated_rate_audit_reopen_failures_escalate_fatal() -> None:
-    loop = _make_loop(rate_limit=60)
-    cast(Any, loop)._reopen_broker_handles = lambda _where, _exc: False
-
-    loop._mark_rate_audit_failure(OperationalError("database is locked"))
-    for _ in range(_RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED - 1):
-        assert loop._recover_pending_control_fault() is False
-    with pytest.raises(RuntimeError, match="rate audit recovery exhausted"):
-        loop._recover_pending_control_fault()
-
-    degraded = loop._status_snapshot().as_fields()
-    assert degraded["control_health"] == "degraded"
-    assert "consecutive broker failures" in degraded["health_detail"]
-
-
-def test_disk_io_rate_audit_failure_uses_same_reopen_path() -> None:
-    loop = _make_loop(rate_limit=60)
-    reopened: list[tuple[str, str]] = []
-
-    def reopen(where: str, exc: Exception) -> bool:
-        reopened.append((where, str(exc)))
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop._mark_rate_audit_failure(DatabaseError("disk I/O error"))
-    assert reopened == []
-    assert loop._recover_pending_control_fault() is True
-
-    assert reopened == [("rate audit", "disk I/O error")]
-    assert loop._status_snapshot().as_fields()["control_health"] == "ok"
-
-
-def test_control_drain_failure_reopens_only_after_turn_unwinds() -> None:
-    loop = _make_loop(rate_limit=60)
-    reopened: list[tuple[str, str]] = []
-
-    def reopen(where: str, exc: Exception) -> bool:
-        reopened.append((where, str(exc)))
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop._mark_control_drain_failure(OperationalError("database is locked"))
-    assert reopened == []
-
-    assert loop._recover_pending_control_fault() is True
-    assert reopened == [("control drain", "database is locked")]
-    assert loop._pending_control_fault is None
-
-
-def test_control_loop_recovery_never_waits_on_retired_reactor() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    calls: list[str] = []
-
-    class OldReactor:
-        def process_once(self) -> None:
-            calls.append("old.process")
-            loop._mark_control_drain_failure(OperationalError("database is locked"))
-
-        def wait_for_activity(self, *, timeout: float) -> None:
-            del timeout
-            calls.append("old.wait")
-            raise AssertionError("retired reactor was waited")
-
-    loop._control_reactor = cast(Any, OldReactor())
-    loop._open = lambda: None  # type: ignore[method-assign]
-    loop._close = lambda: None  # type: ignore[method-assign]
-
-    def reopen(where: str, exc: Exception) -> bool:
-        calls.append(f"reopen:{where}:{exc}")
-        loop._shutdown.set()
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop.run()
-
-    assert calls == [
-        "old.process",
-        "reopen:control drain:database is locked",
-    ]
-
-
-def test_control_loop_retries_replacement_without_another_old_turn() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    process_calls = 0
-    wait_calls = 0
-    reopen_calls = 0
-    delays: list[float] = []
-
-    class ImmediateRetryStop:
-        def is_set(self) -> bool:
-            return False
-
-        def wait(self, delay: float) -> bool:
-            delays.append(delay)
-            return False
-
-    class FaultingReactor:
-        def process_once(self) -> None:
-            nonlocal process_calls
-            process_calls += 1
-            loop._mark_control_drain_failure(OperationalError("database is locked"))
-
-        def wait_for_activity(self, *, timeout: float) -> None:
-            nonlocal wait_calls
-            del timeout
-            wait_calls += 1
-
-    loop._shutdown = cast(Any, ImmediateRetryStop())
-    loop._control_reactor = cast(Any, FaultingReactor())
-    loop._open = lambda: None  # type: ignore[method-assign]
-    loop._close = lambda: None  # type: ignore[method-assign]
-
-    def fail_reopen(_where: str, _exc: Exception) -> bool:
-        nonlocal reopen_calls
-        reopen_calls += 1
-        return False
-
-    cast(Any, loop)._reopen_broker_handles = fail_reopen
-
-    with pytest.raises(RuntimeError, match="control drain recovery exhausted"):
-        loop.run()
-
-    assert process_calls == 1
-    assert wait_calls == 0
-    assert reopen_calls == _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-    assert len(delays) == _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED - 1
-
-
-def test_control_loop_wait_fault_uses_between_turn_recovery() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    calls: list[str] = []
-
-    class WaitFaultReactor:
-        def process_once(self) -> None:
-            calls.append("process")
-
-        def wait_for_activity(self, *, timeout: float) -> None:
-            assert timeout > 0
-            calls.append("wait")
-            raise OperationalError("wait failed")
-
-    loop._control_reactor = cast(Any, WaitFaultReactor())
-    loop._open = lambda: None  # type: ignore[method-assign]
-    loop._close = lambda: None  # type: ignore[method-assign]
-    loop._audit_if_due = lambda: None  # type: ignore[method-assign]
-
-    def reopen(where: str, exc: Exception) -> bool:
-        calls.append(f"reopen:{where}:{exc}")
-        loop._shutdown.set()
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop.run()
-
-    assert calls == ["process", "wait", "reopen:control wait:wait failed"]
-
-
-def test_due_audit_runs_before_positive_wait_timeout() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._interval = 60.0
-    audited: list[bool] = []
-    loop._audit_pass = lambda: audited.append(True)  # type: ignore[method-assign]
-    loop._next_rate_audit_at = 0.0
-
-    loop._audit_if_due()
-    timeout = loop._next_control_wait_timeout()
-
-    assert audited == [True]
-    assert 0.0 < timeout <= 60.0
-
-
-def test_non_broker_audit_failure_is_fatal_not_recoverable() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._audit_pass = (  # type: ignore[method-assign]
-        lambda: (_ for _ in ()).throw(RuntimeError("audit logic bug"))
-    )
-    loop._next_rate_audit_at = 0.0
-
-    loop._audit_if_due()
-
-    assert loop._pending_control_fault is not None
-    assert loop._pending_control_fault.recoverable is False
-    with pytest.raises(RuntimeError, match="audit logic bug"):
-        loop._recover_pending_control_fault()
-
-
-def test_successful_recovery_clears_matching_transient_degraded_health() -> None:
-    loop = _make_loop(rate_limit=60)
-    outcomes = iter((False, True))
-    cast(Any, loop)._reopen_broker_handles = lambda _where, _exc: next(outcomes)
-    loop._mark_control_drain_failure(OperationalError("database is locked"))
-
-    # Mirror the real failed-reopen path's temporary health report.
-    loop._mark_unhealthy("control drain reopen", RuntimeError("still locked"))
-    assert loop._recover_pending_control_fault() is False
-    assert loop._status_snapshot().control_health == "degraded"
-
-    assert loop._recover_pending_control_fault() is True
-    assert loop._status_snapshot().control_health == "ok"
-
-
-def test_control_reactor_native_activity_wakes_before_probe_interval(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    loop._interval = 10.0
-    handled = threading.Event()
-    waiting = threading.Event()
-    errors: list[BaseException] = []
-    cast(Any, loop)._dispatch = lambda _body: handled.set()
-    client = control_module.TautClient(db_path=db_path, persistent=True)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-
-    def drive() -> None:
-        try:
-            reactor.process_once()
-            waiting.set()
-            reactor.wait_for_activity(timeout=10.0)
-            reactor.process_once()
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-        finally:
-            reactor.stop(join=False)
-
-    thread = threading.Thread(target=drive)
-    thread.start()
-    try:
-        assert waiting.wait(timeout=3.0)
-        with Queue(
-            control_in_queue_name(loop._member_id), db_path=str(db_path)
-        ) as writer:
-            writer.write("wake")
-        assert handled.wait(timeout=2.0)
-    finally:
-        reactor.request_stop()
-        thread.join(timeout=3.0)
-        client.close()
-
-    assert not thread.is_alive()
-    assert errors == []
-
-
-def test_control_reactor_stops_on_non_broker_dispatch_error(tmp_path: Path) -> None:
-    loop = _make_loop(rate_limit=60)
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    client = control_module.TautClient(db_path=db_path)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    loop._request_stop = lambda: (_ for _ in ()).throw(RuntimeError("logic bug"))
-    queue = reactor._queue(control_in_queue_name(loop._member_id))
-    queue.write(
-        encode_control_command(
-            "STOP",
-            "req-1",
-            driver_pid=123,
-            driver_start_time="driver-start",
-        )
-    )
-
-    try:
-        with pytest.raises(StopWatching):
-            reactor.process_once()
-    finally:
-        reactor.cleanup()
-        client.close()
-
-    assert loop._control_drain_recoverable_failures == 0
-    assert loop._unhealthy is not None
-    assert "control dispatch" in loop._unhealthy
-    assert "logic bug" in loop._unhealthy
-
-
-def test_control_reactor_treats_status_key_collision_as_fatal(tmp_path: Path) -> None:
-    class ReservedStatusHandle:
-        def status_fields(self) -> dict[str, str]:
-            return {"provider": "wrong-owner"}
-
-    loop = _make_loop(rate_limit=60)
-    loop._handle_provider = lambda: cast(Any, ReservedStatusHandle())
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    client = control_module.TautClient(db_path=db_path)
-    reactor = control_module._ControlReactor(
-        loop,
-        db=client.target,
-        config=client.config,
-    )
-    queue = reactor._queue(control_in_queue_name(loop._member_id))
-    queue.write(
-        encode_control_command(
-            "STATUS",
-            "req-status-collision",
-            driver_pid=123,
-            driver_start_time="driver-start",
-        )
-    )
-
-    try:
-        with pytest.raises(StopWatching):
-            reactor.process_once()
-    finally:
-        reactor.cleanup()
-        client.close()
-
-    assert loop._unhealthy is not None
-    assert "reserved STATUS key" in loop._unhealthy
-
-
-def test_control_loop_run_surfaces_stop_request_programming_failure(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = str(db_path)
-    loop._request_stop = lambda: (_ for _ in ()).throw(RuntimeError("logic bug"))
-    queue = Queue(control_in_queue_name(loop._member_id), db_path=str(db_path))
-    try:
-        queue.write(
-            encode_control_command(
-                "STOP",
-                "req-1",
-                driver_pid=123,
-                driver_start_time="driver-start",
-            )
-        )
-    finally:
-        queue.close()
-
-    with pytest.raises(RuntimeError, match="logic bug"):
-        loop.run()
-
-
-def test_repeated_control_drain_reopen_failures_escalate_fatal() -> None:
-    loop = _make_loop(rate_limit=60)
-
-    cast(Any, loop)._reopen_broker_handles = lambda _where, _exc: False
-
-    loop._mark_control_drain_failure(OperationalError("database is locked"))
-    for _ in range(_CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED - 1):
-        assert loop._recover_pending_control_fault() is False
-    with pytest.raises(RuntimeError, match="control drain recovery exhausted"):
-        loop._recover_pending_control_fault()
-
-    degraded = loop._status_snapshot().as_fields()
-    assert degraded["control_health"] == "degraded"
-    assert "consecutive broker failures" in degraded["health_detail"]
-
-
-def test_single_control_reply_failure_does_not_reopen_or_degrade() -> None:
-    loop = _make_loop(rate_limit=60)
-    reply_queue = _FailingReplyQueue(OperationalError("database is locked"))
-    loop._client = cast(Any, _ReplyClient(reply_queue))
-    reopened: list[tuple[str, str]] = []
-
-    def reopen(where: str, exc: Exception) -> bool:
-        reopened.append((where, str(exc)))
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop._reply(
-        encode_control_reply("PING", "ok", request_id="req"),
-        reply_to="sys.rsp_m_abc_req",
-    )
-
-    assert reopened == []
-    assert reply_queue.closed is True
-    assert loop._client is not None
-    assert cast(_ReplyClient, loop._client).persistent_flags == [False]
-    loop._client = None
-    assert loop._status_snapshot().as_fields()["control_health"] == "ok"
-
-
-def test_repeated_control_reply_failures_degrade_status() -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._reopen_broker_handles = _reopen_ok  # type: ignore[assignment,method-assign]
-
-    for _ in range(_CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED):
-        reply_queue = _FailingReplyQueue(OperationalError("database is locked"))
-        loop._client = cast(Any, _ReplyClient(reply_queue))
-        loop._reply(
-            encode_control_reply("PING", "ok", request_id="req"),
-            reply_to="sys.rsp_m_abc_req",
-        )
-
-    loop._client = None
-    degraded = loop._status_snapshot().as_fields()
-    assert degraded["control_health"] == "degraded"
-    assert "consecutive broker failures" in degraded["health_detail"]
-
-
-def test_wrapped_locked_control_reply_does_not_reopen_or_degrade() -> None:
-    loop = _make_loop(rate_limit=60)
-    reopened: list[tuple[str, str]] = []
-
-    def reopen(where: str, exc: Exception) -> bool:
-        reopened.append((where, str(exc)))
-        return True
-
-    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
-
-    loop._mark_control_reply_failure(
-        RuntimeError("Failed to get database connection: database is locked")
-    )
-
-    assert reopened == []
-    assert loop._status_snapshot().as_fields()["control_health"] == "ok"
-
-
-def test_failed_reopen_preserves_existing_control_handles() -> None:
-    loop = _make_loop(rate_limit=60)
-    old_handles = _fake_broker_handles()
-    old_ctl_in = cast(_CloseableQueue, old_handles.ctl_in)
-    loop._install_broker_handles(old_handles)
-
-    def fail_make() -> _BrokerHandles:
-        raise RuntimeError("schema unavailable")
-
-    loop._make_broker_handles = fail_make  # type: ignore[method-assign]
-
-    assert (
-        loop._reopen_broker_handles("control drain", OperationalError("disk I/O error"))
-        is False
-    )
-
-    assert loop._ctl_in is old_handles.ctl_in
-    assert loop._ctl_out is old_handles.ctl_out
-    assert loop._ledger is old_handles.ledger
-    assert loop._thread_queues == old_handles.thread_queues
-    assert old_ctl_in.closed is False
-    assert loop._unhealthy is not None
-    assert "schema unavailable" in loop._unhealthy
-
-
-@pytest.mark.parametrize(
-    "failure_stage",
-    ["reactor", "command", "shared_reply", "ledger", "thread"],
-)
-def test_partial_control_handle_construction_closes_every_created_owner(
-    failure_stage: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    loop = _make_loop(rate_limit=60)
-    loop._db_path = "unused"
-    client_closes: list[str] = []
-    reactor_cleanups: list[str] = []
-    persistent_flags: list[bool] = []
-
-    class FakeClient:
-        target = "unused"
-        config: ClassVar[dict[str, Any]] = {}
-
-        def __init__(
-            self,
-            *,
-            db_path: str,
-            token: str,
-            persistent: bool,
-            inherit_environment_identity: bool,
-        ) -> None:
-            assert (db_path, token) == ("unused", "taut-tok")
-            assert inherit_environment_identity is False
-            persistent_flags.append(persistent)
-
-        def close(self) -> None:
-            client_closes.append("client")
-
-    class FakeReactor:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            if failure_stage == "reactor":
-                raise RuntimeError("failed at reactor")
-
-        def _queue(self, name: str) -> Queue:
-            role = {
-                control_in_queue_name(loop._member_id): "command",
-                control_out_queue_name(loop._member_id): "shared_reply",
-                "taut_meta": "ledger",
-                "general": "thread",
-            }[name]
-            if failure_stage == role:
-                raise RuntimeError(f"failed at {role}")
-            return cast(Queue, _CloseableQueue())
-
-        def cleanup(self) -> None:
-            reactor_cleanups.append("reactor")
-
-    monkeypatch.setattr(control_module, "TautClient", FakeClient)
-    monkeypatch.setattr(control_module, "_ControlReactor", FakeReactor)
-
-    with pytest.raises(RuntimeError, match=f"failed at {failure_stage}"):
-        loop._make_broker_handles()
-
-    assert persistent_flags == [True]
-    assert client_closes == ["client"]
-    assert reactor_cleanups == ([] if failure_stage == "reactor" else ["reactor"])
-
-
-def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    # The control loop audits immediately after publishing its handles. Use a
-    # real token-selected member so this ownership test cannot race an
-    # unrelated TokenError from an invented identity.
-    bootstrap = control_module.TautClient(db_path=db_path, as_name="bot")
-    bootstrap.join("general")
-    created = bootstrap.last_created_member
-    assert created is not None and created.token is not None
-    bootstrap.join("dev")
-    bootstrap.close()
-    construction: list[tuple[bool, threading.Thread]] = []
-    client_closes: list[threading.Thread] = []
-
-    class RecordingClient(control_module.TautClient):
-        def __init__(self, *args: Any, persistent: bool = False, **kwargs: Any) -> None:
-            construction.append((persistent, threading.current_thread()))
-            super().__init__(*args, persistent=persistent, **kwargs)
-
-        def close(self) -> None:
-            client_closes.append(threading.current_thread())
-            super().close()
-
-    monkeypatch.setattr(control_module, "TautClient", RecordingClient)
-    monkeypatch.setenv("TAUT_SUMMON_CONTROL_INTERVAL", "0.05")
-    shutdown = threading.Event()
-    loop = ControlLoop(
-        member_id=created.member_id,
-        db_path=str(db_path),
-        token=created.token,
-        provider="scripted",
-        threads=("general", "dev"),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=shutdown,
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=60,
-        ledger_queue_name="taut.summon_state",
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-    errors: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            loop.run()
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    owner = threading.Thread(target=run)
-    owner.start()
-    deadline = time.monotonic() + 3.0
-    while loop._control_reactor is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    reactor = loop._control_reactor
-    assert reactor is not None
-    shutdown.set()
-    reactor.request_stop()
-    owner.join(timeout=3.0)
-
-    assert not owner.is_alive()
-    assert errors == []
-    assert construction == [(True, owner)]
-    assert client_closes == [owner]
-
-
-def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    peer = control_module.TautClient(db_path=db_path, as_name="peer")
-    peer.join("general")
-    peer.join("dev")
-    bot = control_module.TautClient(db_path=db_path, as_name="bot")
-    bot.join("general")
-    created = bot.last_created_member
-    assert created is not None and created.token is not None
-    bot.join("dev")
-    ledger_owner = control_module.TautClient(db_path=db_path, persistent=True)
-    ledger_queue = ledger_owner.queue("taut.summon_state")
-    ledger_queue.has_pending()
-    assert ledger_queue.conn is not None
-    process_session = ledger_queue.conn._shared_session
-    assert process_session is not None
-    baseline_cores = len(process_session._cores)
-    pump_ready = threading.Event()
-    release_pump = threading.Event()
-
-    def own_pump_client() -> None:
-        pump_client = control_module.TautClient(
-            db_path=db_path,
-            token=created.token,
-            persistent=True,
-        )
-        pump_client.queue("taut.summon_state")
-        pump_client.whoami()
-        pump_ready.set()
-        release_pump.wait(timeout=5.0)
-        pump_client.close()
-
-    pump_owner = threading.Thread(target=own_pump_client)
-    pump_owner.start()
-    assert pump_ready.wait(timeout=3.0)
-    shutdown = threading.Event()
-    loop = ControlLoop(
-        member_id=created.member_id,
-        db_path=str(db_path),
-        token=created.token,
-        provider="scripted",
-        threads=("general", "dev"),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=shutdown,
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=60,
-        ledger_queue_name="taut.summon_state",
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-    errors: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            loop.run()
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    owner = threading.Thread(target=run)
-    owner.start()
-    deadline = time.monotonic() + 3.0
-    while loop._control_reactor is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert loop._control_reactor is not None
-    while not loop._control_reactor._strategy_started and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert loop._control_reactor._strategy_started
-    watcher_box: list[Any] = []
-    watcher_constructed = threading.Event()
-
-    def own_watcher() -> None:
-        watcher_client = control_module.TautClient(
-            db_path=db_path,
-            token=created.token,
-            persistent=True,
-        )
-        owned_watcher = watcher_client.watch(lambda _item: None, persistent=True)
-        watcher_box.append(owned_watcher)
-        watcher_constructed.set()
-        try:
-            owned_watcher.run()
-        finally:
-            owned_watcher.stop(join=False)
-            watcher_client.close()
-
-    watcher_owner = threading.Thread(target=own_watcher)
-    watcher_owner.start()
-    assert watcher_constructed.wait(timeout=3.0)
-
-    request_id = "driver-shape"
-    reply_name = f"{control_out_queue_name(loop._member_id)}_{request_id}"
-    reply_queue = Queue(reply_name, db_path=str(db_path))
-    body = encode_control_command(
-        "PING",
-        request_id,
-        reply_to=reply_name,
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-    writer_script = (
-        "from simplebroker import Queue; import sys; "
-        "q=Queue(sys.argv[1], db_path=sys.argv[2]); "
-        "q.write(sys.argv[3]); q.close()"
-    )
-    try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                writer_script,
-                control_in_queue_name(loop._member_id),
-                str(db_path),
-                body,
-            ],
-            check=True,
-            env=os.environ.copy(),
-        )
-        reply_body: str | None = None
-        reply_deadline = time.monotonic() + 3.0
-        while reply_body is None and time.monotonic() < reply_deadline:
-            reply_body = reply_queue.read_one()
-            if reply_body is None:
-                time.sleep(0.01)
-        reply = json.loads(reply_body) if reply_body is not None else None
-        assert reply is not None
-        request_id = reply.pop("request_id")
-        assert isinstance(request_id, str) and request_id
-        assert reply == {
-            "command": "PING",
-            "status": "ok",
-            "message": "PONG",
-        }
-    finally:
-        reply_queue.close()
-        shutdown.set()
-        if loop._control_reactor is not None:
-            loop._control_reactor.request_stop()
-        owner.join(timeout=3.0)
-        watcher_box[0].request_stop()
-        watcher_owner.join(timeout=3.0)
-        release_pump.set()
-        pump_owner.join(timeout=3.0)
-        assert len(process_session._cores) == baseline_cores
-        ledger_owner.close()
-        bot.close()
-        peer.close()
-
-    assert not owner.is_alive()
-    assert not watcher_owner.is_alive()
-    assert not pump_owner.is_alive()
-    assert errors == []
-
-
-def test_reopen_preserves_rate_audit_cursor_and_closes_old_handles() -> None:
-    loop = _make_loop(rate_limit=60)
-    old_handles = _fake_broker_handles()
-    new_handles = _fake_broker_handles()
-    old_ctl_in = cast(_CloseableQueue, old_handles.ctl_in)
-    old_ledger = cast(_CloseableQueue, old_handles.ledger)
-    loop._install_broker_handles(old_handles)
-    loop._audit_cursor["general"] = 123
-
-    def make_handles() -> _BrokerHandles:
-        return new_handles
-
-    loop._make_broker_handles = make_handles  # type: ignore[method-assign]
-
-    assert (
-        loop._reopen_broker_handles("rate audit", OperationalError("disk I/O error"))
-        is True
-    )
-
-    assert loop._ctl_in is new_handles.ctl_in
-    assert loop._audit_cursor["general"] == 123
-    assert old_ctl_in.closed is True
-    assert old_ledger.closed is True
-    assert old_ctl_in.deleted is False
-
-
-def test_broker_session_replacement_installs_complete_set_before_old_scope_close() -> (
-    None
-):
-    loop = _make_loop(rate_limit=60)
-    reply_queue = _RecordingReplyQueue()
-    new_client = _ReplyClient(reply_queue)
-    close_observations: list[bool] = []
-
-    class OldClient:
-        def close(self) -> None:
-            close_observations.append(
-                loop._client is new_client
-                and loop._ctl_in is new_handles.ctl_in
-                and loop._ledger is new_handles.ledger
-                and loop._thread_queues == new_handles.thread_queues
-            )
-
-    old_handles = _fake_broker_handles()
-    old_handles = replace(old_handles, client=cast(Any, OldClient()))
-    new_handles = replace(
-        _fake_broker_handles(),
-        client=cast(Any, new_client),
-    )
-    loop._install_broker_handles(old_handles)
-    loop._make_broker_handles = lambda: new_handles  # type: ignore[method-assign]
-
-    assert loop._reopen_broker_handles(
-        "between turns",
-        OperationalError("connection reset"),
-    )
-    loop._reply("reply", reply_to="sys.rsp_m_probe")
-
-    assert close_observations == [True]
-    assert new_client.names == ["sys.rsp_m_probe"]
-    assert new_client.persistent_flags == [False]
-    assert reply_queue.writes == ["reply"]
-    assert reply_queue.closed is True
-
-
-def test_broker_session_request_queue_is_borrowed_and_reply_queue_is_transient() -> (
-    None
-):
-    loop = _make_loop(rate_limit=60)
-    borrowed_request = _CloseableQueue()
-    control_client = ControlClient(
-        lambda _name: cast(Queue, borrowed_request),
-        "m_abc",
-        owns_request_queue=False,
-    )
-    control_client.close()
-
-    reply_queue = _RecordingReplyQueue()
-    client = _ReplyClient(reply_queue)
-    loop._client = cast(Any, client)
-
-    loop._reply("reply", reply_to="sys.rsp_m_probe")
-
-    assert borrowed_request.closed is False
-    assert client.persistent_flags == [False]
-    assert reply_queue.writes == ["reply"]
-    assert reply_queue.closed is True
-
-
-def test_close_closes_control_handles_without_delete_all() -> None:
-    loop = _make_loop(rate_limit=60)
-    handles = _fake_broker_handles()
-    ctl_in = cast(_CloseableQueue, handles.ctl_in)
-    ctl_out = cast(_CloseableQueue, handles.ctl_out)
-    loop._install_broker_handles(handles)
-
-    loop._close()
-
-    assert ctl_in.closed is True
-    assert ctl_out.closed is True
-    assert ctl_in.deleted is False
-    assert ctl_out.deleted is False
-
-
-@pytest.mark.parametrize("command", ["STOP", "STATUS", "PING"])
-def test_stale_command_for_old_driver_evidence_is_dropped(command: str) -> None:
-    stops: list[bool] = []
-    loop = ControlLoop(
-        member_id="m_" + "a" * 26,
-        db_path=None,
-        token="taut-tok",
-        provider="scripted",
-        threads=("general",),
-        handle_provider=lambda: None,
-        request_stop=lambda: stops.append(True),
-        shutdown=threading.Event(),
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=60,
-        ledger_queue_name="taut_meta",
-        driver_pid=2,
-        driver_start_time="new-driver",
-    )
-    replies: list[tuple[str, str]] = []
-    loop._reply = lambda body, *, reply_to=None: replies.append(  # type: ignore[method-assign]
-        (body, reply_to or "")
-    )
-
-    loop._dispatch(
-        encode_control_command(
-            command,
-            "old",
-            reply_to="sys.rsp_m_old",
-            driver_pid=1,
-            driver_start_time="old-driver",
-        )
-    )
-
-    assert stops == []
-    assert loop._pending_stop_seen is False
-    assert replies == []
 
 
 def test_queue_names_derive_from_member_id() -> None:
@@ -1946,3 +484,400 @@ def test_encode_reply_omits_request_id_when_absent() -> None:
     payload = json.loads(encode_control_reply("PING", "ok", request_id=None))
     assert "request_id" not in payload
     assert payload["status"] == "ok"
+
+
+def test_control_policy_has_no_independent_drive_or_wait() -> None:
+    assert not issubclass(ControlPolicy, BaseReactor)
+    for name in (
+        "run",
+        "start",
+        "wait_for_activity",
+        "_open",
+        "_reopen_broker_handles",
+    ):
+        assert not hasattr(ControlPolicy, name)
+    for name in ("process_once", "wait_for_activity", "stop", "cleanup"):
+        assert getattr(SummonReactor, name) is getattr(BaseReactor, name)
+
+
+def test_control_pending_commands_wait_for_same_owner_turn_and_remain_ordered(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="bot")
+    client.join("general")
+    reactor = client.watch(lambda _: None, watcher_type=SummonReactor)
+    assert isinstance(reactor, SummonReactor)
+    reactor.delivery_enabled = False
+    policy = _install_policy(client, reactor)
+    seen: list[str] = []
+    active = False
+
+    def dispatch(body: str) -> None:
+        nonlocal active
+        assert not active
+        active = True
+        seen.append(body)
+        active = False
+
+    cast(Any, policy)._dispatch = dispatch
+    try:
+        with Queue(control_in_queue_name(policy._member_id), db_path=str(db)) as source:
+            source.write("one")
+            source.write("two")
+        assert seen == []
+        reactor.process_once()
+        reactor.process_once()
+        assert seen == ["one", "two"]
+        assert policy._reactor is reactor
+    finally:
+        reactor.stop(join=False)
+        client.close()
+
+
+def test_control_policy_correlated_ping_is_serviced_while_injection_blocks(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="bot")
+    peer = TautClient(db_path=db, as_name="human")
+    client.join("general")
+    peer.join("general")
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingInjection:
+        def inject(self, _text: str) -> None:
+            entered.set()
+            assert release.wait(3)
+
+        def request_close(self) -> None:
+            release.set()
+
+    reactor = client.watch(lambda _: None, watcher_type=SummonReactor)
+    assert isinstance(reactor, SummonReactor)
+    reactor.prepare_delivery = lambda _item: PreparedInjection(
+        cast(Any, BlockingInjection()), "input", 0
+    )
+    policy = _install_policy(client, reactor)
+    reply_name = "sys.rsp_test_blocked"
+    try:
+        message = peer.say("general", "keep this cursor pending")
+        reactor.process_once()
+        assert entered.wait(2)
+        assert reactor._cursors["general"] < message.ts
+        with Queue(control_in_queue_name(policy._member_id), db_path=str(db)) as source:
+            source.write(
+                encode_control_command(
+                    "PING",
+                    "correlated",
+                    reply_to=reply_name,
+                    driver_pid=123,
+                    driver_start_time="driver-start",
+                )
+            )
+        reactor.wait_for_activity(0.2)
+        reactor.process_once()
+        with Queue(reply_name, db_path=str(db)) as replies:
+            payload = json.loads(cast(str, replies.read_one()))
+        assert payload["request_id"] == "correlated"
+        assert payload["message"] == "PONG"
+        assert reactor._cursors["general"] < message.ts
+    finally:
+        release.set()
+        reactor.stop(join=False)
+        client.close()
+        peer.close()
+
+
+@pytest.mark.parametrize("command", ["STOP", "STATUS", "PING"])
+def test_stale_command_for_old_driver_evidence_is_dropped(command: str) -> None:
+    policy = _make_policy(60)
+    stops: list[bool] = []
+    replies: list[str] = []
+    policy._request_stop = lambda: stops.append(True)
+    cast(Any, policy)._reply = lambda body, **_kwargs: replies.append(body)
+    policy._dispatch(
+        encode_control_command(
+            command, "old", driver_pid=1, driver_start_time="old-driver"
+        )
+    )
+    assert stops == [] and replies == []
+    assert not policy._pending_stop_seen
+
+
+def test_stop_reply_is_deferred_until_explicit_final_outcome() -> None:
+    policy = _make_policy(60)
+    stops: list[bool] = []
+    replies: list[dict[str, Any]] = []
+    policy._request_stop = lambda: stops.append(True)
+    cast(Any, policy)._reply = lambda body, **_kwargs: replies.append(json.loads(body))
+    policy._dispatch(
+        encode_control_command(
+            "STOP", "stop-1", driver_pid=123, driver_start_time="driver-start"
+        )
+    )
+    assert stops == [True]
+    assert replies == []
+    policy.finish_stop(StopShutdownOutcome(release_confirmed=True))
+    assert replies == [{"command": "STOP", "status": "ack", "request_id": "stop-1"}]
+
+
+def test_stop_unconfirmed_release_is_error_not_ack() -> None:
+    policy = _make_policy(60)
+    replies: list[dict[str, Any]] = []
+    policy._pending_stop_seen = True
+    policy._pending_stop = "unconfirmed"
+    cast(Any, policy)._reply = lambda body, **_kwargs: replies.append(json.loads(body))
+    policy.finish_stop(StopShutdownOutcome(release_confirmed=False))
+    assert replies[0]["status"] == "error"
+    assert "confirm" in replies[0]["error"]
+
+
+@pytest.mark.parametrize(
+    "error", [OperationalError("database is locked"), ValueError("programming failure")]
+)
+def test_control_source_failure_returns_to_single_owner_without_policy_retry(
+    error: Exception,
+) -> None:
+    policy = _make_policy(60)
+    with pytest.raises(type(error)) as caught:
+        policy._handle_control_error(error, "body", 1)
+    assert caught.value is error
+
+
+def test_control_audit_clock_runs_only_when_due() -> None:
+    policy = _make_policy(60)
+    audits: list[bool] = []
+    cast(Any, policy)._audit_pass = lambda: audits.append(True)
+    policy._next_rate_audit_at = float("inf")
+    policy.turn()
+    assert audits == []
+    policy._next_rate_audit_at = 0
+    policy.turn()
+    policy.turn()
+    assert audits == [True]
+
+
+def test_rate_audit_reconciles_real_memberships_without_moving_chat_cursor(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="bot")
+    client.join("general")
+    reactor = client.watch(lambda _: None, watcher_type=SummonReactor)
+    assert isinstance(reactor, SummonReactor)
+    policy = _install_policy(client, reactor)
+    # Membership belongs to the watcher. Drive its normal retained cache hint
+    # while delivery is disabled, so auditing cannot move the chat cursor.
+    reactor.delivery_enabled = False
+    fixed_sources = set(reactor._owned_fixed_queues)
+    try:
+        client.join("late")
+        written = client.say("late", "own rate evidence")
+        prior_cursor = client._state.get_membership(
+            thread="late", member_id=policy._member_id
+        )
+        reactor.process_once()
+        policy._audit_pass()
+        assert "late" in policy._thread_queues
+        assert written.ts in policy._own_posts_seen
+        assert (
+            client._state.get_membership(thread="late", member_id=policy._member_id)
+            == prior_cursor
+        )
+        client.leave("late")
+        reactor.process_once()
+        policy._audit_pass()
+        assert "late" not in policy._thread_queues
+        client.join("late")
+        reactor.process_once()
+        policy._audit_pass()
+        assert "late" in policy._thread_queues
+        assert list(policy._own_posts).count(written.ts) == 1
+        assert set(reactor._owned_fixed_queues) == fixed_sources
+        assert policy._thread_queues["late"] is reactor.get_queue("late")
+    finally:
+        reactor.stop(join=False)
+        client.close()
+
+
+@pytest.mark.parametrize("failures", [1, 3])
+def test_control_reply_failure_is_local_to_request_and_closes_handle(
+    failures: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    policy = _make_policy(60)
+    for _ in range(failures):
+        queue = _FailingReplyQueue(OperationalError("database is locked"))
+        client = _ReplyClient(queue)
+        policy._client = cast(Any, client)
+        policy._reply(encode_control_reply("PING", "ok", request_id="req"))
+        assert queue.closed
+        assert queue.writes == 1
+        assert client.persistent_flags == [False]
+    policy._client = cast(Any, SimpleNamespace(list_threads=lambda **kwargs: []))
+    fields = policy._status_snapshot().as_fields()
+    assert "control_health" not in fields
+    assert "health_detail" not in fields
+    assert len(caplog.records) == failures
+    assert all("control reply skipped" in record.message for record in caplog.records)
+    reply_queue = _RecordingReplyQueue()
+    policy._client = cast(Any, _ReplyClient(reply_queue))
+    policy._reply(encode_control_reply("PING", "ok", request_id="next"))
+    assert reply_queue.closed
+    assert len(reply_queue.writes) == 1
+
+
+def test_control_client_retries_status_with_same_reply_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
+    db = tmp_path / "retry.db"
+    requests: list[dict[str, Any]] = []
+
+    def respond(body: str, *_args: Any) -> None:
+        payload = json.loads(body)
+        requests.append(payload)
+        if len(requests) == 2:
+            with Queue(payload["reply_to"], db_path=str(db)) as reply:
+                reply.write(
+                    encode_control_reply(
+                        "STATUS", "ok", request_id=payload["request_id"]
+                    )
+                )
+            responder.request_stop()
+
+    responder = BaseReactor({"sys.ctl_m_abc": {"handler": respond}}, db=db)
+    thread = responder.start()
+    client = ControlClient(
+        lambda name: Queue(name, db_path=str(db)),
+        "m_abc",
+        driver_pid=123,
+        driver_start_time="driver-start",
+    )
+    try:
+        reply = client.request("STATUS", timeout=2)
+        assert reply is not None and reply["status"] == "ok"
+        assert len(requests) == 2
+        assert requests[0]["request_id"] == requests[1]["request_id"]
+        assert requests[0]["reply_to"] == requests[1]["reply_to"]
+        assert requests[0]["driver_pid"] == 123
+        assert requests[0]["driver_start_time"] == "driver-start"
+    finally:
+        client.close()
+        responder.stop()
+        thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_control_client_can_borrow_request_queue_and_close_transient_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "borrowed.db"
+    request = Queue("sys.ctl_m_abc", db_path=str(db), persistent=True)
+    reply_queues: list[Queue] = []
+    closed: list[Queue] = []
+    original_close = Queue.close
+
+    def close(queue: Queue) -> None:
+        closed.append(queue)
+        original_close(queue)
+
+    def replies(name: str) -> Queue:
+        queue = Queue(name, db_path=str(db), persistent=False)
+        reply_queues.append(queue)
+        return queue
+
+    monkeypatch.setattr(Queue, "close", close)
+    client = ControlClient(
+        lambda _: request,
+        "m_abc",
+        reply_queue_factory=replies,
+        owns_request_queue=False,
+    )
+    try:
+        assert client.request("STOP", timeout=0.02) is None
+        client.close()
+        assert request not in closed
+        assert len(reply_queues) == 1 and reply_queues[0] in closed
+        assert request.read_one() is not None
+        request.write("still owned by caller")
+        assert request.read_one() == "still owned by caller"
+    finally:
+        request.close()
+
+
+def test_control_client_does_not_retry_stop_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
+    db = tmp_path / "stop-once.db"
+    client = ControlClient(
+        lambda name: Queue(name, db_path=str(db)),
+        "m_abc",
+        driver_pid=123,
+        driver_start_time="driver-start",
+    )
+    try:
+        assert client.request("STOP", timeout=0.08) is None
+        with Queue("sys.ctl_m_abc", db_path=str(db)) as requests:
+            rows = requests.peek_many()
+        assert len(rows) == 1
+        assert json.loads(rows[0])["command"] == "STOP"
+    finally:
+        client.close()
+
+
+def test_control_registration_precedes_initial_readiness(tmp_path: Path) -> None:
+    db = tmp_path / "ready.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="bot")
+    client.join("general")
+    reactor = client.watch(lambda _: None, watcher_type=SummonReactor)
+    assert isinstance(reactor, SummonReactor)
+    reactor.prepare_delivery = lambda _item: None
+    policy = _install_policy(client, reactor)
+    ready = threading.Event()
+    reactor.notify_ready_after_initial_drain(ready)
+    try:
+        assert not ready.is_set()
+        assert reactor.get_queue(control_in_queue_name(policy._member_id)) is not None
+        reactor.process_once()
+        assert ready.is_set()
+    finally:
+        reactor.stop(join=False)
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OperationalError("database is locked"),
+        ValueError("audit implementation failure"),
+    ],
+)
+def test_audit_failure_reaches_owner_without_policy_reopen(error: Exception) -> None:
+    policy = _make_policy(60)
+    policy._next_rate_audit_at = 0
+
+    def fail() -> None:
+        raise error
+
+    cast(Any, policy)._audit_pass = fail
+    with pytest.raises(type(error)) as caught:
+        policy.turn()
+    assert caught.value is error
+
+
+def test_reserved_status_collision_is_not_mislabeled_as_broker_fault() -> None:
+    from taut_summon._adapter import AdapterError
+
+    policy = _make_policy(60)
+    policy._handle_provider = lambda: cast(
+        Any, SimpleNamespace(status_fields=lambda: {"provider": "forged"})
+    )
+    with pytest.raises(AdapterError, match="reserved STATUS key"):
+        policy._status_fields()

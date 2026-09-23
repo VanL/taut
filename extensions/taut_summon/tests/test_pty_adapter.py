@@ -2161,7 +2161,6 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
     )
     user_master, user_slave = pty.openpty()
     saved_termios = termios.tcgetattr(user_slave)
-    wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
     first_chord_processed = threading.Event()
@@ -2186,9 +2185,7 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
     monkeypatch.setattr(_pty_module, "_DetachChordMatcher", ObservedMatcher)
     thread = threading.Thread(
         target=lambda: result.append(
-            handle.attach(
-                wake=wake, shutdown=shutdown, input_fd=user_slave, output_fd=user_slave
-            )
+            handle.attach(shutdown=shutdown, input_fd=user_slave, output_fd=user_slave)
         ),
         daemon=True,
         name="split-chord-attach",
@@ -2234,13 +2231,11 @@ def test_attach_passively_retains_output_and_bracketed_paste_mode(
         {"queries": False, "modes": True, "redraw": False},
     )
     user_master, user_slave = pty.openpty()
-    wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
     thread = threading.Thread(
         target=lambda: result.append(
             handle.attach(
-                wake=wake,
                 shutdown=shutdown,
                 input_fd=user_slave,
                 output_fd=user_slave,
@@ -2422,13 +2417,11 @@ def test_attach_passive_observation_emits_no_query_reply_or_diagnostic(
         stall_s=0.1,
     )
     user_master, user_slave = pty.openpty()
-    wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
     thread = threading.Thread(
         target=lambda: result.append(
             handle.attach(
-                wake=wake,
                 shutdown=shutdown,
                 input_fd=user_slave,
                 output_fd=user_slave,
@@ -2469,11 +2462,10 @@ def test_attach_forwards_escape_prefixed_input(
 ) -> None:
     handle, log = _spawn_fake(tmp_path, {"queries": False, "modes": False})
     user_master, user_slave = pty.openpty()
-    wake = threading.Event()
     shutdown = threading.Event()
     thread = threading.Thread(
         target=lambda: handle.attach(
-            wake=wake, shutdown=shutdown, input_fd=user_slave, output_fd=user_slave
+            shutdown=shutdown, input_fd=user_slave, output_fd=user_slave
         ),
         daemon=True,
     )
@@ -2509,13 +2501,11 @@ def test_attach_forwarding_serializes_with_injection(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
     )
     user_master, user_slave = pty.openpty()
-    wake = threading.Event()
     shutdown = threading.Event()
     attach_result: list[str] = []
     attach = threading.Thread(
         target=lambda: attach_result.append(
             handle.attach(
-                wake=wake,
                 shutdown=shutdown,
                 input_fd=user_slave,
                 output_fd=user_slave,
@@ -2586,7 +2576,7 @@ def test_attach_forwarding_serializes_with_injection(
 
 
 @posix_only
-def test_attach_shutdown_wake_exits_bridge(
+def test_attach_shutdown_exits_bridge(
     tmp_path: Path,
 ) -> None:
     handle, _log = _spawn_fake(
@@ -2594,22 +2584,22 @@ def test_attach_shutdown_wake_exits_bridge(
     )
     user_master, user_slave = pty.openpty()
     saved_termios = termios.tcgetattr(user_slave)
-    wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
     thread = threading.Thread(
         target=lambda: result.append(
-            handle.attach(
-                wake=wake, shutdown=shutdown, input_fd=user_slave, output_fd=user_slave
-            )
+            handle.attach(shutdown=shutdown, input_fd=user_slave, output_fd=user_slave)
         ),
         daemon=True,
     )
     thread.start()
     try:
         assert b"ready" in _read_fd_until(user_master, b"ready")
+        assert not any(
+            worker.name == "taut-summon-attach-waker"
+            for worker in threading.enumerate()
+        )
         shutdown.set()
-        wake.set()
         reset = _read_fd_until(user_master, b"\x1b[?2004l", timeout=1.0)
         thread.join(timeout=5.0)
         assert result == ["shutdown"]
@@ -2635,7 +2625,6 @@ def test_attach_output_failure_still_restores_input_termios(tmp_path: Path) -> N
     def attach() -> None:
         try:
             handle.attach(
-                wake=threading.Event(),
                 shutdown=threading.Event(),
                 input_fd=user_slave,
                 output_fd=output_w,

@@ -8,7 +8,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from textual.widgets import Button, Input, OptionList, Select
@@ -29,7 +29,7 @@ from taut_tui.screens import (
     SummonStartScreen,
 )
 from taut_tui.session import ConversationSnapshot, NavigationSnapshot
-from taut_tui.summon import TuiSummonOperations
+from taut_tui.summon import TuiSummonInteraction, TuiSummonOperations
 from taut_tui.widgets import TautComposer, TautOptionList
 
 pytestmark = pytest.mark.sqlite_only
@@ -784,9 +784,7 @@ def _install_summon(
         ready_callback=context.app._apply_summon_ready,
     )
     context.app._summon = operations
-    context.app._summon_interaction = cast(
-        Any, object()
-    )  # deterministic controller ignores I/O
+    context.app._summon_interaction = TuiSummonInteraction(context.app)
     return controller, operations
 
 

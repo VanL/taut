@@ -882,6 +882,33 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   `_monotonic` and `_sleep`; tests patch those names, not the shared `time`
   module.
 
+- 2026-09-22: A coalescing invalidation queue cannot safely filter hints by
+  origin or payload. Your own newest hint may have replaced a peer's unseen
+  change. Refresh authoritative state before advancing the hint cursor, and
+  capture startup watermarks before the initial snapshot. Publication after
+  commit is advisory: raw writers and failed hints leave an explicit gap on
+  both SQLite and PostgreSQL; a second freshness timer hides that contract.
+
+- 2026-09-22: In a reactor restoration, distinguish completed native work from
+  successfully applied owner policy. Retain a spawn/attach result until its
+  broker continuation commits, and publish resource ownership before any
+  fallible pump start. Otherwise source replacement either repeats native work
+  or strands its phase. Test failure at these boundaries, including true worker
+  retirement, rather than only successful event delivery.
+
+- 2026-09-22: Delete duplicate observation by following the consumed state,
+  not by counting wait calls. A callback's blocking control request can become
+  a self-wait when a drifted control thread is removed; use the documented
+  prompt-return callback and peer request. Conversely, a driver Event with no
+  direct waiter may still be the cancellation input passed into a retained OS
+  attach adapter. Trace both ends before deleting or adding a mechanism.
+
+- 2026-09-22: Executor submission is not atomic admission: Python can enqueue
+  work before native thread creation fails. Withhold the existing bootstrap
+  authority until submission succeeds; release uncertain work using the existing
+  stop handshake. Test both queued and already-dequeued failure cases with the
+  real executor before inventing rollback observers or extra waiters.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

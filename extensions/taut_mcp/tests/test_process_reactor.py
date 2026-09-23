@@ -20,6 +20,7 @@ from conftest import canonical_of
 from simplebroker import Queue
 from tests.helpers.eventually import async_eventually
 
+import taut.watcher as core_watcher
 import taut_mcp._process_reactor as process_reactor
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, TautError
@@ -221,7 +222,7 @@ def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
     second.close()
     peer = TautClient(db_path=db, token=token, persistent=True)
     peer._meta_queue.has_pending()
-    real_waiter_factory = workspace_reactor.create_activity_waiter_for_queues
+    real_waiter_factory = core_watcher.create_activity_waiter_for_queues
     real_client_close = workspace_reactor.TautClient.close
     waiters: dict[int, Any] = {}
     close_order: list[bool] = []
@@ -254,7 +255,7 @@ def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
         real_client_close(client)
 
     monkeypatch.setattr(
-        workspace_reactor,
+        core_watcher,
         "create_activity_waiter_for_queues",
         recording_waiter,
     )
@@ -328,16 +329,10 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
 
-    class StartFailThread:
-        def start(self) -> None:
-            raise RuntimeError("synthetic start failure")
-
-        def is_alive(self) -> bool:
-            return False
-
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
         real_new_owner = reactor._new_owner
+        real_submit = reactor._executor.submit
         audited = _FingerprintAuditedCandidates()
         reactor._candidates = audited
         inbound: queue.Queue[workspace_reactor.WorkspaceControl] = queue.Queue()
@@ -345,7 +340,8 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
 
         class AuditedOwner:
             wake = threading.Event()
-            thread = StartFailThread()
+            run = staticmethod(lambda: None)
+            completion = None
 
             def __init__(self) -> None:
                 self.inbound = inbound
@@ -358,6 +354,11 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             return AuditedOwner()
 
         monkeypatch.setattr(reactor, "_new_owner", failed_owner)
+
+        def fail_submit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("synthetic submission failure")
+
+        monkeypatch.setattr(reactor._executor, "submit", fail_submit)
         try:
             with pytest.raises(WorkspaceToolError) as raised:
                 await reactor.attach_workspace(str(workspace), token)
@@ -366,9 +367,8 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             )
             assert audited.cleared_before_pop == [True]
             assert len(controls) == 1
-            bootstrap = controls[0]
-            assert isinstance(bootstrap, workspace_reactor.Bootstrap)
-            assert bootstrap.token == ""
+            assert isinstance(controls[0], workspace_reactor.StopWorkspace)
+            assert isinstance(inbound.get_nowait(), workspace_reactor.StopWorkspace)
             assert inbound.empty()
             traceback = raised.value.__traceback__
             while traceback is not None and (
@@ -382,6 +382,7 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             )
             assert reactor.list_workspaces()["records"] == []
             monkeypatch.setattr(reactor, "_new_owner", real_new_owner)
+            monkeypatch.setattr(reactor._executor, "submit", real_submit)
             retried = await reactor.attach_workspace(str(workspace), token)
             assert retried["records"][0]["status"] == "ready"
         finally:
@@ -403,6 +404,11 @@ def test_owner_setup_failure_maps_to_fixed_attachment_error(
             raise RuntimeError("participant-controlled setup detail")
 
         monkeypatch.setattr(reactor, "_new_owner", failed_owner)
+
+        def fail_submit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("synthetic submission failure")
+
+        monkeypatch.setattr(reactor._executor, "submit", fail_submit)
         try:
             with _tool_error(
                 "workspace attachment failed; use list_workspaces before retrying"
@@ -939,7 +945,6 @@ def test_detach_uses_distinct_five_second_deadline_and_final_liveness_check(
         attached = await reactor.attach_workspace(str(workspace), token)
         canonical = canonical_of(attached)
         entry = reactor._entries[canonical]
-        reactor._maintenance.cancel()
         real_wake = loop.call_soon_threadsafe
 
         def drop_wake(*_: object) -> None:
@@ -949,12 +954,12 @@ def test_detach_uses_distinct_five_second_deadline_and_final_liveness_check(
         try:
             detach = asyncio.create_task(reactor.detach_workspace(canonical))
             await async_eventually(
-                lambda: not entry.owner.thread.is_alive(),
+                lambda: not entry.owner.alive(),
                 timeout=5.0,
                 interval=0.01,
                 description="detach owner thread stops at the timeout boundary",
                 snapshot=lambda: {
-                    "owner_thread_alive": entry.owner.thread.is_alive(),
+                    "owner_thread_alive": entry.owner.alive(),
                     "entry_status": entry.status,
                 },
             )
@@ -969,31 +974,41 @@ def test_detach_uses_distinct_five_second_deadline_and_final_liveness_check(
     asyncio.run(scenario())
 
 
-@pytest.mark.sqlite_only
-@pytest.mark.timeout(10)
-def test_maintenance_drains_events_when_threadsafe_wake_fails(tmp_path: Path) -> None:
-    """[MCP-8] The 0.5-second pass recovers an already-enqueued event."""
+def test_closed_loop_wake_is_harmless_after_teardown() -> None:
+    """[MCP-8] A closed loop is not recoverable by a timer on that loop."""
+    loop = asyncio.new_event_loop()
 
-    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    async def create_and_close() -> ProcessReactor:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        await reactor.aclose()
+        return reactor
+
+    reactor = loop.run_until_complete(create_and_close())
+    loop.close()
+    reactor._wake_master()
+
+
+def test_completion_drains_events_before_quiet_owner_reap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Completion drains publication before inspecting retirement."""
 
     async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        reactor = ProcessReactor(loop)
-        real_wake = loop.call_soon_threadsafe
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        observed: list[str] = []
+        original = reactor._drain_events
 
-        def failed_wake(*_: object) -> None:
-            raise RuntimeError("synthetic closed wake path")
+        def drain() -> None:
+            observed.append("drain")
+            original()
 
-        loop.call_soon_threadsafe = failed_wake  # type: ignore[assignment]
-        try:
-            attached = await asyncio.wait_for(
-                reactor.attach_workspace(str(workspace), token),
-                timeout=2,
-            )
-            assert attached["records"][0]["status"] == "ready"
-        finally:
-            loop.call_soon_threadsafe = real_wake  # type: ignore[method-assign]
-            await reactor.aclose()
+        monkeypatch.setattr(reactor, "_drain_events", drain)
+        monkeypatch.setattr(
+            reactor, "_reap_dead_owners", lambda: observed.append("reap")
+        )
+        reactor._drain_events()
+        assert observed == ["drain", "reap"]
+        await reactor.aclose()
 
     asyncio.run(scenario())
 
@@ -1081,6 +1096,11 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
         reactor = ProcessReactor(asyncio.get_running_loop())
         attached = await reactor.attach_workspace(str(workspace), token)
         canonical = canonical_of(attached)
+        source = TautClient(db_path=workspace / ".taut.db")
+        try:
+            source.queue("taut.cache_stale").write("{}")
+        finally:
+            source.close()
         assert await asyncio.to_thread(periodic_peek_started.wait, 5)
 
         detach = asyncio.create_task(reactor.detach_workspace(canonical))
@@ -1105,12 +1125,12 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
 
         release_periodic_peek.set()
         await async_eventually(
-            lambda: not entry.owner.thread.is_alive(),
+            lambda: not entry.owner.alive(),
             timeout=5.0,
             interval=0.01,
             description="failed detach owner thread stops before retry",
             snapshot=lambda: {
-                "owner_thread_alive": entry.owner.thread.is_alive(),
+                "owner_thread_alive": entry.owner.alive(),
                 "entry_status": entry.status,
             },
         )
@@ -1123,7 +1143,9 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
-def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) -> None:
+def test_source_hint_marks_lost_identity_then_retires_without_healing(
+    tmp_path: Path,
+) -> None:
     """[MCP-8] Losing the immutable token binding degrades the workspace."""
 
     workspace, token, member_id = _create_workspace(tmp_path, "selected")
@@ -1139,6 +1161,7 @@ def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) ->
                     "UPDATE taut_members SET token = NULL WHERE member_id = ?",
                     (member_id,),
                 )
+            admin.queue("taut.cache_stale").write("{}")
             admin.close()
 
             await async_eventually(
@@ -1156,6 +1179,13 @@ def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) ->
                     ],
                 },
             )
+            await async_eventually(
+                lambda: not reactor._entries[canonical].owner.alive(),
+                timeout=5,
+                description="identity-lost child retires",
+            )
+            reactor._drain_events()
+            assert reactor._entries[canonical].status == "identity_lost"
             assert reactor._entries[canonical].fingerprint is None
             assert json.loads(reactor.current_text) == {
                 "workspaces": [
@@ -1512,6 +1542,11 @@ def test_snapshot_crash_is_captured_before_content_free_workspace_failure(
         try:
             await reactor.attach_workspace(str(workspace), token)
             fail_snapshot.set()
+            source = TautClient(db_path=workspace / ".taut.db")
+            try:
+                source.queue("taut.cache_stale").write("{}")
+            finally:
+                source.close()
             await async_eventually(
                 lambda: (
                     reactor.list_workspaces()["records"][0]["status"]
@@ -1540,11 +1575,11 @@ def test_outer_workspace_loop_crash_is_captured_once(
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
     TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
-    real_run_cycle = workspace_reactor._WorkspaceReactor._run_cycle
+    real_run_cycle = workspace_reactor._WorkspaceReactor._process_reactor_turn
 
-    def crash_after_ready(self: workspace_reactor._WorkspaceReactor) -> bool:
+    def crash_after_ready(self: workspace_reactor._WorkspaceReactor) -> None:
         result = real_run_cycle(self)
-        if self.ready:
+        if self.client is not None:
             outer_local = "outer loop evidence"
             _ = outer_local
             del _
@@ -1553,7 +1588,7 @@ def test_outer_workspace_loop_crash_is_captured_once(
 
     monkeypatch.setattr(
         workspace_reactor._WorkspaceReactor,
-        "_run_cycle",
+        "_process_reactor_turn",
         crash_after_ready,
     )
 
@@ -1680,6 +1715,180 @@ def test_domain_dispatch_rejects_lifecycle_tools(tmp_path: Path, name: str) -> N
         try:
             with pytest.raises(AssertionError, match="unregistered ordinary tool"):
                 await reactor.execute_tool(str(tmp_path), "unused", name, {})
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_detach_waits_for_callable_return_without_retirement_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[MCP-8] Terminal publication precedes executor-owned completion."""
+    workspace, token, _ = _create_workspace(tmp_path, "completion")
+    returned = threading.Event()
+    release = threading.Event()
+    original = process_reactor.run_workspace_reactor
+
+    def held_return(*args: Any) -> None:
+        original(*args)
+        returned.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(process_reactor, "run_workspace_reactor", held_return)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        reactor = ProcessReactor(loop)
+        try:
+            canonical = canonical_of(
+                await reactor.attach_workspace(str(workspace), token)
+            )
+            detach = asyncio.create_task(reactor.detach_workspace(canonical))
+            assert await asyncio.to_thread(returned.wait, 3)
+            reactor._drain_events()
+            assert not detach.done()
+            assert reactor._entries[canonical].owner.alive()
+            release.set()
+            result = await asyncio.wait_for(detach, 1)
+            assert result["records"][0]["status"] == "detached"
+        finally:
+            release.set()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.timeout(5)
+def test_quiet_owner_return_settles_admission_without_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] A callable that publishes nothing still has a completion event."""
+    monkeypatch.setattr(process_reactor, "run_workspace_reactor", lambda *args: None)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        reactor = ProcessReactor(loop)
+        try:
+            with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
+                await asyncio.wait_for(reactor.attach_workspace("/missing", "token"), 1)
+            assert not reactor._candidates
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.timeout(10)
+def test_real_executor_start_failure_never_grants_failed_owner_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] submit may enqueue work before native thread startup fails."""
+    workspace, token, _ = _create_workspace(tmp_path, "retry")
+    resolved: list[str] = []
+    real_resolve = workspace_reactor._resolve_workspace
+
+    def resolve(locator: str) -> Any:
+        resolved.append(locator)
+        return real_resolve(locator)
+
+    monkeypatch.setattr(workspace_reactor, "_resolve_workspace", resolve)
+    real_start = threading.Thread.start
+    fail_once = True
+
+    def start(thread: threading.Thread) -> None:
+        nonlocal fail_once
+        if thread.name.startswith("taut-mcp-workspace") and fail_once:
+            fail_once = False
+            raise RuntimeError("native thread startup failed")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        owners: list[Any] = []
+        real_new_owner = reactor._new_owner
+
+        def new_owner(generation: int) -> Any:
+            owner = real_new_owner(generation)
+            owners.append(owner)
+            return owner
+
+        monkeypatch.setattr(reactor, "_new_owner", new_owner)
+        try:
+            with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
+                await reactor.attach_workspace("/missing", "secret")
+            attached = await asyncio.wait_for(
+                reactor.attach_workspace(str(workspace), token), 2
+            )
+            assert attached["records"][0]["status"] == "ready"
+            assert resolved == [str(workspace)]
+            assert len(owners) == 2
+            assert not reactor._candidates
+        finally:
+            # Rescue the pre-fix library work item if the assertion above fails.
+            for owner in owners:
+                owner.send(workspace_reactor.StopWorkspace(1))
+            await reactor.aclose()
+            reactor._executor.shutdown(wait=False, cancel_futures=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.timeout(10)
+def test_failed_submit_can_already_be_running_without_workspace_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[MCP-4] An existing worker may claim a task before new-worker failure."""
+    workspace, token, _ = _create_workspace(tmp_path, "existing")
+    entered = threading.Event()
+    resolved: list[str] = []
+    real_resolve = workspace_reactor._resolve_workspace
+
+    def resolve(locator: str) -> Any:
+        resolved.append(locator)
+        return real_resolve(locator)
+
+    monkeypatch.setattr(workspace_reactor, "_resolve_workspace", resolve)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            first = reactor._entries[canonical_of(attached)]
+            real_new_owner = reactor._new_owner
+
+            def new_owner(generation: int) -> Any:
+                owner = real_new_owner(generation)
+                run = owner.run
+
+                def entered_run() -> None:
+                    entered.set()
+                    run()
+
+                owner.run = entered_run
+                return owner
+
+            monkeypatch.setattr(reactor, "_new_owner", new_owner)
+            real_start = threading.Thread.start
+
+            def fail_second_worker(thread: threading.Thread) -> None:
+                if thread.name.startswith("taut-mcp-workspace"):
+                    first.owner.send(workspace_reactor.StopWorkspace(first.generation))
+                    assert entered.wait(3)
+                    raise RuntimeError("native thread startup failed")
+                real_start(thread)
+
+            monkeypatch.setattr(threading.Thread, "start", fail_second_worker)
+            with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
+                await reactor.attach_workspace("/never-resolve", "secret")
+            assert entered.is_set()
+            assert resolved == [str(workspace)]
+            monkeypatch.setattr(threading.Thread, "start", real_start)
         finally:
             await reactor.aclose()
 

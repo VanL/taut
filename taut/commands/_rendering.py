@@ -557,7 +557,7 @@ def emit_watch_item(
             quiet=quiet,
             stdout=stdout,
             stderr=stderr,
-            thread_labels=getattr(client, "last_thread_display_names", None),
+            thread_labels=client.last_thread_display_names,
         )
 
 

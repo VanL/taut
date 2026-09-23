@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     "jsonschema>=4.26.0,<5",
     "mcp>=2.0.0,<3",
-    "simplebroker>=8.3.1",
+    "simplebroker>=8.4.0",
     "taut-chat==0.9.8",
 ]
 

@@ -9,7 +9,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from simplebroker.ext import PollingStrategy
@@ -69,7 +69,10 @@ def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF
             self.replacements.append(activity_waiter)
             displaced = PollingStrategy.replace_activity_waiter(self, activity_waiter)
             self.reenter_on_notify = True
-            signal.raise_signal(signal.SIGINT)
+            # A signal handler that sets this Event deadlocks on its own lock.
+            with cast(Any, stop_event)._cond:
+                signal.raise_signal(signal.SIGINT)
+                signal.raise_signal(signal.SIGINT)
             return displaced
 
         def notify_activity(self) -> None:
@@ -89,6 +92,16 @@ def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF
             if not self._topology_changed:
                 self._topology_changed = True
                 self.add_queue("dynamic.two", lambda *_args: None)
+
+        def _finish_topology_sigint_critical(
+            self, *, fatal_error: BaseException | None = None
+        ) -> None:
+            self.publication_coherent = (
+                "dynamic.two" in self._queues
+                and self._multi_activity_waiter is replacement_waiter
+                and self._multi_activity_waiter_generation == self._queue_generation
+            )
+            super()._finish_topology_sigint_critical(fatal_error=fatal_error)
 
         def next_wait_timeout(self) -> float | None:
             return 0.1
@@ -122,21 +135,38 @@ def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF
     return {
         "installed_close_calls": installed_waiter.close_calls,
         "keyboard_interrupt": keyboard_interrupt,
-        "multi_generation_matches": (
-            watcher._multi_activity_waiter_generation == watcher._queue_generation
-        ),
-        "multi_waiter_is_replacement": (
-            watcher._multi_activity_waiter is replacement_waiter
-        ),
+        "publication_coherent": watcher.publication_coherent,
+        "waiter_retired": watcher._multi_activity_waiter is None,
         "replacement_close_calls": replacement_waiter.close_calls,
         "replacement_count": len(strategy.replacements),
         "replacement_is_expected": strategy.replacements == [replacement_waiter],
         "start_calls": strategy.start_calls,
         "status": "ok",
-        "strategy_generation_matches": (
-            watcher._strategy_generation == watcher._queue_generation
-        ),
     }
+
+
+def _run_held_event_probe() -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="taut-held-event-") as temp_dir:
+        watcher = BaseReactor(
+            {"input": {"handler": lambda *_: None}}, db=Path(temp_dir) / "test.db"
+        )
+        previous = signal.signal(signal.SIGINT, watcher._sigint_handler)
+        interrupted = False
+        try:
+            with cast(Any, watcher._stop_event)._cond:
+                try:
+                    signal.raise_signal(signal.SIGINT)
+                except KeyboardInterrupt:
+                    interrupted = True
+            assert not watcher._resources_closed
+        finally:
+            signal.signal(signal.SIGINT, previous)
+            watcher.stop(join=False)
+        return {
+            "status": "ok",
+            "interrupted": interrupted,
+            "resources_closed": watcher._resources_closed,
+        }
 
 
 def _emit(payload: dict[str, object]) -> None:
@@ -149,6 +179,7 @@ def main() -> int:
         "--mode",
         choices=(
             "probe",
+            "held-event",
             "hang",
             "startup-hang",
             "early-exit",
@@ -177,7 +208,7 @@ def main() -> int:
 
     _emit({"status": "ready"})
     try:
-        _emit(_run_probe())
+        _emit(_run_held_event_probe() if args.mode == "held-event" else _run_probe())
     except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
         _emit(
             {

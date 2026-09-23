@@ -83,7 +83,7 @@ def _status_reply() -> dict[str, Any]:
         "provider": "scripted",
         "thread_count": 1,
         "cursor_lag": {"general": 0},
-        "control_health": "ok",
+        "awaiting_onboarding": "false",
     }
 
 
@@ -296,13 +296,11 @@ def test_foreground_ready_callback_is_once_and_control_live_across_resume(
     ready = threading.Event()
     callbacks: list[SummonRunHandle] = []
     callback_threads: list[int] = []
-    callback_statuses: list[Any] = []
     failures: list[BaseException] = []
 
     def on_ready(handle: SummonRunHandle) -> None:
         callbacks.append(handle)
         callback_threads.append(threading.get_ident())
-        callback_statuses.append(controller.status(handle.member.name))
         ready.set()
 
     def run() -> None:
@@ -323,7 +321,9 @@ def test_foreground_ready_callback_is_once_and_control_live_across_resume(
     assert callback_threads == [worker.ident]
     assert handle.member.name == "Scripted"
     assert handle.member.provider == "scripted"
-    assert callback_statuses[0].member_id == handle.member.member_id
+    # The inline owner callback publishes readiness and returns promptly.
+    # Correlated control requests come from a peer, once the owner can drain.
+    assert controller.status(handle.member.name).member_id == handle.member.member_id
     with pytest.raises(AttributeError):
         handle.member = handle.member
 
@@ -534,13 +534,13 @@ def test_status_mapping_copies_structured_fields_and_excludes_protocol_keys() ->
     status = _status_from_reply(_member(), reply)
 
     assert status.cursor_lag == {"general": 0}
-    assert status.details == {"control_health": "ok"}
+    assert status.details == {"awaiting_onboarding": "false"}
     raw_lag = reply["cursor_lag"]
     assert isinstance(raw_lag, dict)
     raw_lag["general"] = 9
-    reply["control_health"] = "degraded"
+    reply["awaiting_onboarding"] = "true"
     assert status.cursor_lag == {"general": 0}
-    assert status.details == {"control_health": "ok"}
+    assert status.details == {"awaiting_onboarding": "false"}
 
 
 def test_all_advertised_provider_names_resolve_to_pty_adapter() -> None:
@@ -919,15 +919,14 @@ def test_controller_status_and_stop_use_real_correlated_control_plane(
     assert first.cursor_lag == {"general": 0}
     assert first.details == {
         "awaiting_onboarding": "true",
-        "control_health": "ok",
         "rate_breaches": 0,
         "rate_limited": False,
     }
     first.cursor_lag["general"] = 99
-    first.details["control_health"] = "mutated"
+    first.details["awaiting_onboarding"] = "mutated"
     second = controller.status("reviewer")
     assert second.cursor_lag == {"general": 0}
-    assert second.details["control_health"] == "ok"
+    assert second.details["awaiting_onboarding"] == "true"
 
     result = controller.stop("reviewer")
 
@@ -1016,34 +1015,26 @@ def test_controller_refuses_error_stop_ack_before_release_confirmation(
     assert responder_errors == []
 
 
-def test_release_confirmation_reads_once_after_final_sleep(
+@pytest.mark.parametrize("released", [False, True])
+def test_release_confirmation_reads_once_after_final_ack(
     monkeypatch: pytest.MonkeyPatch,
+    released: bool,
 ) -> None:
     import taut_summon.controller as controller_module
     from taut_summon import SummonController
 
-    now = 0.0
-    released = False
     reads = 0
+    closes = 0
 
     class QueueHandle:
         def close(self) -> None:
-            pass
+            nonlocal closes
+            closes += 1
 
     class Client:
         def queue(self, name: str) -> QueueHandle:
             assert name == "taut.summon_state"
             return QueueHandle()
-
-    def monotonic() -> float:
-        return now
-
-    def sleep(seconds: float) -> None:
-        nonlocal now, released
-        assert 0 < seconds <= 0.05
-        now += seconds
-        if now >= 0.1:
-            released = True
 
     def get_session(_queue: QueueHandle, member_id: str) -> dict[str, Any]:
         nonlocal reads
@@ -1054,18 +1045,19 @@ def test_release_confirmation_reads_once_after_final_sleep(
             "driver_start_time": None if released else "start",
         }
 
-    monkeypatch.setattr(controller_module.time, "monotonic", monotonic)
-    monkeypatch.setattr(controller_module.time, "sleep", sleep)
     monkeypatch.setattr(controller_module, "get_session", get_session)
 
-    assert SummonController._confirm_released(
-        Client(),  # type: ignore[arg-type]
-        "m_reviewer",
-        driver_pid=123,
-        driver_start_time="start",
-        timeout=0.1,
+    assert (
+        SummonController._confirm_released(
+            Client(),  # type: ignore[arg-type]
+            "m_reviewer",
+            driver_pid=123,
+            driver_start_time="start",
+        )
+        is released
     )
-    assert reads == 3
+    assert reads == 1
+    assert closes == 1
 
 
 def test_package_facade_is_lazy_and_preserves_introspection() -> None:

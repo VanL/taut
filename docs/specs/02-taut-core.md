@@ -152,7 +152,9 @@ storage-authoritative selected Taut project file may replace that ordered
 list; a missing table or key inherits the packaged values, while an explicit
 empty list disables outbound reactions. Values are unique lowercase ASCII
 strings matching `^[a-z0-9][a-z0-9_-]{0,31}$`; Taut does not normalize or
-deduplicate them. Invalid reaction configuration fails client construction.
+deduplicate them. Invalid reaction configuration fails client construction with
+`ReactionConfigurationError`, a `TautError` subtype. Adapters classify this typed
+boundary rather than matching diagnostic text.
 Unknown keys remain ignored.
 
 Reaction values are resolved from the selected `BrokerTarget.config_path` and
@@ -459,7 +461,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=8.3.1` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=8.4.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -490,7 +492,9 @@ an accident. Two consequences are binding:
   [TAUT-3.2]. Version 8.0.0 makes
   ascending public message id the uniform default retrieval order, removes
   the private SQL row-order surrogate in schema 6, and advances the backend
-  API to v8; `simplebroker-pg>=4.3.1` is the matching PostgreSQL line. Ordinary
+  API to v8. Version 8.4.0 adds bounded native waits and coalescing local
+  activity notification for the shared reactor; `simplebroker-pg>=4.4.0` is the
+  matching supported PostgreSQL line. Ordinary
   generated writes remain FIFO-like because their ids are monotonic. Exact
   inserts, loads, or id-preserving moves of lower ids are selected by public
   id rather than insertion time. Taut continues to expose only oldest
@@ -637,8 +641,8 @@ inserted id as well, but Redis-backed Taut state remains unsupported under
 - Members see and are notified about a thread iff they have a
   `taut_membership` row. `leave` deletes the membership row and writes a
   `notice`; it never touches messages or the registry. For a *running*
-  watcher the iff is convergence-bounded: membership changes apply
-  within the [TAUT-8.4] refresh interval, so a just-left thread may
+  watcher membership converges through [TAUT-8.4]'s advisory cache-stale
+  event, so a just-left thread may
   display briefly before the watcher drops it. One-shot commands
   (`read`, `list`) check membership at invocation and are exact.
 - Joining a channel does not auto-join its sub-threads. Replying to a
@@ -1518,8 +1522,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=8.3.1` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=4.3.1` and its driver
+Core runtime dependencies: exactly `simplebroker>=8.4.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=4.4.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -1590,6 +1594,11 @@ stops the watcher but retains [IAN-7]'s already-consumed pointer semantics.
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
 The preferred Python construction path is `TautClient.watch(...)`.
+Its optional `watcher_type` selects a `TautWatcher` subclass with the same
+constructor contract; omission selects `TautWatcher`. The client owns runtime
+construction, canonical selector resolution, construction-failure cleanup and
+handoff for either class. This permits first-party domain policy reuse without
+extensions constructing or importing the private client runtime adapter.
 `TautWatcher` remains exported for embedding and advanced construction with a
 `TautWatchRuntime`. Direct `TautWatcher(client, ...)` construction is rejected;
 callers must use `TautClient.watch()`.
@@ -1620,18 +1629,22 @@ Contract:
   Poison-message liveness: after 3 consecutive failures on the same
   message, the watcher advances past it and emits a warning. At the
   display layer, liveness wins over completeness.
-- Membership changes apply while running via `add_queue`/`remove_queue`.
-  The watcher re-checks the membership table when the backend reports
-  change and at a bounded interval. Taut's cursor-aware watcher treats
-  data-version as a wake hint; it does not refresh SimpleBroker `last_ts`
-  because chat delivery is governed by taut membership rows and
-  per-thread cursors. The interval is the portable guarantee: backends whose wake
-  signals cover only queue writes ([TAUT-12.1]) still converge on
-  membership changes within the interval. Watcher queue operations use
-  SimpleBroker's public `Queue` behavior directly. Taut does not retry
-  `malformed`, magic mismatch, disk I/O, timestamp row-shape, or application
-  row-decode errors by substring; those failures surface unless SimpleBroker
-  itself classifies a lock/busy contention case as retryable.
+Membership changes apply while running through the existing owner-thread
+`add_queue`/`remove_queue` path. Core membership-topology operations commit authoritative
+sidecar state and then publish [TAUT-8.5]'s bounded `taut.cache_stale` hint. A
+watcher retains that queue as cursor-aware PEEK input, rereads membership when a
+newer hint exists, and updates topology on its owner. No membership refresh
+timer remains. The constructor retains `membership_refresh_interval` for source
+compatibility and as the copied scheduler's broad-discovery throttle; it does
+not schedule membership refresh. A crash between commit and hint, a raw state mutation or a
+mixed-version writer can delay convergence on either backend until a new
+cache-stale row or explicit local membership refresh. The hint does not make
+sidecar and queue publication atomic.
+
+Chat delivery remains governed by membership rows and per-thread cursors.
+Watcher queue operations use SimpleBroker's public `Queue` behavior directly.
+Taut does not add a second retry policy or substring classification around
+broker or row-decode failures.
 
 `TautWatcher` uses the shared [TAUT-8.5] `BaseReactor` mechanism. The watcher
 returned by `TautClient.watch()` is the same instance driven by synchronous
@@ -1646,11 +1659,13 @@ one-shot CLI/client paths remain transient.
 
 ### [TAUT-8.5] Reactor lifecycle and ownership
 
-`BaseReactor`, derived from SimpleBroker 5.2.0's executable reference reactor,
-owns the process/wait/request-stop/stop mechanism shared by Taut's long-lived
-queue reactors. One reactor instance has exactly one drive-thread owner after
+`BaseReactor` subclasses Taut's pinned copy of Weft's
+`MultiQueueWatcher` and owns the process/wait/request-stop/stop template shared
+by Taut's long-lived queue reactors. One reactor instance has exactly one drive-thread owner after
 its first driven turn. `process_once()`, waiting, scheduling-state mutation,
-and dynamic topology mutation must run on that owner; a second drive caller and
+and topology transactions run on that owner. Foreign callers submit topology
+requests; owner mutations run synchronously between dispatch passes. Handler-time
+and reentrant topology mutations fail before effects. A second drive caller and
 a same-owner reentrant turn fail before touching a queue. Read-only inspection
 may cross threads only through an immutable synchronized queue-name/topology
 snapshot; a live Queue is owner-only after drive begins. First-party policy
@@ -1662,8 +1677,14 @@ the same class, not a second behavior path. A legacy subclass that overrides a
 public lifecycle template may import but must fail construction before broker
 I/O with an actionable extension-upgrade diagnostic rather than drive unsafely.
 
-Stop has two stages. `request_stop()` only sets stop state and wakes local and
-broker waits; it is safe from handlers, signals, and foreign threads.
+Stop has two stages. Ordinary owner or foreign-thread `request_stop()`
+publishes stop state and wakes its reactor without joining or closing owned
+resources. Python signal handlers publish plain pending state and use only
+the supported signal-safe notifier; they perform no Event, lock, logging,
+adapter or resource operation. Core synchronous watch preserves immediate
+`KeyboardInterrupt` outside waiter replacement and defers that raise until
+ownership transfer commits inside the replacement critical section. Normal
+stack unwind and owner execution perform cleanup.
 `stop(join=...)` may join an owner from another thread, but it must not close
 reactor-owned handles while that owner is driving. The drive finalizer runs
 only after the turn loop has unwound, and closes owned queues, waiters, strategy
@@ -1688,25 +1709,75 @@ in proportion to live topology, not the number of prior joins and leaves.
 Partial constructor failure releases every acquired scope without replacing
 the constructor's original exception with an ordinary cleanup error.
 
-Polling/activity infrastructure initializes only after drive ownership is
-claimed. One shared wait template follows the reference reactor and waits
-through `PollingStrategy` only. The strategy owns an optional native
-multi-queue waiter when the backend supplies one; otherwise it uses
-SimpleBroker's data-version path. No caller consumes the native waiter directly.
-A fixed-topology reactor binds its waiter once. `PollingStrategy.start()` runs
-exactly once for initial lifecycle setup. After owner-thread dynamic topology
-mutation, the next owner wait builds an optional waiter for the new complete
-queue set and calls the public
-`PollingStrategy.replace_activity_waiter(ActivityWaiter | None)` interface.
-Live replacement must not reset the strategy's data-version callback or local
-activity state. The strategy remains the sole current-waiter and wait-path
-authority; Taut closes the displaced waiter returned by replacement exactly
-once. A topology change discovered inside the data-version callback is rebound
-after that strategy wait returns and before any second strategy wait. Broker
-activity, local activity, and stop are wake hints; after every wake the reactor
-rechecks authoritative pending/cursor state before dispatch. Taut does not wrap
-turns or queue operations in a second retry policy: SimpleBroker owns broker
-retry under [TAUT-3.4].
+Each context has one scheduling owner and one wake arbiter. Where the context
+has a broker source, the retained SimpleBroker `PollingStrategy` is that arbiter;
+a host loop is the arbiter only where no broker source exists. The arbiter
+observes exactly three inputs: backend readiness, its local latch and an owned
+deadline. Broker readiness is SQLite data-version or PostgreSQL native activity
+through the retained strategy. In-process work and OS adapters publish
+authoritative state before notifying the local latch. OS readiness never enters
+the arbiter directly.
+Local work and deferred signals publish authoritative state before notifying
+the owner; a wake carries no payload and never authorizes dispatch. Pass the
+remaining native-wait budget, but do not promise a shorter SQLite polling pass.
+Local work must be serviced with empty broker queues and coalesced or downgraded
+hints. Notification is a latch observed on strategy return, not a guaranteed
+interrupt of the waiter call already in progress. The native strategy checks
+that latch after each pass bounded by `max(delay, burst_sleep)`, so the default
+local response arrives after one roughly 100 ms quiet pass (before configured
+jitter) without a deadline. `BROKER_MAX_INTERVAL` is the product tuning knob.
+
+Inputs have four origins. Broker activity is observed directly by the strategy.
+In-process completion or a self-write publishes state and calls
+`notify_activity()`. An operating-system source cannot publish itself: one
+adapter owns one blocking operation, publishes an immutable result and notifies
+the owner. Clock work and absence are represented by a deadline. For every OS
+source, exit and end-of-stream remain separate; quiet exit remains observable;
+a final result does not prove adapter retirement; blocking reads are cancellable;
+and one owner holds each fd/handle. The adapter owns no broker, cursor or ledger
+handle.
+
+Do not layer another scheduler or observer of the same domain state around this
+mechanism. A timer exists only for clock work or absence, never as a second poll
+of present state that already has an event source. Required blocking source
+adapters and one-shot lifecycle observers may publish immutable results into
+the owner. Multi-context composition may nest the same shape:
+a higher-level owner derives domain progress from inner events while retaining
+deadlines and lifecycle evidence for objects it owns. It does not watch or poll
+child broker state independently.
+
+On SQLite, an unchanged `data_version` after a quiet strategy pass performs no
+per-queue pending checks. The exception is a non-persistent watcher without a
+native waiter: because each operation opens a fresh connection and
+`data_version` is connection-local, it confirms pending state at the end of each
+strategy pass. Inactive queue discovery otherwise runs inside a confirmed owner
+turn or the strategy's own idle safety return.
+
+Derived-cache convergence has no timer on any backend. A Taut mutation that can
+invalidate an existing owner's cache without activity on an already-watched
+queue commits its authoritative change and then writes one coalescing event to
+the core-owned `taut.cache_stale` queue with `keep_newest=1`. Membership-topology mutations and
+notification-pointer claims are the initial producers. Interested owners hold
+that queue as a fixed retained PEEK source with an in-memory cursor. They capture
+the initial cursor before the first authoritative snapshot so a concurrent event
+remains pending. A new row means only that owned cache may be stale; the owner
+either rereads authoritative state before advancing past the observed hint or
+first publishes an owner-local pending-refresh obligation that remains set until
+the paced refresh succeeds. This rule also applies to the owner's own hint:
+its write may replace an unseen peer hint, so the returned write timestamp
+alone does not justify advancing the consumer cursor. This permits coalescing
+without a retained-row spin.
+A crash between commit and hint, a raw broker operation or a mixed-version
+writer may delay convergence on either backend until a new cache-stale row or
+an explicit local operation schedules that cache's refresh. The hint does not
+make the mutation atomic and does not justify a polling backstop. Failure to publish
+the advisory hint after commit is diagnosed but does not turn the committed
+authoritative operation into a reported failure or trigger an automatic retry.
+
+A reactor with no timer still enters its retained strategy with no deadline; it
+does not skip waiting. Reactor and manual callers share one protected owned-wait
+body and hint classifier. The public manual wrapper may preserve its existing
+`None` surface without creating another scheduling path.
 
 A background `TautWatcher` drives the same instance returned by
 `TautClient.watch()`. Construction/configuration may precede drive with no
@@ -2282,8 +2353,8 @@ Mechanism: `.taut.toml` ([TAUT-3.2]) carries the same
 `backend`/`target`/`backend_options` shape as SimpleBroker's `.broker.toml` and
 Weft's `broker.toml`. `resolve_broker_target()` discovers project config
 first, sidecar tables live in the broker's configured Postgres schema, and the
-multi-queue activity waiter rides LISTEN/NOTIFY while [TAUT-8.4]'s interval
-refresh remains the portable correctness path.
+multi-queue activity waiter rides LISTEN/NOTIFY. [TAUT-8.4]'s cache-stale
+event supplies membership invalidation on both backends.
 
 Implementation boundaries:
 
@@ -2320,8 +2391,8 @@ Binding obligations:
   or fails only because another supported initializer ran concurrently.
 
 - no SQLite-specific assumptions outside target resolution and the
-  documented data-version wake ([TAUT-8.4] interval backstop is the
-  portable path)
+  documented data-version wake ([TAUT-8.4]'s cache-stale event is the
+  portable invalidation path)
 - sidecar SQL uses qmark placeholders only (SimpleBroker translates them
   for Postgres)
 - SimpleBroker hybrid timestamps and process ids are stored in `BIGINT`
@@ -2391,6 +2462,24 @@ Shape decided 2026-06-12:
 
 Core obligations: envelope readers ignore unknown fields ([TAUT-6.1]) and no
 code assumes members only speak via CLI invocations.
+
+The multi-queue scheduler remains whole-and-faithful vendoring. Taut records the
+Weft source commit, path and copied-block digest and keeps the copied class and
+method bodies identical except for two explicit reviewed divergences: the
+existing Taut rejection of unsupported `yield_strategy` values before broker
+I/O, and a private `RuntimeError` subclass at the three synchronous topology
+stop checks. Internal membership reconciliation treats only that typed rejection
+as clean termination. Public topology mutation still rejects stopping watchers
+as `RuntimeError`; unrelated failures must propagate even when stop is set.
+The source comparison accounts for exactly those changes. Module-level imports, constants, broker-target resolution
+and default error policy may be supplied by Taut shims outside that block. Taut's
+owner lifecycle and domain policy subclass the copy: `BaseReactor` supplies the
+one turn/wait template; core watch, Summon, MCP workspace and bounded control
+requesters supply only their cursor, delivery, snapshot or deadline policy. A
+scheduler change is made upstream and recopied, or is recorded as an explicit
+reviewed divergence; it is not silently adapted in place.
+The unused `MultiQueueWatcher(check_interval=...)` constructor argument is
+removed with the restored upstream signature.
 
 ### [TAUT-12.4] Rich first-party TUI extension
 
@@ -2978,6 +3067,18 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
+  reactor wake ownership and safe signal handling by replacing the drifted
+  scheduler with an exact pinned copy of Weft's `MultiQueueWatcher` and keeping
+  Taut behavior in thin subclasses. It proposes [TAUT-8.5] as the shared
+  normative owner/arbiter contract with exactly
+  three arbiter-observable inputs, four source origins and the operating-system
+  adapter obligations. It also makes one strategy pass the local-wake bound,
+  preserves per-pass confirmation for non-persistent SQLite, prohibits per-queue
+  I/O after an unchanged quiet persistent SQLite pass, and routes otherwise-missed
+  cache invalidation through `taut.cache_stale`. Those corrections are in
+  [TAUT-8.5].
 
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors and synchronized release guidance for 0.9.8.

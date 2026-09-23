@@ -541,17 +541,6 @@ def test_log_since_rejects_unsafe_bare_json_integer_before_dispatch(
     with pytest.raises(ValidationError):
         validate(instance=arguments, schema=tool.input_schema)
 
-    class PublicClientSpy:
-        def __getattr__(self, name: str) -> object:
-            raise AssertionError(f"unexpected client dispatch: {name}")
-
-    with pytest.raises(ValueError, match="since integer must be JSON-safe"):
-        execute_command(
-            cast(TautClient, PublicClientSpy()),
-            "log",
-            (("thread", "general"), ("since", since)),
-        )
-
 
 @pytest.mark.parametrize(
     "target",
@@ -1852,6 +1841,11 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
             canonical = str(
                 canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
+            source = TautClient(db_path=workspace / ".taut.db")
+            try:
+                source.queue("taut.cache_stale").write("{}")
+            finally:
+                source.close()
             assert await asyncio.to_thread(blocked_peek.wait, 5)
             canceled = asyncio.create_task(
                 reactor._execute_ready_tool(

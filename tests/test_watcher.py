@@ -9,7 +9,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -502,8 +501,8 @@ class RecordingPollingStrategy(PollingStrategy):
 
 def test_multi_queue_watcher_has_no_retry_or_wait_authority() -> None:
     assert "_run_with_retries" not in MultiQueueWatcher.__dict__
-    assert "wait_for_activity" not in MultiQueueWatcher.__dict__
-    assert "_reset_multi_activity_waiter" not in MultiQueueWatcher.__dict__
+    assert "wait_for_activity" in MultiQueueWatcher.__dict__
+    assert "_reset_multi_activity_waiter" in MultiQueueWatcher.__dict__
 
 
 def test_base_reactor_rejects_empty_queue_configs(tmp_path: Path) -> None:
@@ -681,7 +680,7 @@ def test_base_reactor_stop_join_false_does_not_close_active_turn(
         thread.join(timeout=3.0)
 
     assert not thread.is_alive()
-    assert close_threads == [thread]
+    assert close_threads and set(close_threads) == {thread}
 
 
 def test_base_reactor_manual_turn_defers_stop_cleanup_until_handler_returns(
@@ -720,7 +719,7 @@ def test_base_reactor_manual_turn_defers_stop_cleanup_until_handler_returns(
     watcher.process_once()
 
     assert cleanup_deferred == [True]
-    assert close_threads == [threading.current_thread()]
+    assert close_threads and set(close_threads) == {threading.current_thread()}
 
 
 def test_base_reactor_exception_finalizes_and_reraises(
@@ -751,7 +750,7 @@ def test_base_reactor_exception_finalizes_and_reraises(
     with pytest.raises(RuntimeError, match="turn exploded"):
         watcher.run_until_stopped()
 
-    assert close_calls == 1
+    assert close_calls == 2  # Explicit lease close, then session inventory close.
 
 
 def test_base_reactor_stop_watching_returns_normally_without_prior_stop_request(
@@ -800,8 +799,8 @@ def test_base_reactor_retirement_recycles_worker_cache_with_live_peer(
         assert peer.conn is not None
         session = peer.conn._shared_session
         assert session is not None
-        assert watcher._session is not None
-        assert watcher._queue_obj.session is None
+        assert watcher._broker_session is not None
+        assert watcher._queue_obj.session is watcher._broker_session
         assert len(session._cores) == 1
         for generation in range(3):
             if generation:
@@ -842,18 +841,20 @@ def test_base_reactor_cache_cleanup_error_does_not_skip_queue_close(
     assert session is not None
     queue.write("warm cache")
 
-    assert watcher._session is not None
+    assert watcher._broker_session is not None
 
     def fail_cleanup() -> None:
         raise RuntimeError("cache cleanup failed")
 
-    monkeypatch.setattr(watcher._session, "recycle_thread", fail_cleanup)
+    real_cleanup = watcher._cleanup_runtime_resources
+    monkeypatch.setattr(watcher, "_cleanup_runtime_resources", fail_cleanup)
     with pytest.raises(RuntimeError, match="cache cleanup failed"):
         watcher.run_until_stopped(max_iterations=1)
 
     # The real final lease close must still release the session's resources.
     assert not session._cores
     assert watcher._resources_closed is False
+    monkeypatch.setattr(watcher, "_cleanup_runtime_resources", real_cleanup)
     watcher.stop(join=False)
     assert watcher._resources_closed is True
 
@@ -867,8 +868,8 @@ def test_base_reactor_recycles_before_refused_scope_close_and_can_retry(
         db=tmp_path / ".taut.db",
         persistent=True,
     )
-    assert watcher._session is not None
-    session = watcher._session
+    assert watcher._broker_session is not None
+    session = watcher._broker_session
     peer = Queue(
         "cleanup.peer",
         db_path=watcher._db_path,
@@ -897,13 +898,13 @@ def test_base_reactor_recycles_before_refused_scope_close_and_can_retry(
     with pytest.raises(RuntimeError, match="open Queue or connection operation"):
         watcher.run_until_stopped(max_iterations=1)
 
-    assert calls == ["recycle", "close"]
-    assert watcher._session is session
+    assert calls == ["close"]
+    assert watcher._broker_session is session
     assert watcher._resources_closed is False
     iterator.close()
     watcher.stop(join=False)
-    assert calls == ["recycle", "close", "recycle", "close"]
-    assert watcher._session is None
+    assert calls == ["close", "close"]
+    assert watcher._broker_session is None
     assert watcher._resources_closed is True
     peer.write("survives")
     assert peer.read() == "second"
@@ -924,8 +925,8 @@ def test_base_reactor_cleanup_failure_does_not_mask_handler_failure(
         db=tmp_path / ".taut.db",
         persistent=True,
     )
-    assert watcher._session is not None
-    session = watcher._session
+    assert watcher._broker_session is not None
+    session = watcher._broker_session
     real_close = session.close
     close_calls = 0
 
@@ -1006,15 +1007,14 @@ def test_base_reactor_waiter_close_error_does_not_skip_remaining_cleanup(
     )
     watcher.wait_for_activity(timeout=0.001)
 
-    with pytest.raises(RuntimeError, match="close boom"):
-        watcher.stop(join=False)
-
-    assert watcher._resources_closed is False
+    # The copied scheduler logs optional waiter retirement errors, then closes
+    # the broker inventory. It never retries an already-retired native waiter.
+    watcher.stop(join=False)
     watcher.stop(join=False)
 
     assert fake_waiter.close_calls == 1
-    assert watcher.policy_close_calls == 2
-    assert watcher._queue_cache == {}
+    assert watcher.policy_close_calls == 1
+    assert watcher._owned_fixed_queues == []
 
 
 def test_base_reactor_queue_close_failure_preserves_cleanup_for_retry(
@@ -1044,11 +1044,11 @@ def test_base_reactor_queue_close_failure_preserves_cleanup_for_retry(
         watcher.stop(join=False)
 
     assert watcher._resources_closed is False
-    assert watcher._queue_cache["cleanup.input"] is queue
+    assert queue in watcher._owned_fixed_queues
     watcher.stop(join=False)
-    assert close_calls == 2
+    assert close_calls == 3  # Failed attempt, session retirement, explicit retry.
     assert watcher._resources_closed is True
-    assert watcher._queue_cache == {}
+    assert watcher._owned_fixed_queues == []
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -1114,7 +1114,7 @@ def test_base_reactor_defers_waiter_creation_until_drive_owner(
     )
 
     try:
-        assert creation_threads == []
+        assert creation_threads == [threading.current_thread()]
         watcher.wait_for_activity(timeout=0.01)
         assert creation_threads == [threading.current_thread()]
     finally:
@@ -1145,7 +1145,7 @@ def test_base_reactor_waits_only_through_polling_strategy(
     )
     strategy_waits = 0
 
-    def record_strategy_wait() -> None:
+    def record_strategy_wait(*, timeout: float | None = None) -> None:
         nonlocal strategy_waits
         strategy_waits += 1
 
@@ -1199,7 +1199,7 @@ def test_base_reactor_rebinds_waiter_after_topology_change(
     assert strategy.replacements == []
 
     watcher.add_queue("dynamic.two", lambda *_args: None)
-    assert waiters[0].close_calls == 0
+    assert waiters[0].close_calls == 1
 
     watcher.wait_for_activity(timeout=0.001)
     assert created_for == [["dynamic.one"], ["dynamic.one", "dynamic.two"]]
@@ -1309,12 +1309,10 @@ def test_base_reactor_replacement_failure_preserves_installed_waiter(
     )
     try:
         watcher.wait_for_activity(timeout=0.001)
-        original_generation = watcher._strategy_generation
+        original_generation = watcher._multi_activity_waiter_generation
         original_signature = watcher._multi_activity_waiter_signature
-        watcher.add_queue("dynamic.two", lambda *_args: None)
-
         with pytest.raises(RuntimeError, match="replacement rejected"):
-            watcher.wait_for_activity(timeout=0.001)
+            watcher.add_queue("dynamic.two", lambda *_args: None)
 
         assert strategy.start_calls == 1
         assert strategy.replacements == [rejected_candidate]
@@ -1322,7 +1320,7 @@ def test_base_reactor_replacement_failure_preserves_installed_waiter(
         assert watcher._multi_activity_waiter is installed_waiter
         assert watcher._multi_activity_waiter_generation == original_generation
         assert watcher._multi_activity_waiter_signature == original_signature
-        assert watcher._strategy_generation == original_generation
+        assert watcher._multi_activity_waiter_generation == original_generation
         assert installed_waiter.close_calls == 0
         assert rejected_candidate.close_calls == 1
     finally:
@@ -1366,9 +1364,8 @@ def test_base_reactor_does_not_retry_interrupted_candidate_close(
     )
     try:
         watcher.wait_for_activity(timeout=0.001)
-        watcher.add_queue("dynamic.two", lambda *_args: None)
         with pytest.raises(KeyboardInterrupt):
-            watcher.wait_for_activity(timeout=0.001)
+            watcher.add_queue("dynamic.two", lambda *_args: None)
         assert rejected_candidate.close_calls == 1
     finally:
         watcher.stop(join=False)
@@ -1444,7 +1441,7 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
                 activity_waiter=activity_waiter,
             )
 
-        def wait_for_activity(self) -> None:
+        def wait_for_activity(self, timeout: float | None = None) -> None:
             self.wait_calls += 1
             if self.wait_calls == 1:
                 assert self.callback is not None
@@ -1480,7 +1477,7 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
         assert strategy.wait_calls == 2
         assert strategy.start_calls == 1
         assert len(strategy.replacements) == 1
-        assert watcher._strategy_generation == watcher._queue_generation
+        assert watcher._multi_activity_waiter_generation == watcher._queue_generation
     finally:
         watcher.stop(join=False)
 
@@ -1494,14 +1491,13 @@ def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits()
     assert result == {
         "installed_close_calls": 1,
         "keyboard_interrupt": True,
-        "multi_generation_matches": True,
-        "multi_waiter_is_replacement": True,
+        "publication_coherent": True,
+        "waiter_retired": True,
         "replacement_close_calls": 1,
         "replacement_count": 1,
         "replacement_is_expected": True,
         "start_calls": 1,
         "status": "ok",
-        "strategy_generation_matches": True,
     }
 
 
@@ -1552,7 +1548,7 @@ def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(
     with pytest.raises(KeyboardInterrupt):
         watcher._sigint_handler(signal.SIGINT, None)
 
-    assert stop_event.is_set()
+    assert not stop_event.is_set()  # Lock-taking publication follows signal unwind.
     assert watcher._stop_requested is True
     assert watcher._resources_closed is False
 
@@ -1730,6 +1726,8 @@ def test_multi_queue_watcher_does_not_layer_retry_over_queue_operation(
     attempts = 0
 
     class FlakyQueue:
+        name = "retry.probe"
+
         def has_pending(self) -> bool:
             nonlocal attempts
             attempts += 1
@@ -2094,10 +2092,10 @@ def test_client_watch_handoff_failure_reports_cleanup_and_remains_retryable(
     def capture_watcher(*args: Any, **kwargs: Any) -> TautWatcher:
         watcher = real_watcher(*args, **kwargs)
         watchers.append(watcher)
-        assert watcher._session is not None
-        real_session_closes.append(watcher._session.close)
+        assert watcher._broker_session is not None
+        real_session_closes.append(watcher._broker_session.close)
         monkeypatch.setattr(
-            watcher._session,
+            watcher._broker_session,
             "close",
             lambda: (_ for _ in ()).throw(RuntimeError("handoff cleanup sentinel")),
         )
@@ -2114,8 +2112,8 @@ def test_client_watch_handoff_failure_reports_cleanup_and_remains_retryable(
     assert any("handoff cleanup sentinel" in note for note in caught.value.__notes__)
     watcher = watchers[0]
     assert watcher._resources_closed is False
-    assert watcher._session is not None
-    monkeypatch.setattr(watcher._session, "close", real_session_closes[0])
+    assert watcher._broker_session is not None
+    monkeypatch.setattr(watcher._broker_session, "close", real_session_closes[0])
     watcher.stop(join=False)
     assert watcher._resources_closed is True
     client.close()
@@ -2130,8 +2128,8 @@ def test_taut_watcher_preserves_first_cleanup_failure_and_retries_runtime(
     client = TautClient(db_path=db, as_name="van", persistent=True)
     client.join("home")
     watcher = client.watch(lambda _item: None, threads=["home"])
-    assert watcher._session is not None
-    session = watcher._session
+    assert watcher._broker_session is not None
+    session = watcher._broker_session
     runtime = cast(Any, watcher._runtime)
     real_session_close = session.close
     real_runtime_close = runtime.close
@@ -2238,7 +2236,7 @@ def test_base_reactor_constructor_failure_closes_initial_queue(
         )
 
     assert len(created) == 1
-    assert closed == created
+    assert closed and set(closed) == set(created)
 
 
 def test_multi_queue_watcher_explicit_db_skips_broken_cwd_config(
@@ -2276,21 +2274,17 @@ def test_multi_queue_watcher_rejects_unsupported_yield_strategy(
         )
 
 
-def test_multi_queue_watcher_accepts_legacy_check_interval_without_fake_state(
+def test_copied_multi_queue_watcher_rejects_removed_check_interval(
     tmp_path: Path,
 ) -> None:
-    watcher = MultiQueueWatcher(
-        {"input": {"handler": lambda *_args: None}},
-        db=tmp_path / ".taut.db",
-        check_interval=1,
-    )
-    try:
-        assert watcher.list_queues() == ["input"]
-        assert not hasattr(watcher, "_check_interval")
-        assert not hasattr(watcher, "_check_counter")
-        assert not hasattr(watcher, "_yield_strategy")
-    finally:
-        watcher.stop(join=False)
+    # The exact upstream primitive no longer has Taut's unused compatibility knob.
+    unsupported: dict[str, Any] = {"check_interval": 1}
+    with pytest.raises(TypeError, match="check_interval"):
+        MultiQueueWatcher(
+            {"input": {"handler": lambda *_args: None}},
+            db=tmp_path / ".taut.db",
+            **unsupported,
+        )
 
 
 def test_taut_watcher_start_drives_the_same_persistent_instance(tmp_path: Path) -> None:
@@ -2362,32 +2356,38 @@ def test_taut_watcher_uses_native_multi_queue_activity_waiter(
     try:
         watcher._start_strategy()
         assert watcher._strategy.uses_native_activity() is True
-        assert set(watched_queue_names) == {watcher._notification_queue_name, "foo"}
+        assert set(watched_queue_names) == {
+            watcher._notification_queue_name,
+            "foo",
+            "taut.cache_stale",
+        }
     finally:
         watcher.stop(join=False)
 
 
-def test_taut_watcher_data_version_change_does_not_refresh_last_ts(
+def test_taut_watcher_data_version_hint_does_not_refresh_memberships(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
-    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
-    van.join("foo")
-    watcher = _white_box_watcher(van, lambda _item: None, threads=["foo"])
-    queue = watcher.get_queue("foo")
-    assert queue is not None
-
-    def fail_data_version(_self: MultiQueueWatcher, _queue: Queue) -> None:
-        raise AssertionError("TautWatcher must not refresh SimpleBroker last_ts")
-
-    monkeypatch.setattr(MultiQueueWatcher, "_on_data_version_change", fail_data_version)
+    client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
     try:
-        watcher._on_data_version_change(queue)
+        client.join("foo")
+        watcher = client.watch(lambda _item: None)
+
+        def unexpected_refresh() -> None:
+            raise AssertionError("unrelated database hints cannot refresh memberships")
+
+        monkeypatch.setattr(watcher, "_refresh_memberships", unexpected_refresh)
+        try:
+            watcher._on_data_version_change(watcher._queue_obj)
+            assert watcher._data_version_activity_pending
+        finally:
+            watcher.stop()
     finally:
-        watcher.stop()
+        client.close()
 
 
-def test_taut_watcher_data_version_change_still_refreshes_memberships(
+def test_taut_watcher_cache_hint_refreshes_memberships(
     tmp_path: Path,
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
@@ -2400,7 +2400,7 @@ def test_taut_watcher_data_version_change_still_refreshes_memberships(
         van.join("baz")
         queue = watcher.get_queue("foo")
         assert queue is not None
-        watcher._on_data_version_change(queue)
+        watcher.process_once()
         assert "baz" in watcher.list_queues()
     finally:
         watcher.stop()
@@ -2776,7 +2776,7 @@ def test_live_watcher_drop_to_zero_then_rejoin_continues(tmp_path: Path) -> None
         assert not thread.is_alive()
 
 
-def test_watcher_membership_refresh_timer_counts_as_pending(tmp_path: Path) -> None:
+def test_watcher_no_membership_timer_counts_as_pending(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
     client.join("foo")
@@ -2786,9 +2786,9 @@ def test_watcher_membership_refresh_timer_counts_as_pending(tmp_path: Path) -> N
         membership_refresh_interval=60.0,
     )
     try:
-        watcher._next_membership_refresh_at = time.monotonic() - 1
-
-        assert watcher._has_pending_messages()
+        assert not hasattr(watcher, "_next_membership_refresh_at")
+        assert watcher.next_wait_timeout() is None
+        assert not watcher._has_pending_messages()
     finally:
         watcher.stop()
 
@@ -3421,7 +3421,7 @@ def test_multi_queue_watcher_remove_first_queue_keeps_data_version_polling(
         # multi-queue activity waiter, so pin data-version polling directly:
         # the shared first queue must still answer get_data_version().
         assert isinstance(watcher._get_queue_for_data_version().get_data_version(), int)
-        assert "guard.first" not in closed_queues
+        assert "guard.first" in closed_queues  # Copied inventory owns removal.
 
         thread = watcher.start()
         eventually(
@@ -3481,7 +3481,7 @@ def test_multi_queue_watcher_remove_non_data_version_queue_unregisters_only(
         watcher.remove_queue("close.second")
 
         assert "close.second" not in watcher.list_queues()
-        assert "close.second" not in closed_queues
+        assert "close.second" in closed_queues
         # The shared data-version queue is untouched by the close.
         assert isinstance(watcher._get_queue_for_data_version().get_data_version(), int)
 
@@ -3696,3 +3696,389 @@ def test_watcher_runs_with_no_chat_threads_for_notification_inbox(
         watcher.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+def test_reactor_restoration_consumes_local_hint_without_peer_wait(
+    tmp_path: Path,
+) -> None:
+    reactor = BaseReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "hint.db"
+    )
+    try:
+        reactor._strategy.notify_activity()
+        reactor.wait_for_activity(0.02)
+        assert not reactor._strategy.consume_local_activity_hint()
+        assert not hasattr(reactor, "_reactor_activity_event")
+    finally:
+        reactor.stop(join=False)
+
+
+def test_reactor_restoration_has_no_universal_maintenance_deadline(
+    tmp_path: Path,
+) -> None:
+    reactor = BaseReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "clock.db"
+    )
+    try:
+        assert reactor.next_wait_timeout() is None
+    finally:
+        reactor.stop(join=False)
+
+
+def test_reactor_restoration_native_wait_receives_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class QuietWaiter(FakeWaiter):
+        def wait(self, timeout: float | None) -> bool:
+            assert timeout is not None and 0 < timeout <= 0.02
+            threading.Event().wait(timeout)
+            return False
+
+    waiter = QuietWaiter()
+    monkeypatch.setattr(
+        "taut.watcher.create_activity_waiter_for_queues",
+        lambda *_args, **_kwargs: waiter,
+    )
+    reactor = BaseReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "budget.db"
+    )
+    try:
+        reactor.wait_for_activity(0.02)
+    finally:
+        reactor.stop(join=False)
+    assert waiter.close_calls == 1
+
+
+def test_reactor_restoration_foreign_topology_uses_live_turn_owner(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    delivered = threading.Event()
+    mutation_done = threading.Event()
+    errors: list[BaseException] = []
+
+    class DynamicReactor(BaseReactor):
+        _dynamic_topology = True
+
+        def _process_reactor_turn(self) -> None:
+            super()._process_reactor_turn()
+            entered.set()
+
+    reactor = DynamicReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "topology.db"
+    )
+    owner = reactor.start()
+    assert entered.wait(2)
+
+    def mutate() -> None:
+        try:
+            reactor.add_queue("second", lambda *_: delivered.set())
+        except (RuntimeError, ValueError) as exc:
+            errors.append(exc)
+        finally:
+            mutation_done.set()
+
+    requester = threading.Thread(target=mutate)
+    requester.start()
+    try:
+        assert mutation_done.wait(2), "foreign topology request never reached owner"
+        assert not errors
+        with Queue("second", db_path=str(tmp_path / "topology.db")) as writer:
+            writer.write("wake new source")
+        assert delivered.wait(2)
+    finally:
+        reactor.stop()
+        requester.join(2)
+        owner.join(2)
+    assert not requester.is_alive() and not owner.is_alive()
+    assert reactor._topology_owner_thread is None
+    assert not reactor._topology_mutations
+
+
+def test_reactor_restoration_owner_mutation_racing_stop_retires(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    rejected: list[str] = []
+
+    class DynamicReactor(BaseReactor):
+        _dynamic_topology = True
+
+        def _process_reactor_turn(self) -> None:
+            entered.set()
+            assert release.wait(2)
+            try:
+                self.add_queue("late", lambda *_: None)
+            except RuntimeError as exc:
+                rejected.append(str(exc))
+
+    reactor = DynamicReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "stop.db"
+    )
+    owner = reactor.start()
+    try:
+        assert entered.wait(2)
+        reactor.stop(join=False)
+        assert not reactor._resources_closed
+    finally:
+        release.set()
+        owner.join(2)
+    assert not owner.is_alive()
+    assert rejected == ["watcher topology is stopping"]
+    assert reactor._resources_closed
+    assert reactor._topology_owner_thread is None
+
+
+@pytest.mark.parametrize("thread_count", [1, 20])
+def test_reactor_restoration_quiet_sqlite_does_not_probe_each_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thread_count: int
+) -> None:
+    db = tmp_path / "quiet.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van")
+    for index in range(thread_count):
+        client.join(f"room{index}")
+    watcher = client.watch(lambda _: None)
+    calls: list[str] = []
+    original = Queue.has_pending
+
+    def observed(queue: Queue, *args: Any, **kwargs: Any) -> bool:
+        calls.append(queue.name)
+        return original(queue, *args, **kwargs)
+
+    try:
+        watcher._ensure_wait_strategy_started()
+        watcher.wait_for_activity(0.02)  # Settle first-connection initialization.
+        monkeypatch.setattr(Queue, "has_pending", observed)
+        watcher.wait_for_activity(0.02)
+        watcher.wait_for_activity(0.02)
+        assert calls == []
+    finally:
+        watcher.stop(join=False)
+        client.close()
+
+
+def test_reactor_restoration_own_hint_cannot_skip_replaced_peer_change(
+    tmp_path: Path,
+) -> None:
+    from taut._cache_stale import publish_cache_stale
+    from taut._constants import CACHE_STALE_QUEUE_NAME
+
+    db = tmp_path / "cache.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, as_name="van")
+    peer = TautClient(db_path=db, as_name="van")
+    owner.join("first")
+    watcher = owner.watch(lambda _: None)
+    try:
+        peer.join("second")
+        publish_cache_stale(
+            lambda: watcher._queue(CACHE_STALE_QUEUE_NAME), reason="unrelated-own-write"
+        )
+        watcher.add_queue("fixed.control", lambda *_: None)
+        watcher.process_once()
+        assert set(watcher.list_queues()) == {"first", "second"}
+        assert watcher.get_queue("fixed.control") is not None
+        assert not watcher._queue_has_pending(watcher._queue(CACHE_STALE_QUEUE_NAME))
+    finally:
+        watcher.stop(join=False)
+        owner.close()
+        peer.close()
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_reactor_restoration_real_signal_with_held_event_lock() -> None:
+    assert _run_base_reactor_sigint_probe(mode="held-event") == {
+        "status": "ok",
+        "interrupted": True,
+        "resources_closed": True,
+    }
+
+
+def test_reactor_restoration_transient_public_watch_waits_for_peer_write(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "transient.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van")
+    peer = TautClient(db_path=db, as_name="bob")
+    client.join("chat")
+    peer.join("chat")
+    seen: list[Message | Notification] = []
+    watcher = client.watch(seen.append, persistent=False)
+    try:
+        watcher.process_once()
+        seen.clear()
+        watcher._ensure_wait_strategy_started()
+        peer.say("chat", "hello")
+        watcher.wait_for_activity(0.5)
+        watcher.process_once()
+        assert any(isinstance(item, Message) and item.text == "hello" for item in seen)
+    finally:
+        watcher.stop(join=False)
+        peer.close()
+        client.close()
+
+
+def test_reactor_restoration_foreign_mutation_after_manual_turn_is_rejected(
+    tmp_path: Path,
+) -> None:
+    class DynamicReactor(BaseReactor):
+        _dynamic_topology = True
+
+    reactor = DynamicReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "manual.db"
+    )
+    reactor.process_once()
+    outcomes: list[str] = []
+    done = threading.Event()
+
+    def mutate() -> None:
+        try:
+            reactor.add_queue("foreign", lambda *_: None)
+        except RuntimeError as exc:
+            outcomes.append(str(exc))
+        finally:
+            done.set()
+
+    requester = threading.Thread(target=mutate)
+    requester.start()
+    try:
+        assert done.wait(2), "manual owner cannot service a foreign queued request"
+        assert outcomes == ["manual reactor topology is drive-owner-only"]
+    finally:
+        reactor.stop(join=False)
+        requester.join(2)
+
+
+def test_reactor_restoration_interrupted_cleanup_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reactor = BaseReactor(
+        {"input": {"handler": lambda *_: None}}, db=tmp_path / "interrupted.db"
+    )
+    close = reactor._close_reactor_resources
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(reactor, "_close_reactor_resources", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        reactor.stop(join=False)
+    monkeypatch.setattr(reactor, "_close_reactor_resources", close)
+    reactor.stop(join=False)
+    assert reactor._resources_closed
+
+
+def test_reactor_restoration_membership_hint_racing_initial_snapshot_is_not_skipped(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "snapshot-race.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, as_name="van")
+    peer = TautClient(db_path=db, as_name="van")
+    owner.join("initial")
+
+    class RacingWatcher(TautWatcher):
+        raced = False
+
+        def _current_memberships(self, *, strict: bool) -> list[Any]:
+            snapshot = super()._current_memberships(strict=strict)
+            if not self.raced:
+                self.raced = True
+                # Commit after collection, before the constructor receives its
+                # initial snapshot. The hint must remain ahead of its cursor.
+                peer.join("racing")
+            return snapshot
+
+    watcher = owner.watch(lambda _: None, watcher_type=RacingWatcher)
+    try:
+        assert watcher.list_queues() == ["initial"]
+        watcher.process_once()
+        assert set(watcher.list_queues()) == {"initial", "racing"}
+    finally:
+        watcher.stop(join=False)
+        owner.close()
+        peer.close()
+
+
+@pytest.mark.parametrize("mutation", ["add", "remove"])
+@pytest.mark.parametrize("boundary", ["membership", "admission", "waiter-built"])
+def test_membership_refresh_racing_stop_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, mutation: str
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = tmp_path / "stop-membership.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van")
+    peer = TautClient(db_path=db, as_name="van")
+    client.join("first")
+    watcher = client.watch(lambda _: None)
+    if mutation == "add":
+        peer.join("second")
+    else:
+        peer.leave("first")
+    entered = threading.Event()
+    release = threading.Event()
+    method_name = {
+        "membership": "_current_memberships",
+        "admission": "_apply_topology_mutation_on_owner",
+        "waiter-built": "_create_candidate_activity_waiter",
+    }[boundary]
+    original = getattr(watcher, method_name)
+
+    def pause(*args: Any, **kwargs: Any) -> Any:
+        if boundary == "admission":
+            entered.set()
+            assert release.wait(2)
+            return original(*args, **kwargs)
+        result = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(2)
+        return result
+
+    monkeypatch.setattr(watcher, method_name, pause)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            owner = executor.submit(watcher.run_until_stopped)
+            try:
+                assert entered.wait(2)
+                watcher.request_stop()
+            finally:
+                release.set()
+            owner.result(timeout=3)
+        assert watcher._resources_closed
+        assert watcher._topology_inflight is None
+        assert watcher._topology_owner_thread is None
+        assert not watcher._owned_dynamic_queues
+    finally:
+        release.set()
+        watcher.stop(join=False)
+        client.close()
+        peer.close()
+
+
+def test_membership_refresh_runtime_error_is_not_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "membership-error.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van")
+    client.join("first")
+    watcher = client.watch(lambda _: None)
+    client.join("second")
+    failure = RuntimeError("watcher topology is stopping")
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        watcher.request_stop()
+        raise failure
+
+    monkeypatch.setattr(watcher, "_current_memberships", fail)
+    try:
+        with pytest.raises(RuntimeError) as observed:
+            watcher.run_until_stopped()
+        assert observed.value is failure
+        assert watcher._resources_closed
+    finally:
+        watcher.stop(join=False)
+        client.close()

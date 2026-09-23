@@ -187,7 +187,6 @@ class PosixPtyHandle:
     def attach(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-030] exception
         self,
         *,
-        wake: threading.Event,
         shutdown: threading.Event,
         input_fd: int = 0,
         output_fd: int = 1,
@@ -197,37 +196,14 @@ class PosixPtyHandle:
 
         saved = termios.tcgetattr(input_fd)
         tty.setraw(input_fd)
-        done = threading.Event()
-        pipe_r, pipe_w = os.pipe()
-
-        def _forward_wake() -> None:
-            try:
-                while not done.is_set():
-                    if wake.wait(timeout=0.05) or done.is_set():
-                        try:
-                            os.write(pipe_w, b"x")
-                        except (BrokenPipeError, OSError):
-                            pass
-                        return
-            finally:
-                pass
-
-        forwarder = threading.Thread(
-            target=_forward_wake, daemon=True, name="taut-summon-attach-waker"
-        )
-        forwarder.start()
         matcher = self._terminal.detach_matcher(detach_chord)
         result = "eof"
         try:
             while True:
-                ready, _, _ = select.select(
-                    [input_fd, self._master_fd, pipe_r], [], [], 0.1
-                )
-                if pipe_r in ready:
-                    if shutdown.is_set():
-                        result = "shutdown"
-                        break
-                    os.read(pipe_r, 4096)
+                if shutdown.is_set():
+                    result = "shutdown"
+                    break
+                ready, _, _ = select.select([input_fd, self._master_fd], [], [], 0.1)
                 if self._master_fd in ready:
                     try:
                         data = os.read(self._master_fd, 4096)
@@ -259,13 +235,6 @@ class PosixPtyHandle:
                     result = "eof"
                     break
         finally:
-            done.set()
-            forwarder.join(timeout=1.0)
-            for fd in (pipe_r, pipe_w):
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
             try:
                 os.write(output_fd, _TTY_RESET)
             finally:

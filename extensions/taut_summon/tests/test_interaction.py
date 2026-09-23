@@ -1830,6 +1830,10 @@ def test_driver_owned_clients_never_inherit_host_environment_identity(
         and node.func.id == "TautClient"
     ]
 
+    if module_name == "taut_summon._control":
+        # Policy uses the driver's authenticated client and never creates a peer.
+        assert calls == []
+        return
     assert calls
     for call in calls:
         setting = next(
@@ -2031,6 +2035,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         assert first.lease_events == ["enter", "exit"]
 
         orientation_write_entered = threading.Event()
+        orientation_write_threads: list[int] = []
         control_close_request_completed = threading.Event()
         block_orientation_write = threading.Event()
         real_write = os.write
@@ -2039,10 +2044,10 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         def controlled_write(fd: int, data: bytes) -> int:
             if (
                 block_orientation_write.is_set()
-                and threading.current_thread().name == "rich-host-summon"
                 and prompt_marker.encode() in data
                 and not orientation_write_entered.is_set()
             ):
+                orientation_write_threads.append(threading.get_ident())
                 orientation_write_entered.set()
                 if not allow_orientation_write.wait(timeout=10.0):
                     raise RuntimeError("test did not release the orientation write")
@@ -2052,7 +2057,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
             real_request_close(handle)
             if (
                 block_orientation_write.is_set()
-                and threading.current_thread().name == "taut-summon-control"
+                and threading.current_thread() is second_thread
             ):
                 control_close_request_completed.set()
 
@@ -2068,6 +2073,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         block_orientation_write.set()
         second.allow_availability.set()
         assert orientation_write_entered.wait(timeout=10.0)
+        assert orientation_write_threads[0] != second_thread.ident
 
         stop_failures: list[BaseException] = []
 
@@ -2678,3 +2684,22 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
         assert f"taut summon --attach {member}" in message
     finally:
         terminal.close()
+
+
+def test_windows_cleanup_does_not_retry_deterministic_failure() -> None:
+    import taut_summon.interaction as interaction_module
+
+    owner = interaction_module._WindowsCancelableReadOwner(
+        _BlockingReadStream(), threading.Event()
+    )
+    calls = 0
+
+    def cleanup() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("broken cleanup invariant")
+
+    with pytest.raises(RuntimeError, match="broken cleanup invariant"):
+        owner._retry_cleanup_action(cleanup)
+    assert calls == 1

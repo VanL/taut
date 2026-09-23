@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from simplebroker import format_message_id
 
@@ -21,8 +21,6 @@ from taut import (
     addressing,
 )
 
-_MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
-
 CommandScalar: TypeAlias = str | int | bool | None | tuple[str, ...]
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
 CommandRecord: TypeAlias = (
@@ -37,70 +35,32 @@ CommandRecord: TypeAlias = (
 )
 
 
-def _required_string(arguments: dict[str, CommandScalar], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string")
-    return value
-
-
-def _optional_string(arguments: dict[str, CommandScalar], name: str) -> str | None:
-    value = arguments.get(name)
-    if value is not None and not isinstance(value, str):
-        raise TypeError(f"{name} must be a string or null")
-    return value
-
-
-def _integer(arguments: dict[str, CommandScalar], name: str, default: int) -> int:
-    value = arguments.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer")
-    return value
-
-
-def _boolean(arguments: dict[str, CommandScalar], name: str, default: bool) -> bool:
-    value = arguments.get(name, default)
-    if not isinstance(value, bool):
-        raise TypeError(f"{name} must be a boolean")
-    return value
-
-
-def _string_tuple(
-    arguments: dict[str, CommandScalar],
-    name: str,
-) -> tuple[str, ...]:
-    value = arguments.get(name, ())
-    if not isinstance(value, tuple) or not all(isinstance(item, str) for item in value):
-        raise TypeError(f"{name} must be a string tuple")
-    return value
-
-
 def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exception
     client: TautClient,
     name: str,
     frozen_arguments: CommandArguments,
 ) -> tuple[CommandRecord, ...]:
-    """Run exactly one allowlisted public client operation."""
+    """Dispatch schema-validated arguments, retaining defaults and domain policy."""
 
     arguments = dict(frozen_arguments)
     if name == "join":
         record = client.join(
-            _required_string(arguments, "thread"),
-            persona=_optional_string(arguments, "persona"),
+            cast(str, arguments["thread"]),
+            persona=cast(str | None, arguments.get("persona")),
             new=False,
         )
         records: tuple[CommandRecord, ...] = (record,)
     elif name == "leave":
-        records = (client.leave(_required_string(arguments, "thread")),)
+        records = (client.leave(cast(str, arguments["thread"])),)
     elif name == "set_name":
-        records = (client.set_name(_required_string(arguments, "name")),)
+        records = (client.set_name(cast(str, arguments["name"])),)
     elif name == "say":
-        target = _required_string(arguments, "target")
+        target = cast(str, arguments["target"])
         try:
             records = (
                 client.say(
                     target,
-                    _required_string(arguments, "text"),
+                    cast(str, arguments["text"]),
                 ),
             )
         except NotFoundError:
@@ -111,29 +71,29 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
     elif name == "reply":
         records = (
             client.reply(
-                _required_string(arguments, "thread"),
-                _required_string(arguments, "msg_id"),
-                _required_string(arguments, "text"),
+                cast(str, arguments["thread"]),
+                cast(str, arguments["msg_id"]),
+                cast(str, arguments["text"]),
             ),
         )
     elif name == "message_show":
-        records = (client.show_message(_required_string(arguments, "msg_id")),)
+        records = (client.show_message(cast(str, arguments["msg_id"])),)
     elif name == "message_delete":
-        records = (client.delete_message(_required_string(arguments, "msg_id")),)
+        records = (client.delete_message(cast(str, arguments["msg_id"])),)
     elif name == "message_react":
         records = (
             client.react_to_message(
-                _required_string(arguments, "msg_id"),
-                _required_string(arguments, "reaction"),
+                cast(str, arguments["msg_id"]),
+                cast(str, arguments["reaction"]),
             ),
         )
     elif name == "read":
-        thread = _optional_string(arguments, "thread")
+        thread = cast(str | None, arguments.get("thread"))
         try:
             records = tuple(
                 client.read(
                     thread,
-                    limit=_integer(arguments, "limit", 100),
+                    limit=cast(int, arguments.get("limit", 100)),
                 )
             )
         except NotFoundError:
@@ -141,26 +101,16 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
                 raise
             records = ()
     elif name == "inbox":
-        records = tuple(client.inbox(limit=_integer(arguments, "limit", 1000)))
+        records = tuple(client.inbox(limit=cast(int, arguments.get("limit", 1000))))
     elif name == "log":
-        since = arguments.get("since")
-        if since is not None and (
-            isinstance(since, bool) or not isinstance(since, (str, int))
-        ):
-            raise TypeError("since must be a string, integer, or null")
-        if isinstance(since, int) and not (
-            -_MAX_SAFE_JSON_INTEGER <= since <= _MAX_SAFE_JSON_INTEGER
-        ):
-            raise ValueError(
-                "since integer must be JSON-safe; pass larger values as text"
-            )
-        thread = _required_string(arguments, "thread")
+        since = cast(str | int | None, arguments.get("since"))
+        thread = cast(str, arguments["thread"])
         try:
             records = tuple(
                 client.log(
                     thread,
                     since=since,
-                    limit=_integer(arguments, "limit", 100),
+                    limit=cast(int, arguments.get("limit", 100)),
                 )
             )
         except NotFoundError:
@@ -171,19 +121,19 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
         try:
             records = tuple(
                 client.search(
-                    _required_string(arguments, "query"),
-                    channels=_string_tuple(arguments, "channels"),
-                    direct_messages=_string_tuple(arguments, "direct_messages"),
-                    all_direct_messages=_boolean(
-                        arguments,
-                        "all_direct_messages",
-                        False,
+                    cast(str, arguments["query"]),
+                    channels=cast(tuple[str, ...], arguments.get("channels", ())),
+                    direct_messages=cast(
+                        tuple[str, ...], arguments.get("direct_messages", ())
                     ),
-                    from_member=_optional_string(arguments, "from_member"),
-                    kinds=_string_tuple(arguments, "kinds"),
-                    before=_optional_string(arguments, "before"),
-                    limit=_integer(arguments, "limit", 50),
-                    reindex=_boolean(arguments, "reindex", False),
+                    all_direct_messages=cast(
+                        bool, arguments.get("all_direct_messages", False)
+                    ),
+                    from_member=cast(str | None, arguments.get("from_member")),
+                    kinds=cast(tuple[str, ...], arguments.get("kinds", ())),
+                    before=cast(str | None, arguments.get("before")),
+                    limit=cast(int, arguments.get("limit", 50)),
+                    reindex=cast(bool, arguments.get("reindex", False)),
                 )
             )
         except (TautError, TypeError, ValueError):
@@ -194,12 +144,8 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
                 "search provider or index and retry"
             ) from None
     elif name == "list":
-        all_threads = arguments.get("all", False)
-        if not isinstance(all_threads, bool):
-            raise TypeError("all must be a boolean")
-        direct_messages = arguments.get("dms", False)
-        if not isinstance(direct_messages, bool):
-            raise TypeError("dms must be a boolean")
+        all_threads = cast(bool, arguments.get("all", False))
+        direct_messages = cast(bool, arguments.get("dms", False))
         if all_threads and direct_messages:
             raise ValueError("all and dms are mutually exclusive")
         if direct_messages:
@@ -208,15 +154,15 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
             records = tuple(client.list_threads(all_threads=all_threads))
     elif name == "channel_show":
         try:
-            records = (client.get_channel(_required_string(arguments, "channel")),)
+            records = (client.get_channel(cast(str, arguments["channel"])),)
         except NotFoundError:
             records = ()
     elif name == "channel_topic":
         try:
             records = (
                 client.set_channel_topic(
-                    _required_string(arguments, "channel"),
-                    _optional_string(arguments, "topic"),
+                    cast(str, arguments["channel"]),
+                    cast(str | None, arguments.get("topic")),
                 ),
             )
         except NotFoundError:
@@ -224,12 +170,12 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
     elif name == "channel_rename":
         records = (
             client.rename_channel(
-                _required_string(arguments, "old_name"),
-                _required_string(arguments, "new_name"),
+                cast(str, arguments["old_name"]),
+                cast(str, arguments["new_name"]),
             ),
         )
     elif name == "who":
-        records = tuple(client.who(_optional_string(arguments, "thread")))
+        records = tuple(client.who(cast(str | None, arguments.get("thread"))))
     elif name == "whoami":
         records = (client.whoami(explain=False),)
     else:

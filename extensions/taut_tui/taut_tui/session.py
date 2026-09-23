@@ -267,7 +267,6 @@ class TuiSession:
             generation,
             target,
             reply_thread,
-            (),
             intent_token,
         )
         if snapshot is None or not self._commit_conversation(snapshot):
@@ -337,14 +336,13 @@ class TuiSession:
         generation: int,
         target: str,
         reply_thread: str | None,
-        claimed_replies: tuple[Message, ...],
         intent_token: int | None,
     ) -> ConversationSnapshot | None:
         try:
             messages = tuple(client.log(target, limit=self._history_limit))
         except EmptyResultError:
             messages = ()
-        reply_messages = claimed_replies
+        reply_messages: tuple[Message, ...] = ()
         if reply_thread is not None:
             try:
                 reply_history = tuple(
@@ -353,7 +351,7 @@ class TuiSession:
             except EmptyResultError:
                 pass
             else:
-                reply_messages = _merge_messages(reply_history, claimed_replies)
+                reply_messages = reply_history
         if not self._current_generation(generation):
             return None
         return ConversationSnapshot(

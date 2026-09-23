@@ -4,7 +4,8 @@ import ast
 from pathlib import Path
 
 import pytest
-from taut_summon._control import _ControlReactor
+from taut_summon._control import _ReplyReactor
+from taut_summon._reactor import SummonReactor
 
 from taut.watcher import (
     REACTOR_LIFECYCLE_METHODS,
@@ -304,7 +305,7 @@ def test_production_code_uses_public_simplebroker_surface_only() -> None:
     assert offenders == []
 
 
-@pytest.mark.parametrize("reactor_type", [TautWatcher, _ControlReactor])
+@pytest.mark.parametrize("reactor_type", [TautWatcher, SummonReactor, _ReplyReactor])
 def test_first_party_reactors_inherit_guarded_lifecycle_templates(
     reactor_type: type[BaseReactor],
 ) -> None:
@@ -490,11 +491,6 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         (
             "extensions/taut_summon/taut_summon/scripted_provider.py",
             "main",
-            "os.write",
-        ),
-        (
-            "extensions/taut_summon/taut_summon/_pty_posix.py",
-            "PosixPtyHandle.attach._forward_wake",
             "os.write",
         ),
         (

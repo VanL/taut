@@ -55,19 +55,13 @@ from conftest import (
 from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import DatabaseError
 from taut_summon._adapter import (
-    ActivityEvent,
     AdapterError,
-    AdapterExitedError,
-    AdapterWriteCancelled,
-    ExitEvent,
 )
 from taut_summon._control import control_in_queue_name, control_out_queue_name
 from taut_summon._driver import (
     DriverError,
     SummonDriver,
     _BootstrapResult,
-    _GenerationAttachDecision,
-    _InjectionHalted,
     format_injection,
 )
 from taut_summon._state import (
@@ -86,7 +80,6 @@ from taut_summon.interaction import (
 from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
-from taut import WatcherRejected
 from taut.client import Member, Message, TautClient
 from taut.identity import capture_process
 
@@ -204,7 +197,6 @@ class _ShutdownWatcher:
 
     def run(self) -> None:
         self._driver._shutdown.set()
-        self._driver._wake.set()
         while not self.stop_calls:
             time.sleep(0.01)
 
@@ -247,6 +239,9 @@ class _AttachUnsupportedAdapter:
     name = "scripted"
     supports_attach = False
     orientation_via_inject = False
+
+    def spawn(self, **_kwargs: object) -> None:
+        pytest.fail("unsupported adapter was spawned")
 
 
 class _RecordingInteraction:
@@ -642,15 +637,10 @@ def test_give_up_preserves_primary_error_when_output_tail_fails(
         pump=object(),
     )
 
-    with pytest.raises(DriverError) as raised:
-        driver._resume_after_harness_exit(
-            cast(Any, running),
-            _attach_boot(),
-            0,
-            adapter=cast(Any, _AttachCapableAdapter()),
-        )
-
-    message = str(raised.value)
+    driver._owner_boot = _attach_boot()
+    driver._owner_adapter = cast(Any, _AttachCapableAdapter())
+    driver._owner_crashes = 1
+    message = driver._give_up_message(cast(Any, running))
     assert handle.calls == 1
     assert (
         "harness for 'ptybot' exited 1 times in a row (last exit code 17); giving up"
@@ -658,7 +648,6 @@ def test_give_up_preserves_primary_error_when_output_tail_fails(
     assert "sentinel tail failure" not in message
     assert "last screen output:" not in message
     assert "taut summon --attach ptybot" in message
-    assert raised.value.__cause__ is None
 
 
 def test_attach_uses_one_host_lease_and_forwards_its_fds() -> None:
@@ -680,7 +669,6 @@ def test_attach_uses_one_host_lease_and_forwards_its_fds() -> None:
     assert interaction.lease_events == ["acquire", "restore"]
     assert handle.attach_calls == [
         {
-            "wake": driver._wake,
             "shutdown": driver._shutdown,
             "input_fd": 17,
             "output_fd": 19,
@@ -715,37 +703,6 @@ def test_attach_rejects_provider_result_outside_finite_contract() -> None:
         driver._run_terminal_attach(cast(Any, _RecordingAttachHandle("surprise")))
 
     assert interaction.lease_events == ["acquire", "restore"]
-
-
-@pytest.mark.parametrize(
-    ("wired", "first_generation", "detach"),
-    [
-        (True, True, False),
-        (False, False, False),
-        (False, True, True),
-    ],
-)
-def test_non_attach_paths_never_acquire_host_lease(
-    *, wired: bool, first_generation: bool, detach: bool
-) -> None:
-    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
-    driver = SummonDriver(
-        _run_request(detach=detach),
-        interaction=cast(SummonInteraction, interaction),
-        install_signal_handlers=False,
-    )
-    handle = _RecordingAttachHandle()
-
-    decision = _GenerationAttachDecision(wired=wired, should_attach=False)
-    result = driver._prepare_generation_attach(
-        cast(Any, handle),
-        boot=_attach_boot(),
-        attach_decision=decision,
-    )
-
-    assert result is False
-    assert interaction.lease_calls == 0
-    assert handle.attach_calls == []
 
 
 @pytest.mark.parametrize(
@@ -914,11 +871,6 @@ def test_explicit_attach_refuses_before_unsupported_adapter_spawn(
         "_require_adapter",
         lambda _provider: cast(Any, _AttachUnsupportedAdapter()),
     )
-    monkeypatch.setattr(
-        driver,
-        "_spawn",
-        lambda *_args, **_kwargs: pytest.fail("unsupported adapter was spawned"),
-    )
 
     with pytest.raises(
         DriverError, match="provider 'scripted' does not support attach"
@@ -1056,63 +1008,6 @@ def test_driver_shutdown_outcome_preserves_release_exception(
     assert driver._finalize_stop_shutdown_outcome() is outcome
 
 
-def test_halt_and_raise_requests_signal_only_watcher_stop() -> None:
-    class RecordingWatcher:
-        def __init__(self) -> None:
-            self.request_stop_calls = 0
-            self.stop_calls = 0
-
-        def request_stop(self) -> None:
-            self.request_stop_calls += 1
-
-        def stop(self, *, join: bool = True) -> None:
-            del join
-            self.stop_calls += 1
-
-    driver = object.__new__(SummonDriver)
-    watcher = RecordingWatcher()
-    driver._watcher = watcher
-    driver._harness_dead = threading.Event()
-    driver._wake = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._halt_ack.set()
-
-    with pytest.raises(_InjectionHalted):
-        driver._halt_and_raise(None)
-
-    assert watcher.request_stop_calls == 1
-    assert watcher.stop_calls == 0
-    assert driver._harness_dead.is_set()
-    assert driver._wake.is_set()
-
-
-def test_cancelled_injection_stops_watcher_without_marking_harness_dead() -> None:
-    class RecordingWatcher:
-        request_stop_calls = 0
-
-        def request_stop(self) -> None:
-            self.request_stop_calls += 1
-
-    driver = object.__new__(SummonDriver)
-    watcher = RecordingWatcher()
-    driver._watcher = watcher
-    driver._harness_dead = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._wake = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._halt_ack.set()
-
-    with pytest.raises(
-        WatcherRejected, match="injection cancelled by reusable interrupt"
-    ):
-        driver._cancel_injection(AdapterWriteCancelled("PTY write interrupted"))
-
-    assert watcher.request_stop_calls == 1
-    assert driver._injection_cancelled.is_set()
-    assert driver._wake.is_set()
-    assert not driver._harness_dead.is_set()
-
-
 def test_driver_ledger_client_is_persistent_and_foreground_owned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1159,603 +1054,6 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
     ]
     assert FakeClient.created_on == [owner]
     assert FakeClient.closed_on == [owner]
-
-
-def test_foreground_run_remains_live_while_control_owner_survives_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            self.target = "sqlite:///driver-owned"
-
-        def queue(self, name: str) -> FakeQueue:
-            assert name == "taut.summon_state"
-            return FakeQueue()
-
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    monkeypatch.setattr(driver_module, "ensure_summon_schema", lambda _queue: None)
-    monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
-    monkeypatch.setattr(driver_module, "_HALT_ACK_TIMEOUT_SECONDS", 0.01)
-
-    ready = threading.Event()
-    run_handles: list[Any] = []
-
-    def record_ready(run_handle: Any) -> None:
-        run_handles.append(run_handle)
-        ready.set()
-
-    driver = SummonDriver(
-        _run_request(),
-        interaction=ShellSummonInteraction(),
-        on_ready=record_ready,
-    )
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", False)
-    adapter_handle = _CountingHandle()
-    driver._handle = cast(Any, adapter_handle)
-    assert driver._control_ready is not None
-    driver._control_ready.set()
-    monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
-
-    def supervise(
-        _boot: _BootstrapResult,
-        _display: str,
-        **_kwargs: Any,
-    ) -> int:
-        driver._await_control_and_publish_ready(boot, threading.Event())
-        return 0
-
-    monkeypatch.setattr(driver, "_supervise", supervise)
-    monkeypatch.setattr(driver, "_release", lambda: None)
-
-    release_control = threading.Event()
-    control_owner = threading.Thread(target=release_control.wait)
-    driver._control_thread = control_owner
-    run_errors: list[BaseException] = []
-
-    def run_driver() -> None:
-        try:
-            driver.run()
-        except SummonOperationError as exc:
-            run_errors.append(exc)
-
-    foreground = threading.Thread(target=run_driver)
-    control_owner.start()
-    foreground.start()
-    try:
-        assert ready.wait(timeout=5.0)
-        foreground.join(timeout=0.1)
-        assert foreground.is_alive()
-        assert len(run_handles) == 1
-        run_handles[0].request_stop()
-        assert driver._shutdown.is_set()
-    finally:
-        release_control.set()
-        control_owner.join(timeout=5.0)
-        foreground.join(timeout=5.0)
-
-    assert not foreground.is_alive()
-    assert len(run_errors) == 1
-    assert isinstance(run_errors[0], SummonOperationError)
-    assert "control owner did not stop" in str(run_errors[0])
-
-
-def test_surviving_control_owner_cleanup_does_not_replace_primary_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            self.target = "sqlite:///driver-owned"
-
-        def queue(self, name: str) -> FakeQueue:
-            assert name == "taut.summon_state"
-            return FakeQueue()
-
-        def close(self) -> None:
-            return
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    monkeypatch.setattr(driver_module, "ensure_summon_schema", lambda _queue: None)
-    monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
-    monkeypatch.setattr(driver_module, "_HALT_ACK_TIMEOUT_SECONDS", 0.01)
-
-    driver = _new_driver(_run_request())
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", False)
-    primary = DriverError("primary supervision failure")
-    supervision_failed = threading.Event()
-    monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
-
-    def fail_supervision(
-        _boot: _BootstrapResult,
-        _display: str,
-        **_kwargs: Any,
-    ) -> int:
-        supervision_failed.set()
-        raise primary
-
-    monkeypatch.setattr(driver, "_supervise", fail_supervision)
-    monkeypatch.setattr(driver, "_release", lambda: None)
-
-    release_control = threading.Event()
-    control_owner = threading.Thread(target=release_control.wait)
-    driver._control_thread = control_owner
-    run_errors: list[BaseException] = []
-
-    def run_driver() -> None:
-        try:
-            driver._run()
-        except DriverError as exc:
-            run_errors.append(exc)
-
-    foreground = threading.Thread(target=run_driver)
-    control_owner.start()
-    foreground.start()
-    try:
-        assert supervision_failed.wait(timeout=5.0)
-        foreground.join(timeout=0.1)
-        assert foreground.is_alive()
-    finally:
-        release_control.set()
-        control_owner.join(timeout=5.0)
-        foreground.join(timeout=5.0)
-
-    assert run_errors == [primary]
-    assert getattr(primary, "__notes__", []) == [
-        (
-            "cleanup also failed: DriverError: "
-            "Summon control owner did not stop within the cleanup budget"
-        )
-    ]
-
-
-def test_watcher_failure_wakes_driver_for_rebuild(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    watcher_stop_on: list[int] = []
-
-    class ExplodingWatcher(_ExplodingWatcher):
-        def stop(self, *, join: bool = True) -> None:
-            del join
-            watcher_stop_on.append(threading.get_ident())
-
-    class FakeClient:
-        created_on: ClassVar[list[int]] = []
-        closed_on: ClassVar[list[int]] = []
-        init_kwargs: ClassVar[list[dict[str, Any]]] = []
-        watch_kwargs: ClassVar[list[dict[str, Any]]] = []
-
-        def __init__(self, **kwargs: Any) -> None:
-            self.init_kwargs.append(kwargs)
-            self.created_on.append(threading.get_ident())
-
-        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
-            self.watch_kwargs.append(kwargs)
-            return ExplodingWatcher()
-
-        def close(self) -> None:
-            self.closed_on.append(threading.get_ident())
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    driver = object.__new__(SummonDriver)
-    driver._shutdown = threading.Event()
-    driver._harness_dead = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._wake = threading.Event()
-    driver._watcher_failed = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._watcher_error = None
-    driver._watcher = None
-    driver._control_failed = threading.Event()
-    driver._control_error = None
-
-    ready = threading.Event()
-    thread = driver._start_watcher_thread(
-        db_path=None,
-        token="tok",
-        ready_event=ready,
-        attempt_stop=threading.Event(),
-        harness_dead=driver._harness_dead,
-    )
-    assert ready.wait(timeout=5.0)
-    thread.join(timeout=5.0)
-
-    assert not thread.is_alive()
-    assert not driver._harness_dead.is_set()
-    assert driver._watcher_failed.is_set()
-    assert driver._wake.is_set()
-    assert FakeClient.init_kwargs == [
-        {
-            "db_path": None,
-            "token": "tok",
-            "persistent": True,
-            "inherit_environment_identity": False,
-        }
-    ]
-    assert FakeClient.watch_kwargs == [{"persistent": True}]
-    assert FakeClient.created_on == [thread.ident]
-    assert FakeClient.closed_on == [thread.ident]
-    assert watcher_stop_on == [thread.ident]
-
-
-def test_harness_death_before_watcher_publication_stops_owner_before_run(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    construction_started = threading.Event()
-    release_construction = threading.Event()
-    ready_registration_on: list[int] = []
-    run_on: list[int] = []
-    watcher_stop_on: list[int] = []
-
-    class DelayedWatcher:
-        def notify_ready_after_initial_drain(self, _event: threading.Event) -> None:
-            ready_registration_on.append(threading.get_ident())
-
-        def run(self) -> None:
-            run_on.append(threading.get_ident())
-
-        def stop(self, *, join: bool = True) -> None:
-            del join
-            watcher_stop_on.append(threading.get_ident())
-
-    class FakeClient:
-        created_on: ClassVar[list[int]] = []
-        closed_on: ClassVar[list[int]] = []
-
-        def __init__(self, **_kwargs: Any) -> None:
-            self.created_on.append(threading.get_ident())
-
-        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
-            assert kwargs == {"persistent": True}
-            construction_started.set()
-            assert release_construction.wait(timeout=5.0)
-            return DelayedWatcher()
-
-        def close(self) -> None:
-            self.closed_on.append(threading.get_ident())
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    driver = object.__new__(SummonDriver)
-    driver._request = _run_request()
-    driver._db_path = None
-    driver._shutdown = threading.Event()
-    driver._harness_dead = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._wake = threading.Event()
-    driver._watcher_failed = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._watcher_error = None
-    driver._watcher = None
-    driver._control_failed = threading.Event()
-    driver._control_error = None
-    errors: list[BaseException] = []
-
-    def supervise() -> None:
-        try:
-            driver._watch_until_wake(
-                _BootstrapResult(
-                    member_id="m_reviewer",
-                    member_name="reviewer",
-                    token="tok",
-                    provider="scripted",
-                )
-            )
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    supervisor = threading.Thread(target=supervise)
-    supervisor.start()
-    try:
-        assert construction_started.wait(timeout=5.0)
-        driver._harness_dead.set()
-        driver._wake.set()
-        assert driver._halt_ack.wait(timeout=5.0)
-        release_construction.set()
-        supervisor.join(timeout=5.0)
-    finally:
-        release_construction.set()
-
-    assert not supervisor.is_alive()
-    assert errors == []
-    assert ready_registration_on == []
-    assert run_on == []
-    assert not driver._watcher_failed.is_set()
-    assert driver._watcher is None
-    assert len(watcher_stop_on) == 1
-    assert FakeClient.created_on == watcher_stop_on
-    assert FakeClient.closed_on == watcher_stop_on
-
-
-def test_live_watcher_after_bounded_join_is_fatal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_started = threading.Event()
-    release_run = threading.Event()
-    watcher_stopped = threading.Event()
-    watcher_constructions = 0
-
-    class StuckWatcher:
-        def notify_ready_after_initial_drain(self, event: threading.Event) -> None:
-            event.set()
-
-        def run(self) -> None:
-            run_started.set()
-            assert release_run.wait(timeout=5.0)
-
-        def request_stop(self) -> None:
-            pass
-
-        def stop(self, *, join: bool = True) -> None:
-            del join
-            watcher_stopped.set()
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
-            nonlocal watcher_constructions
-            assert kwargs == {"persistent": True}
-            watcher_constructions += 1
-            return StuckWatcher()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    monkeypatch.setattr(driver_module, "_WATCHER_JOIN_TIMEOUT_SECONDS", 0.01)
-    driver = object.__new__(SummonDriver)
-    driver._request = _run_request()
-    driver._db_path = None
-    driver._shutdown = threading.Event()
-    driver._harness_dead = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._wake = threading.Event()
-    driver._watcher_failed = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._watcher_error = None
-    driver._watcher = None
-    driver._control_failed = threading.Event()
-    driver._control_error = None
-    errors: list[BaseException] = []
-
-    def supervise() -> None:
-        try:
-            driver._watch_until_wake(
-                _BootstrapResult(
-                    member_id="m_reviewer",
-                    member_name="reviewer",
-                    token="tok",
-                    provider="scripted",
-                )
-            )
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    supervisor = threading.Thread(target=supervise)
-    supervisor.start()
-    try:
-        assert run_started.wait(timeout=5.0)
-        driver._harness_dead.set()
-        driver._wake.set()
-        supervisor.join(timeout=1.0)
-
-        assert not supervisor.is_alive()
-        assert len(errors) == 1
-        assert isinstance(errors[0], DriverError)
-        assert "watcher did not stop within" in str(errors[0])
-        assert not watcher_stopped.is_set()
-    finally:
-        release_run.set()
-        supervisor.join(timeout=5.0)
-
-    assert watcher_stopped.wait(timeout=5.0)
-    assert watcher_constructions == 1
-    assert driver._watcher is None
-
-
-def test_watcher_failure_rebuilds_without_closing_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(driver_module, "_WATCHER_RESTART_BACKOFF", (0.0,))
-    driver = object.__new__(SummonDriver)
-    driver._request = _run_request()
-    driver._db_path = None
-    driver._shutdown = threading.Event()
-    driver._harness_dead = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._wake = threading.Event()
-    driver._watcher_failed = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._watcher_error = None
-    driver._watcher = None
-    driver._control_failed = threading.Event()
-    driver._control_error = None
-    handle = _CountingHandle()
-    watchers: list[Any] = []
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
-            assert kwargs == {"persistent": True}
-            if not watchers:
-                watcher: Any = _ExplodingWatcher()
-            else:
-                watcher = _ShutdownWatcher(driver)
-            watchers.append(watcher)
-            return watcher
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-
-    driver._watch_until_wake(
-        _BootstrapResult(
-            member_id="m_reviewer",
-            member_name="reviewer",
-            token="tok",
-            provider="scripted",
-        )
-    )
-
-    assert len(watchers) == 2
-    assert handle.close_calls == 0
-    assert handle.interrupt_calls == 0
-    assert handle.request_close_calls == 0
-
-
-def test_pre_ready_cancellation_cannot_restart_past_original_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = object.__new__(SummonDriver)
-    driver._request = _run_request()
-    driver._db_path = None
-    driver._shutdown = threading.Event()
-    driver._harness_dead = threading.Event()
-    driver._halt_ack = threading.Event()
-    driver._wake = threading.Event()
-    driver._watcher_failed = threading.Event()
-    driver._injection_cancelled = threading.Event()
-    driver._watcher_error = None
-    driver._watcher = None
-    driver._control_failed = threading.Event()
-    driver._control_error = None
-    constructions = 0
-
-    class CancellingWatcher:
-        def notify_ready_after_initial_drain(self, _event: threading.Event) -> None:
-            pass
-
-        def run(self) -> None:
-            driver._injection_cancelled.set()
-            driver._wake.set()
-
-        def request_stop(self) -> None:
-            pass
-
-        def stop(self, *, join: bool = True) -> None:
-            del join
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
-            nonlocal constructions
-            assert kwargs == {"persistent": True}
-            constructions += 1
-            return CancellingWatcher()
-
-        def close(self) -> None:
-            pass
-
-    clock = iter((0.0, 31.0))
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    monkeypatch.setattr(driver_module.time, "monotonic", lambda: next(clock))
-
-    with pytest.raises(DriverError, match="watcher did not become ready"):
-        driver._watch_until_wake(
-            _BootstrapResult(
-                member_id="m_reviewer",
-                member_name="reviewer",
-                token="tok",
-                provider="scripted",
-            )
-        )
-
-    assert constructions == 1
-
-
-def test_pump_constructs_mouth_client_on_pump_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeMouth:
-        created_on: ClassVar[list[int]] = []
-        whoami_on: ClassVar[list[int]] = []
-        closed_on: ClassVar[list[int]] = []
-
-        def __init__(self, **kwargs: Any) -> None:
-            assert kwargs.get("persistent") is True
-            self.created_on.append(threading.get_ident())
-
-        def whoami(self) -> None:
-            self.whoami_on.append(threading.get_ident())
-
-        def close(self) -> None:
-            self.closed_on.append(threading.get_ident())
-
-    class FakeHandle:
-        def events(self) -> Any:
-            yield ActivityEvent("tool use")
-            yield ExitEvent(0)
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeMouth)
-    driver = _new_driver(_run_request())
-    driver._control_loop = None
-    generation = driver._activate_generation()
-
-    thread = driver._start_pump(
-        generation,
-        cast(Any, FakeHandle()),
-        db_path=None,
-        token="tok",
-    )
-    thread.join(timeout=5.0)
-
-    assert not thread.is_alive()
-    assert FakeMouth.created_on == [thread.ident]
-    assert FakeMouth.whoami_on == [thread.ident]
-    assert FakeMouth.closed_on == [thread.ident]
-    assert driver._harness_dead.is_set()
-    assert driver._wake.is_set()
-    assert generation.exit.returncode == 0
-
-
-def test_stale_generation_events_cannot_mutate_active_or_external_state(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    effects: list[str] = []
-
-    class RecordingMouth:
-        def whoami(self) -> None:
-            effects.append("presence")
-
-        def say(self, _thread: str, _text: str) -> None:
-            effects.append("post")
-
-    driver = _new_driver(_run_request())
-    stale = driver._activate_generation()
-    active = driver._activate_generation()
-    caplog.set_level("INFO", logger="taut_summon.driver")
-
-    for event in (
-        ActivityEvent("stale-activity"),
-        ExitEvent(97),
-    ):
-        driver._pump_event(
-            event,
-            cast(Any, RecordingMouth()),
-            0.0,
-            generation=stale,
-        )
-    driver._finish_generation(stale)
-
-    assert effects == []
-    assert active.exit.returncode is None
-    assert not driver._harness_dead.is_set()
-    assert not driver._wake.is_set()
 
 
 def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:
@@ -1846,78 +1144,6 @@ def test_generation_join_timeout_outranks_close_failure_without_primary() -> Non
     assert any("AdapterError: close failed" in note for note in notes)
 
 
-def test_pump_join_timeout_prevents_next_generation_spawn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    release_stream = threading.Event()
-    exit_emitted = threading.Event()
-    stream_finished = threading.Event()
-    spawn_calls: list[int] = []
-
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def queue(self, _name: str) -> FakeQueue:
-            return FakeQueue()
-
-        def close(self) -> None:
-            pass
-
-    class HangingAfterExitHandle:
-        pid = 123
-
-        def events(self) -> Any:
-            try:
-                yield ExitEvent(23)
-                exit_emitted.set()
-                release_stream.wait(timeout=5.0)
-            finally:
-                stream_finished.set()
-
-        def close(self) -> None:
-            pass
-
-    class FakeAdapter:
-        name = "fake"
-        supports_attach = False
-        orientation_via_inject = False
-
-    driver = _new_driver(_run_request())
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "fake", False)
-    monkeypatch.setattr(driver_module, "_PUMP_JOIN_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-    monkeypatch.setattr(driver, "_require_adapter", lambda _provider: FakeAdapter())
-
-    def spawn(*_args: Any, **_kwargs: Any) -> HangingAfterExitHandle:
-        spawn_calls.append(len(spawn_calls) + 1)
-        return HangingAfterExitHandle()
-
-    monkeypatch.setattr(driver, "_spawn", spawn)
-    monkeypatch.setattr(driver, "_rejoin", lambda *_args: None)
-    monkeypatch.setattr(driver, "_ensure_threads", lambda *_args: None)
-    monkeypatch.setattr(driver, "_start_control_thread", lambda _boot: None)
-    monkeypatch.setattr(driver, "_raise_if_control_failed", lambda: None)
-
-    def wait_for_pump(*_args: Any) -> None:
-        assert exit_emitted.wait(timeout=2.0)
-
-    monkeypatch.setattr(driver, "_watch_until_wake", wait_for_pump)
-
-    try:
-        with pytest.raises(DriverError, match="event pump did not stop"):
-            driver._supervise(boot, "db")
-    finally:
-        release_stream.set()
-        assert stream_finished.wait(timeout=2.0)
-
-    assert spawn_calls == [1]
-
-
 class _ControlFailureWatcher:
     def __init__(self) -> None:
         self.request_stop_calls = 0
@@ -1943,212 +1169,6 @@ def _control_supervision_boot() -> _BootstrapResult:
         token="tok",
         provider="scripted",
     )
-
-
-def test_control_loop_exception_is_driver_fatal(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    failure = RuntimeError("control turn exploded")
-    started = threading.Event()
-
-    class FailingControlLoop:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def run(self) -> None:
-            started.set()
-            raise failure
-
-    monkeypatch.setattr(driver_module, "ControlLoop", FailingControlLoop)
-    driver, handle = _control_supervision_driver()
-    watcher = cast(_ControlFailureWatcher, driver._watcher)
-
-    driver._start_control_thread(_control_supervision_boot())
-    assert driver._control_failed.wait(timeout=5.0)
-    assert started.is_set()
-    assert driver._control_thread is not None
-    driver._control_thread.join(timeout=5.0)
-
-    assert driver._control_error is failure
-    assert handle.request_close_calls == 1
-    assert handle.interrupt_calls == 0
-    assert watcher.request_stop_calls == 1
-    assert not driver._watcher_failed.is_set()
-    assert driver._wake.is_set()
-    with pytest.raises(DriverError) as caught:
-        driver._raise_if_control_failed()
-    assert caught.value.__cause__ is failure
-
-    monkeypatch.setattr(driver, "_run", driver._raise_if_control_failed)
-    with pytest.raises(SummonOperationError, match="control turn exploded"):
-        driver.run()
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
-
-
-def test_unexpected_clean_control_loop_return_is_driver_fatal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class ReturningControlLoop:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def run(self) -> None:
-            return
-
-    monkeypatch.setattr(driver_module, "ControlLoop", ReturningControlLoop)
-    driver, handle = _control_supervision_driver()
-    watcher = cast(_ControlFailureWatcher, driver._watcher)
-
-    driver._start_control_thread(_control_supervision_boot())
-    assert driver._control_failed.wait(timeout=5.0)
-    assert isinstance(driver._control_error, RuntimeError)
-    assert "exited unexpectedly" in str(driver._control_error)
-    assert handle.request_close_calls == 1
-    assert handle.interrupt_calls == 0
-    assert watcher.request_stop_calls == 1
-    with pytest.raises(DriverError, match="exited unexpectedly"):
-        driver._raise_if_control_failed()
-
-
-def test_initial_control_open_failure_is_driver_fatal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    failure = OSError("cannot open control broker")
-
-    class OpenFailureControlLoop:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def run(self) -> None:
-            self._open()
-
-        def _open(self) -> None:
-            raise failure
-
-    monkeypatch.setattr(driver_module, "ControlLoop", OpenFailureControlLoop)
-    driver, handle = _control_supervision_driver()
-
-    driver._start_control_thread(_control_supervision_boot())
-    assert driver._control_failed.wait(timeout=5.0)
-    assert driver._control_error is failure
-    assert handle.request_close_calls == 1
-    assert handle.interrupt_calls == 0
-    with pytest.raises(DriverError) as caught:
-        driver._raise_if_control_failed()
-    assert caught.value.__cause__ is failure
-
-
-def test_callback_absent_does_not_create_or_pass_a_control_readiness_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    driver, _handle = _control_supervision_driver()
-
-    class StoppingControlLoop:
-        def __init__(self, **kwargs: Any) -> None:
-            captured.update(kwargs)
-
-        def run(self) -> None:
-            driver._shutdown.set()
-
-    monkeypatch.setattr(driver_module, "ControlLoop", StoppingControlLoop)
-    assert driver._control_ready is None
-
-    driver._start_control_thread(_control_supervision_boot())
-    assert driver._control_thread is not None
-    driver._control_thread.join(timeout=5.0)
-
-    assert captured["ready"] is None
-
-
-def test_foreground_control_readiness_timeout_requests_normal_stop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[Any] = []
-    driver = SummonDriver(
-        _run_request(),
-        interaction=ShellSummonInteraction(),
-        on_ready=seen.append,
-    )
-    handle = _CountingHandle()
-    driver._handle = cast(Any, handle)
-    monkeypatch.setattr(driver_module, "_FOREGROUND_READINESS_TIMEOUT_SECONDS", 0.01)
-
-    with pytest.raises(DriverError, match="control loop did not become ready"):
-        driver._await_control_and_publish_ready(
-            _control_supervision_boot(), threading.Event()
-        )
-
-    assert seen == []
-    assert driver._shutdown.is_set()
-    assert handle.request_close_calls == 1
-
-
-@pytest.mark.parametrize("abort", ["generation", "shutdown"])
-def test_foreground_readiness_abort_before_callback_is_startup_fatal(
-    abort: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[Any] = []
-    driver = SummonDriver(
-        _run_request(),
-        interaction=ShellSummonInteraction(),
-        on_ready=seen.append,
-    )
-    generation = types.SimpleNamespace(harness_dead=threading.Event())
-    if abort == "generation":
-        generation.harness_dead.set()
-    else:
-        driver._shutdown.set()
-    handle = _CountingHandle()
-    running = types.SimpleNamespace(
-        generation=generation,
-        handle=handle,
-        pump=object(),
-    )
-    teardowns: list[tuple[Any, Any, Any]] = []
-    monkeypatch.setattr(driver, "_watch_until_wake", lambda _boot: None)
-    monkeypatch.setattr(driver, "_raise_if_pump_failed", lambda _generation: None)
-    monkeypatch.setattr(
-        driver,
-        "_teardown_generation",
-        lambda found_generation, found_handle, found_pump: teardowns.append(
-            (found_generation, found_handle, found_pump)
-        ),
-    )
-
-    with pytest.raises(DriverError, match="foreground readiness"):
-        driver._await_running_generation(
-            cast(Any, running), _control_supervision_boot()
-        )
-
-    assert seen == []
-    assert teardowns == [(generation, handle, running.pump)]
-
-
-def test_expected_stop_allows_control_loop_to_return_cleanly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver, handle = _control_supervision_driver()
-
-    class StoppingControlLoop:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def run(self) -> None:
-            driver._shutdown.set()
-
-    monkeypatch.setattr(driver_module, "ControlLoop", StoppingControlLoop)
-    driver._start_control_thread(_control_supervision_boot())
-    assert driver._control_thread is not None
-    driver._control_thread.join(timeout=5.0)
-
-    assert not driver._control_failed.is_set()
-    assert driver._control_error is None
-    assert handle.request_close_calls == 0
-    assert handle.interrupt_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -2305,15 +1325,13 @@ def test_scripted_provider_owns_signal_cleanup_during_ready_publication(
     assert events == ["start", "provider-ready"]
 
 
-def test_request_stop_requests_terminal_close_before_wake() -> None:
+def test_request_stop_publishes_shutdown_before_terminal_close() -> None:
     driver = _new_driver(_run_request())
-    events: list[tuple[str, bool, bool]] = []
+    events: list[tuple[str, bool]] = []
 
     class ObservingHandle(_CountingHandle):
         def request_close(self) -> None:
-            events.append(
-                ("request_close", driver._shutdown.is_set(), driver._wake.is_set())
-            )
+            events.append(("request_close", driver._shutdown.is_set()))
             super().request_close()
 
     handle = ObservingHandle()
@@ -2321,258 +1339,11 @@ def test_request_stop_requests_terminal_close_before_wake() -> None:
 
     driver.request_stop()
 
-    assert events == [("request_close", True, False)]
+    assert events == [("request_close", True)]
     assert handle.request_close_calls == 1
     assert handle.interrupt_calls == 0
     assert handle.close_calls == 0
-    assert driver._wake.is_set()
-
-
-def test_orientation_terminal_outcome_preserves_control_failure_and_tears_down(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _new_driver(_run_request())
-    control_failure = RuntimeError("control reactor failed")
-    driver._control_error = control_failure
-    driver._control_failed.set()
-
-    class FailingHandle(_CountingHandle):
-        def __init__(self) -> None:
-            super().__init__()
-            self.closed = threading.Event()
-
-        def inject(self, _text: str) -> None:
-            raise AdapterExitedError("provider exited during orientation")
-
-        def close(self) -> None:
-            super().close()
-            self.closed.set()
-
-    handle = FailingHandle()
-    generation = driver._activate_generation()
-    pump_observed_close: list[bool] = []
-
-    def run_pump() -> None:
-        pump_observed_close.append(handle.closed.wait(timeout=1.0))
-        driver._finish_generation(generation)
-
-    pump = threading.Thread(target=run_pump)
-    pump.start()
-    running = types.SimpleNamespace(
-        generation=generation,
-        handle=handle,
-        pump=pump,
-    )
-    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
-
-    with pytest.raises(DriverError, match="control loop failed") as caught:
-        driver._orient_running_generation(
-            cast(Any, running),
-            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
-            "orientation",
-            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
-            availability=None,
-            attached_this_generation=False,
-        )
-
-    assert caught.value.__cause__ is control_failure
-    assert handle.close_calls == 1
-    assert pump_observed_close == [True]
-    assert not pump.is_alive()
-    assert driver._active_generation is None
-
-
-@pytest.mark.parametrize(
-    ("readiness_pending", "failure", "diagnostic"),
-    [
-        (
-            True,
-            AdapterExitedError("provider exited during orientation"),
-            "provider generation exited before foreground readiness",
-        ),
-        (
-            True,
-            AdapterError("orientation write failed"),
-            "cannot orient the harness: orientation write failed",
-        ),
-    ],
-    ids=("pending-terminal", "pending-ordinary"),
-)
-def test_orientation_failure_precedence_and_exact_teardown(
-    monkeypatch: pytest.MonkeyPatch,
-    readiness_pending: bool,
-    failure: AdapterError,
-    diagnostic: str,
-) -> None:
-    driver = _new_driver(_run_request())
-    driver._on_ready = lambda _run: None
-    driver._ready_callback_invoked = not readiness_pending
-
-    class FailingHandle(_CountingHandle):
-        def __init__(self) -> None:
-            super().__init__()
-            self.closed = threading.Event()
-
-        def inject(self, _text: str) -> None:
-            raise failure
-
-        def close(self) -> None:
-            super().close()
-            self.closed.set()
-            if readiness_pending and isinstance(failure, AdapterExitedError):
-                raise AdapterError("orientation cleanup failed")
-
-    handle = FailingHandle()
-    generation = driver._activate_generation()
-
-    def run_pump() -> None:
-        assert handle.closed.wait(timeout=1.0)
-        driver._finish_generation(generation)
-
-    pump = threading.Thread(target=run_pump)
-    pump.start()
-    running = types.SimpleNamespace(
-        generation=generation,
-        handle=handle,
-        pump=pump,
-    )
-    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
-
-    with pytest.raises(DriverError, match=diagnostic) as caught:
-        driver._orient_running_generation(
-            cast(Any, running),
-            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
-            "orientation",
-            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
-            availability=None,
-            attached_this_generation=False,
-        )
-
-    assert handle.close_calls == 1
-    assert not pump.is_alive()
-    assert driver._active_generation is None
-    if readiness_pending and isinstance(failure, AdapterExitedError):
-        assert caught.value.__cause__ is failure
-        notes = getattr(failure, "__notes__", ())
-        assert any("orientation cleanup failed" in note for note in notes)
-
-
-def test_provider_exit_during_orientation_defers_teardown_to_resume(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _new_driver(_run_request())
-    driver._on_ready = lambda _run: None
-    driver._ready_callback_invoked = True
-
-    class ExitedHandle(_CountingHandle):
-        def inject(self, _text: str) -> None:
-            raise AdapterExitedError("provider exited during orientation")
-
-    handle = ExitedHandle()
-    generation = driver._activate_generation()
-    running = types.SimpleNamespace(generation=generation, handle=handle, pump=None)
-    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
-
-    outcome = driver._orient_running_generation(
-        cast(Any, running),
-        cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
-        "orientation",
-        boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
-        availability=None,
-        attached_this_generation=False,
-    )
-
-    assert outcome == "exited"
-    assert handle.close_calls == 0
-    assert driver._active_generation is generation
-
-
-def test_orientation_terminal_outcome_during_shutdown_returns_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _new_driver(_run_request())
-    driver._on_ready = lambda _run: None
-
-    class ShutdownHandle(_CountingHandle):
-        def inject(self, _text: str) -> None:
-            driver._shutdown.set()
-            raise AdapterExitedError("provider exited during orientation")
-
-    handle = ShutdownHandle()
-    generation = driver._activate_generation()
-    running = types.SimpleNamespace(
-        generation=generation,
-        handle=handle,
-        pump=None,
-    )
-    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
-
-    assert (
-        driver._orient_running_generation(
-            cast(Any, running),
-            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
-            "orientation",
-            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
-            availability=None,
-            attached_this_generation=False,
-        )
-        == "shutdown"
-    )
-    assert handle.close_calls == 0
-    assert driver._active_generation is generation
-
-
-def test_stop_before_handle_publication_requests_close_on_published_handle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _new_driver(_run_request())
-    handle = _CountingHandle()
-    adapter = types.SimpleNamespace(
-        name="scripted",
-        supports_attach=False,
-        orientation_via_inject=False,
-    )
-    pump = threading.Thread(target=lambda: None)
-    pump.start()
-    pump.join(timeout=1.0)
-
-    def spawn_then_stop(*_args: Any, **_kwargs: Any) -> _CountingHandle:
-        driver.request_stop()
-        return handle
-
-    class FakeClient:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(driver, "_require_adapter", lambda _provider: adapter)
-    monkeypatch.setattr(driver, "_spawn", spawn_then_stop)
-    monkeypatch.setattr(
-        driver, "_should_start_pump_before_bootstrap", lambda *_a, **_kw: True
-    )
-    monkeypatch.setattr(driver, "_start_pump", lambda *_a, **_kw: pump)
-    monkeypatch.setattr(driver, "_rejoin", lambda *_a, **_kw: None)
-    monkeypatch.setattr(driver, "_ensure_threads", lambda *_a, **_kw: None)
-    monkeypatch.setattr(driver, "_raise_if_pump_failed", lambda *_a: None)
-    monkeypatch.setattr(driver, "_start_control_thread", lambda *_a: None)
-    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
-
-    result = driver._supervise(
-        _BootstrapResult(
-            member_id="m_reviewer",
-            member_name="reviewer",
-            token="tok",
-            provider="scripted",
-        ),
-        "db",
-    )
-
-    assert result == 0
-    assert handle.request_close_calls == 1
-    assert handle.interrupt_calls == 0
-    assert handle.close_calls == 1
+    assert not hasattr(driver, "_wake")
 
 
 def test_pi_bootstrap_capitalizes_implied_name_and_preserves_chosen_name(
@@ -3453,19 +2224,19 @@ from pathlib import Path
 
 from taut_summon import _control
 
-_original_publish_ready = _control.ControlLoop._publish_ready
+_original_publish_ready = _control.ControlPolicy.install
 _release = Path(os.environ["TAUT_SUMMON_TEST_CONTROL_RELEASE"])
 print("continuity-token=distinctive-secret-value", file=sys.stderr, flush=True)
 
 
 def _publish_after_release(self):
     while not _release.exists():
-        if self._shutdown.wait(0.01):
-            return
+        import time
+        time.sleep(0.01)
     _original_publish_ready(self)
 
 
-_control.ControlLoop._publish_ready = _publish_after_release
+_control.ControlPolicy.install = _publish_after_release
 """,
         encoding="utf-8",
     )
@@ -4332,7 +3103,7 @@ from pathlib import Path
 
 from taut_summon import _control
 
-_original_audit_if_due = _control.ControlLoop._audit_if_due
+_original_audit_if_due = _control.ControlPolicy.turn
 _marker = Path(os.environ["TAUT_SUMMON_CONTROL_FAULT_MARKER"])
 
 
@@ -4342,7 +3113,7 @@ def _fault_after_readiness(self):
     return _original_audit_if_due(self)
 
 
-_control.ControlLoop._audit_if_due = _fault_after_readiness
+_control.ControlPolicy.turn = _fault_after_readiness
 """,
         encoding="utf-8",
     )

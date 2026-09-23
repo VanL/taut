@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -163,7 +162,6 @@ class SummonController:
                     member.member_id,
                     driver_pid=row["driver_pid"],
                     driver_start_time=row["driver_start_time"],
-                    timeout=_STOP_TIMEOUT_SECONDS,
                 )
             except _OPERATION_ERRORS as exc:
                 raise DriverUnresponsive(
@@ -294,24 +292,16 @@ class SummonController:
         *,
         driver_pid: int | None,
         driver_start_time: str | None,
-        timeout: float,
     ) -> bool:
         queue = client.queue(LEDGER_QUEUE_NAME)
-        deadline = time.monotonic() + timeout
         try:
-            while True:
-                row = get_session(queue, member_id)
-                stored = (
-                    (None, None)
-                    if row is None
-                    else (row["driver_pid"], row["driver_start_time"])
-                )
-                if release_evidence_confirmed(stored, (driver_pid, driver_start_time)):
-                    return True
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                time.sleep(min(0.05, remaining))
+            row = get_session(queue, member_id)
+            stored = (
+                (None, None)
+                if row is None
+                else (row["driver_pid"], row["driver_start_time"])
+            )
+            return release_evidence_confirmed(stored, (driver_pid, driver_start_time))
         finally:
             queue.close()
 

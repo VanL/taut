@@ -145,14 +145,12 @@ class TerminalRun:
 def _start_attach(
     handle: Any,
     terminal: HostTerminal,
-    wake: threading.Event,
     shutdown: threading.Event,
     errors: list[BaseException],
 ) -> threading.Thread:
     def attach() -> None:
         try:
             handle.attach(
-                wake=wake,
                 shutdown=shutdown,
                 input_fd=terminal.lease_input_fd,
                 output_fd=terminal.lease_output_fd,
@@ -205,11 +203,9 @@ def _collect_output(
 def _cleanup_attach(
     handle: Any,
     thread: threading.Thread,
-    wake: threading.Event,
     shutdown: threading.Event,
 ) -> None:
     shutdown.set()
-    wake.set()
     thread.join(timeout=3.0)
     close_completed = False
     try:
@@ -252,14 +248,13 @@ def run_terminal_child(
                 cols=80,
             )
         ).spawn(system_prompt="unused", env={})
-        wake = threading.Event()
         shutdown = threading.Event()
         attach_errors: list[BaseException] = []
         with ExitStack() as failed_start_cleanup:
             failed_start_cleanup.callback(handle.close)
-            thread = _start_attach(handle, terminal, wake, shutdown, attach_errors)
+            thread = _start_attach(handle, terminal, shutdown, attach_errors)
             failed_start_cleanup.pop_all()
-        cleanup.callback(_cleanup_attach, handle, thread, wake, shutdown)
+        cleanup.callback(_cleanup_attach, handle, thread, shutdown)
         output, input_sent = _collect_output(
             thread,
             terminal,

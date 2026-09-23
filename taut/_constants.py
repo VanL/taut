@@ -19,6 +19,7 @@ DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
 SCHEMA_VERSION: Final[int] = 2
 META_QUEUE_NAME: Final[str] = "taut_meta"
+CACHE_STALE_QUEUE_NAME: Final[str] = "taut.cache_stale"
 QUEUE_PRIORITY_NORMAL: Final[int] = 100
 WATCH_MEMBERSHIP_REFRESH_SECONDS: Final[float] = 0.5
 

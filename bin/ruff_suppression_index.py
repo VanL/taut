@@ -47,6 +47,20 @@ _RAW_COUNT = re.compile(r"`(?P<code>[A-Z]+\d+)=(?P<count>\d+)`")
 _FENCE_OPEN = re.compile(r"(?P<fence>`{3,}|~{3,})")
 _SECTION_END = re.compile(r"#{1,4}\s")
 
+# Keep copied Weft comments intact. These exact upstream annotations map into
+# Taut's reviewed groups; normal cardinality and raw-diagnostic checks still run.
+_VENDORED_MARKERS = {
+    (
+        "taut/watcher.py",
+        f"# noqa: {code} approved [TS-3.1] [RUFF-SUP-{upstream}] exception",
+    ): f"# noqa: {code} approved [DOM-10.2.1] [RUFF-SUP-{local}] exception"
+    for code, upstream, local in (
+        ("C901", "045", "093"),
+        ("SIM102", "242", "094"),
+        ("BLE001", "339", "095"),
+    )
+}
+
 
 class PolicyMismatch(Exception):
     """The repository does not satisfy the suppression policy."""
@@ -438,14 +452,17 @@ def scan_source_directives(
                     if token.type == tokenize.COMMENT
                 )
                 for comment in comments:
+                    relative = repository_path(path.relative_to(repo_root))
+                    marker = _VENDORED_MARKERS.get(
+                        (relative, comment.string), comment.string
+                    )
                     has_registry_pointer = "# noqa:" in comment.string and (
                         "approved [DOM-10.2.1]" in comment.string
                         or "RUFF-SUP-" in comment.string
                     )
-                    matches = list(_SOURCE_MARKER.finditer(comment.string))
+                    matches = list(_SOURCE_MARKER.finditer(marker))
                     if not has_registry_pointer and not matches:
                         continue
-                    relative = repository_path(path.relative_to(repo_root))
                     if len(matches) != 1:
                         raise PolicyMismatch(
                             f"{relative}:{comment.start[0]}: malformed approved suppression"
