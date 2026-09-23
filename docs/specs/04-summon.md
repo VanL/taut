@@ -624,11 +624,84 @@ watcher; there is exactly one master reader at a time: the bridge during
 attach, then the driver's reader after detach. Chat that arrives during
 attach is not injected until the watcher starts after detach.
 
-The detach chord matcher runs byte-at-a-time across raw-mode reads. It
-buffers partial chord bytes, detaches only on a complete match, and
-forwards the buffered bytes plus current byte on mismatch. It never
-intercepts `ESC`-prefixed input; Escape, arrows, and function keys pass
-through unchanged.
+The detach chord matcher consumes a stream of host-input bytes across read
+boundaries. For the default `Ctrl-\ Ctrl-\` chord, each chord atom may be
+either the legacy `0x1c` byte or a complete semantic Control-Backslash key
+event encoded by Kitty CSI-u or xterm `modifyOtherKeys`. Kitty press events
+and repeat events count as chord atoms, preserving the legacy behavior in
+which terminal repeat is indistinguishable from repeated control bytes;
+release events for the same logical Control-Backslash identity may occur
+between atoms but do not count or break the chord. Such a release uses the
+same permitted identity and modifier rules as a press, with event type 3.
+The accepted Kitty wire grammar is exactly
+`CSI <primary>[:<shifted>[:<base>]];<modifier>[:<event>]u`, where each named
+value is a non-negative decimal integer, `<shifted>` may be empty only when
+`<base>` is present, and no associated-text field follows the modifier field.
+The event defaults to press when omitted; `1`, `2`, and `3` mean press,
+repeat, and release. The primary or shifted value must be code point 92;
+base-layout value 92 alone does not identify the chord. A present shifted
+value requires the Shift modifier.
+
+Kitty modifiers are the decimal value `1 + bitmask`, with Shift `1`, Alt `2`,
+Control `4`, Super `8`, Hyper `16`, Meta `32`, Caps Lock `64`, and Num Lock
+`128`. Control is required; Shift and the two lock bits are permitted; Alt,
+Super, Hyper, Meta, unknown bits, and unknown event types reject the candidate.
+Thus the accepted encoded modifier values are exactly `5`, `6`, `69`, `70`,
+`133`, `134`, `197`, and `198`.
+
+The accepted xterm grammar is exactly `CSI 27;<modifier>;92~` and carries no
+event type or alternate key. Its modifier is likewise `1 + bitmask`, with
+Shift `1`, Alt `2`, Control `4`, and Meta `8`; Control is required, Shift is
+permitted, and Alt, Meta, or unknown bits reject the candidate. Its accepted
+encoded modifier values are therefore exactly `5` and `6`.
+
+The matcher buffers only a bounded possible chord or supported enhanced-key
+sequence, detaches only after two recognized atoms, and otherwise forwards
+every original byte once and in order. Split sequences are recognized across
+reads. A possible enhanced-key prefix creates a 100 ms input-ambiguity
+deadline owned by the attach adapter. The adapter supplies the remaining
+deadline to its existing blocking source wait (`select()` on POSIX and the
+input-chunk queue on Windows); continuation bytes do not move that initial
+deadline, and the adapter does not poll the clock independently. When
+the wait returns, the same serialized input owner handles ready input before a
+simultaneously due deadline, then forwards all expired pending bytes unchanged.
+The deadline creates no timer thread and publishes no separate broker event.
+Incomplete, malformed, expired, overlong, unsupported, unrelated, or failed
+chord input is not normalized or dropped. The matcher may hold an `ESC` prefix
+only for that bounded decision; it intercepts only a complete encoding of the
+reserved detach key. When an `ESC` byte ends a failed candidate, the bytes
+before it are forwarded and that `ESC` begins a new candidate with its own
+deadline.
+
+The `ESC` hold is armed only while the physical terminal may be sending
+enhanced key encodings. Each attach session models that from exactly the
+provider output it forwards to the physical terminal, observed before the
+output is written: Kitty flag push (`CSI > flags u`), pop (`CSI < n u`), and
+set (`CSI = flags ; mode u`) requests on an independent stack per screen
+(`?47`, `?1047`, and `?1049` select the alternate screen), and xterm
+`CSI > 4 ; level m` (reset by `CSI > 4 m` or `CSI > 4 n`). Any nonzero Kitty
+flags on either screen, or any nonzero `modifyOtherKeys` level, arm the hold.
+Each session starts unarmed because the previous detach's reset left the
+terminal in legacy encoding. Uncertainty resolves toward armed: a stale armed
+state costs only the bounded hold, while a stale unarmed state would make the
+enhanced chord unreachable. Unarmed, `ESC` is forwarded the moment it arrives,
+exactly as before enhanced-key support, so Escape followed by another key is
+never coalesced into an Alt-key write and Escape gains no latency. Escape, arrows, function keys, paste data, and provider
+shortcuts otherwise pass through unchanged. Non-default internal test chords
+retain byte-exact matching and do not acquire protocol aliases.
+
+Implementation is shared in `_DetachChordMatcher` in
+`extensions/taut_summon/taut_summon/_pty.py`; the POSIX and Windows attach
+owners compose its deadline in `_pty_posix.py` and `_pty_windows.py`.
+`test_detach_matcher_*`, `test_keyboard_protocol_tracker_*`,
+`test_posix_attach_gates_escape_hold_on_forwarded_provider_output`, and
+`test_attach_bridges_and_split_chord_detaches_with_reset` in
+`extensions/taut_summon/tests/test_pty_adapter.py`, plus
+`test_attach_session_detaches_on_split_enhanced_chord_without_forwarding`,
+`test_attach_session_without_enhanced_output_forwards_escape_at_once`, and
+`test_detach_reset_restores_modify_other_keys` in
+`extensions/taut_summon/tests/test_pty_windows.py`, fire the grammar,
+gating, forwarding, expiry, reset, and shared-platform contracts.
 
 An uncooperative nested shell-out marked `TAUT_HOST_TUI=1` refuses attach so
 two full-screen applications never share the terminal. A cooperative future
@@ -666,8 +739,14 @@ idempotent reset blast before `termios.tcsetattr(TCSADRAIN)`: `CAN`
 `ESC[?47l`, `ESC[?1047l`), show cursor, reset scroll region, SGR
 `ESC[0m`, autowrap on, synchronized-output off, alternate-scroll off,
 DECCKM/application keypad off, focus tracking off, all mouse variants
-off, bracketed-paste off, and one kitty keyboard pop. The fake TUI tests
-prove this at the byte level.
+off, bracketed-paste off, and xterm `modifyOtherKeys` reset (`ESC[>4m`).
+Before leaving the current screen, the blast pops the full bounded Kitty
+keyboard stack; after leaving alternate screens it repeats that pop for the
+main screen. This clears nested pushes whether attach ended on the main or
+alternate screen, so a provider's key-encoding request cannot outlive attach
+and, for example, turn the detached command's `Ctrl-C` into
+`CSI 27;5;99~`. The Windows bridge carries the same two-screen Kitty and
+`modifyOtherKeys` resets. The fake TUI tests prove this at the byte level.
 
 STOP during attach is consumed by the bridge. The POSIX bridge selects over
 `[human_tty, master]` with its existing 100 ms native wait bound and checks the
@@ -1580,6 +1659,10 @@ tail plus the `--attach` instruction.
   terminal-text policy.
 
 ## Related Plans
+
+- `docs/plans/2026-09-23-summon-enhanced-keyboard-detach-plan.md` — makes the
+  default detach chord semantic across legacy, Kitty CSI-u, and xterm
+  `modifyOtherKeys` input without provider- or terminal-specific branches.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — restoration of
   one reactor for Summon's single context through staged in-flight delivery,

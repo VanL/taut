@@ -909,6 +909,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   stop handshake. Test both queued and already-dequeued failure cases with the
   real executor before inventing rollback observers or extra waiters.
 
+- 2026-09-23: Raw tty mode controls kernel input processing; it does not freeze
+  the terminal emulator's key encoding. A child can emit a keyboard-protocol
+  mode request that changes bytes later read by an otherwise transparent host
+  bridge. Match reserved host chords at the semantic protocol boundary, keep
+  original bytes for exact failure forwarding, and route ambiguity deadlines
+  through the native input owner rather than a peer scheduler. Byte-exact is
+  not timing-exact: holding a bare `ESC` changes its meaning (Escape vs. Alt),
+  so arm any such hold only while the forwarded output has actually enabled an
+  encoding that needs it.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

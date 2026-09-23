@@ -549,9 +549,39 @@ for line/cancel evidence.
 
 The POSIX bridge is one bounded select loop over the human tty and PTY master.
 It checks shutdown between passes, so STOP remains observable during attach
-without a polling thread forwarding an Event into a pipe. It never intercepts `ESC` sequences. In `finally`, it
+without a polling thread forwarding an Event into a pipe. Provider output can
+enable Kitty CSI-u or xterm `modifyOtherKeys` in the physical terminal even
+though the host tty is raw. The shared detach matcher therefore recognizes
+only the semantic Control-Backslash forms reserved by [SUM-7.4], while keeping
+the original bytes until the chord decision is known. Other `ESC` sequences
+pass through unchanged. Holding a bare `ESC` is not free: it delays Escape and
+can merge Escape-then-key into one Alt-key write for providers that split keys
+on read boundaries. So the matcher arms the hold only while its per-attach
+`_KeyboardProtocolTracker` says an enhanced mode is active. The tracker sees
+exactly the output this attach writes to the physical terminal, fed before
+each write (POSIX `os.write`, Windows `_AttachSink.enqueue`). That ordering is
+what makes the gate race-free: the terminal cannot encode a key under a mode
+the tracker has not yet seen. The tracker is per attach rather than on
+`_TerminalState` because detached output never reaches the physical terminal
+and the detach reset returns it to legacy. Its model errs toward "enhanced"
+(both screens' Kitty stacks count, and stack depth is never shallower than
+real terminals'), since a false "on" costs only latency but a false "off"
+reintroduces the unreachable chord. An incomplete possible detach sequence
+contributes a 100 ms monotonic deadline to this same native source wait; ready
+input wins at
+the boundary, continuation bytes do not slide the deadline, and expiry
+forwards every held byte once and in order. Windows
+uses the identical matcher and composes its deadline into the existing input
+chunk wait. Neither platform adds a timer thread or asks the broker reactor to
+arbitrate bytes owned by the attach worker. In `finally`, the POSIX bridge
 writes a fixed reset blast to the local tty and restores termios, because the
 harness keeps running and will not clean up the user's terminal after detach.
+The blast clears the bounded Kitty stack on the current screen before leaving
+alternate mode, clears the main-screen stack afterward, and ends with
+`ESC[>4m`. Windows uses the same two-screen ordering. Without those resets, a
+provider's nested Kitty pushes or `modifyOtherKeys` level 2 could outlive
+detach, make a later attach's fresh mode tracker disagree with the physical
+terminal, or make `Ctrl-C` unable to interrupt the detached foreground command.
 PTY test peers must drain that blast before joining the bridge: the deliberate
 `TCSADRAIN` restore may wait until the peer consumes pending terminal output.
 Provider bytes observed by the attach loop also update the handle's quiet-time

@@ -1,7 +1,9 @@
 # Summon Enhanced-Keyboard Detach Plan
 
-Status: Draft — implementation is blocked until the independent plan and
-proposed-spec review passes.
+Status: Implemented, including the post-review `ESC`-gating and symmetric
+keyboard-reset follow-ups; automated verification and independent review
+passed. Changes are uncommitted. The physical-terminal observation remains
+pending and is explicitly waived for the owner-requested 0.9.9 release.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the
 normative attach input contract and the terminal-protocol compatibility
@@ -20,15 +22,15 @@ cleanup, and `wired` lifecycle.
 
 ## Requested Outcomes
 
-- [ ] Reproduce the defect as a failing shared-matcher test: two enhanced
+- [x] Reproduce the defect as a failing shared-matcher test: two enhanced
   Control-Backslash events are forwarded instead of detaching.
-- [ ] Recognize the detach chord independently of whether the host terminal
+- [x] Recognize the detach chord independently of whether the host terminal
   emits legacy, Kitty CSI-u, or xterm `modifyOtherKeys` input.
-- [ ] Preserve exact bytes and order for incomplete, malformed, unsupported,
+- [x] Preserve exact bytes and order for incomplete, malformed, unsupported,
   and non-detach input, including a failed chord after one candidate event.
-- [ ] Prove the shared matcher through both POSIX PTY and Windows ConPTY attach
+- [x] Prove the shared matcher through both POSIX PTY and Windows ConPTY attach
   paths without provider-name or terminal-name branches.
-- [ ] Align the Summon spec, implementation note, extension README, code, and
+- [x] Align the Summon spec, implementation note, extension README, code, and
   tests.
 
 ## Source Documents
@@ -69,9 +71,10 @@ Summon continues to match only `b"\x1c\x1c"`.
   owner edits in other documentation files, including
   `docs/implementation/05-taut-summon-architecture.md`; preserve them and
   stage only task-owned hunks.
-- Promotion baseline identifier: pending the spec-promotion slice. Record the
-  commit SHA if committed, otherwise the baseline SHA plus the exact worktree
-  diff for `docs/specs/04-summon.md`.
+- Promotion baseline identifier: uncommitted worktree delta against
+  `c0a4616e76e954e3f9fbea93fbf487c3ee660cbe`; `git diff --numstat --
+  docs/specs/04-summon.md` reports `62 5` after implementation evidence was
+  added.
 
 ## Proposed Spec Delta
 
@@ -92,21 +95,48 @@ the final documentation slice.
 > event encoded by Kitty CSI-u or xterm `modifyOtherKeys`. Kitty press events
 > and repeat events count as chord atoms, preserving the legacy behavior in
 > which terminal repeat is indistinguishable from repeated control bytes;
-> release events for the same key may occur between atoms but do not count or
-> break the chord. A Kitty event identifies the logical backslash through its
-> primary or shifted key code, requires Control, permits Shift and lock-state
-> modifiers, and rejects Alt, Super, Hyper, Meta, unknown modifier bits, and
-> unknown event types. A base-layout key code alone does not identify the
-> chord. The xterm form requires key code 92 and the same modifier rule and
-> carries no event type.
+> release events for the same logical Control-Backslash identity may occur
+> between atoms but do not count or break the chord. Such a release uses the
+> same permitted identity and modifier rules as a press, with event type 3.
+> The accepted Kitty wire grammar is exactly
+> `CSI <primary>[:<shifted>[:<base>]];<modifier>[:<event>]u`, where each named
+> value is a non-negative decimal integer, `<shifted>` may be empty only when
+> `<base>` is present, and no associated-text field follows the modifier field.
+> The event defaults to press when omitted; `1`, `2`, and `3` mean press,
+> repeat, and release. The primary or shifted value must be code point 92;
+> base-layout value 92 alone does not identify the chord. A present shifted
+> value requires the Shift modifier.
+>
+> Kitty modifiers are the decimal value `1 + bitmask`, with Shift `1`, Alt
+> `2`, Control `4`, Super `8`, Hyper `16`, Meta `32`, Caps Lock `64`, and Num
+> Lock `128`. Control is required; Shift and the two lock bits are permitted;
+> Alt, Super, Hyper, Meta, unknown bits, and unknown event types reject the
+> candidate. Thus the accepted encoded modifier values are exactly `5`, `6`,
+> `69`, `70`, `133`, `134`, `197`, and `198`.
+>
+> The accepted xterm grammar is exactly `CSI 27;<modifier>;92~` and carries no
+> event type or alternate key. Its modifier is likewise `1 + bitmask`, with
+> Shift `1`, Alt `2`, Control `4`, and Meta `8`; Control is required, Shift is
+> permitted, and Alt, Meta, or unknown bits reject the candidate. Its accepted
+> encoded modifier values are therefore exactly `5` and `6`.
 >
 > The matcher buffers only a bounded possible chord or supported enhanced-key
 > sequence, detaches only after two recognized atoms, and otherwise forwards
 > every original byte once and in order. Split sequences are recognized across
-> reads. Incomplete, malformed, overlong, unsupported, unrelated, or failed
-> chord input is not normalized or dropped. Except for complete encodings of
-> the reserved detach key while matching this chord, `ESC`-prefixed input,
-> Escape, arrows, function keys, paste data, and provider shortcuts pass
+> reads. A possible enhanced-key prefix creates a 100 ms input-ambiguity
+> deadline owned by the attach adapter. The adapter supplies the remaining
+> deadline to its existing blocking source wait (`select()` on POSIX and the
+> input-chunk queue on Windows); continuation bytes do not move that initial
+> deadline, and the adapter does not poll the clock independently.
+> When the wait returns, the same serialized input owner handles ready input
+> before a simultaneously due deadline, then forwards all expired pending bytes
+> unchanged. The deadline creates no timer thread and publishes no separate
+> broker event. Incomplete, malformed,
+> expired, overlong, unsupported, unrelated, or failed chord input is not
+> normalized or dropped.
+> The matcher may hold an `ESC` prefix only for that bounded decision; it
+> intercepts only a complete encoding of the reserved detach key. Escape,
+> arrows, function keys, paste data, and provider shortcuts otherwise pass
 > through unchanged. Non-default internal test chords retain byte-exact
 > matching and do not acquire protocol aliases.
 
@@ -190,16 +220,30 @@ reread.
 - Buffering is bounded by a named constant and linear in bytes scanned. An
   unterminated or oversized CSI prefix cannot retain memory without bound or
   make repeated rescans quadratic.
+- Enhanced-prefix ambiguity is also time-bounded. The matcher exposes its one
+  pending monotonic deadline and one expiry operation. The attach adapter folds
+  that deadline into its existing blocking source wait: POSIX waits for input,
+  provider output, or the earlier of its lifecycle bound and matcher deadline;
+  Windows waits for an input chunk or the earlier of its lifecycle bound and
+  matcher deadline. This is clock work owned by the serialized input adapter,
+  consistent with [BASE-3]/[BASE-4]; it is not a second poll of present state.
+  Ready input wins over expiry at an equal boundary. After servicing ready
+  sources, the owner expires any still-pending prefix due at the current
+  monotonic time. Provider output, spurious wakes, and repeated empty waits
+  must not starve or reset the deadline; continuation bytes do not move it.
+  Do not add a timer thread, another
+  event loop, a broker-reactor callback, or a second platform parser.
 - Two qualifying press/repeat atoms detach. Same-key Kitty release events may
   appear between them, are held with the pending chord, and are discarded on
   successful detach; on failure, the press/release bytes are forwarded in
   original order. Release alone never starts or completes a chord.
-- For Kitty identity, primary or shifted code point 92 is logical backslash;
-  base-layout-only 92 is insufficient. Control is required. Shift and
-  Caps/Num Lock bits are tolerated; Alt, Super, Hyper, Meta, unknown bits,
-  invalid numeric fields, and unknown event types are not detach input.
-- For xterm `modifyOtherKeys`, accept only the complete
-  `CSI 27;<modifier>;92~` grammar with the same modifier rule.
+- For Kitty identity, implement exactly the finite grammar and modifier table
+  in the proposed [SUM-7.4] delta. In particular, alternate-key reporting can
+  produce `CSI 92::92;5u`, `CSI 92::92;5:1u`, and the corresponding repeat or
+  release forms; these are required fixtures, not optional examples.
+- For xterm `modifyOtherKeys`, implement only the finite grammar and its
+  protocol-specific modifier table in the proposed [SUM-7.4] delta. Do not
+  infer Kitty lock-bit meanings for xterm fields.
 - A non-default `detach_chord` remains byte-exact. Protocol aliases are tied to
   the default public chord, preventing surprising semantics in internal tests
   or future configuration work.
@@ -255,8 +299,11 @@ classification.
    - Add a table-driven matcher contract covering the enumerable acceptance
      and rejection matrix below. Add one POSIX real-PTY attach test with split
      CSI-u input and one Windows `_AttachSession` test using existing fake
-     handles/chunks. The red run must fail because the enhanced chord is
-     forwarded or attach does not return `detached`.
+     handles/chunks. Drive enhanced-prefix expiry with an injected monotonic
+     clock or explicit deadlines, not sleeps. Prove the platform waits receive
+     the matcher's remaining deadline, ready input wins at an equal deadline,
+     and unrelated wakeups do not reset it. The red run must fail because
+     the enhanced chord is forwarded or attach does not return `detached`.
    - What stays real: `_DetachChordMatcher`, POSIX `pty.openpty()` and attach
      loop, and the Windows attach-session bridge. OS-only Win32 calls may use
      the established fake API; do not mock the matcher or replace either
@@ -267,20 +314,35 @@ classification.
      while existing legacy detach tests still pass.
 
 4. **Implement one bounded semantic detach matcher.**
-   - File: `extensions/taut_summon/taut_summon/_pty.py`.
+   - Files: `extensions/taut_summon/taut_summon/_pty.py`,
+     `extensions/taut_summon/taut_summon/_pty_posix.py`, and
+     `extensions/taut_summon/taut_summon/_pty_windows.py`.
    - Extend the existing matcher rather than adding a sibling parser. Retain
      original byte slices, parse incrementally across `feed()` calls, cap
      candidate retention, and use a small internal event classification such
      as detach atom / same-key release / other. Keep the public return shape
-     `(forward_bytes, detached)` unchanged.
-   - The grammar must accept decimal fields only within the cap; recognize
-     Kitty primary/shifted identity and modifier/event fields, plus exact xterm
-     `modifyOtherKeys`. It must not treat the Kitty associated-text field or
-     base-layout-only identity as authority for the chord.
-   - Stop and re-evaluate if correct forwarding needs changes in either
-     platform loop, if buffer ownership becomes duplicated, if the parser
-     starts decoding unrelated keys for consumers, or if complexity pressure
-     suggests a general terminal library.
+     `(forward_bytes, detached)` unchanged for input. Add one narrow matcher
+     deadline query and expiry operation that returns pending bytes. Compose
+     that deadline into each platform bridge's existing source wait rather
+     than sampling it through an independent poll: use the earlier of the
+     existing lifecycle bound and the matcher deadline. On a return where
+     input is ready and the deadline is due, feed the input first and expire
+     only if the candidate remains pending. Check expiry after all other ready
+     sources so continuously readable provider output cannot starve it. Use
+     100 ms as the ambiguity interval; add no new thread, loop, or notification
+     path to the foreground broker reactor.
+   - The grammar must accept decimal fields only within the cap and implement
+     the exact Kitty and xterm productions and protocol-specific modifier
+     tables in [SUM-7.4]. The required regression fixture is
+     `b"\x1b[92::92;5:1u"` twice, matching Codex's combination of
+     disambiguation, alternate-key, and event-type reporting. Also cover the
+     no-event-type `b"\x1b[92::92;5u"` form and event values 2 and 3. Reject
+     an associated-text field and base-layout-only identity rather than using
+     either as authority for the chord.
+   - Stop and re-evaluate if platform changes extend beyond calling the shared
+     expiry operation from existing wait branches, if buffer ownership becomes
+     duplicated, if the parser starts decoding unrelated keys for consumers,
+     or if complexity pressure suggests a general terminal library.
    - Done signal: focused matcher and platform attach tests pass; all legacy
      matcher behavior remains green.
 
@@ -320,23 +382,27 @@ row is named in test IDs and removing support for that row fails the suite.
 | ID | Input/event | Expected result |
 |----|-------------|-----------------|
 | D1 | two legacy `0x1c` atoms, including split reads | detach; forward nothing |
-| D2 | two Kitty `CSI 92;5u` presses | detach; forward nothing |
-| D3 | Kitty press forms with explicit press event and permitted lock bits | detach after two atoms |
+| D2 | `ESC [ 92 :: 92 ; 5 u` twice, including every split boundary | detach after two atoms; forward nothing |
+| D3 | `ESC [ 92 :: 92 ; 5 : 1 u` twice, plus accepted Kitty modifier values `6`, `69`, `70`, `133`, `134`, `197`, and `198` with grammar-valid shifted fields | detach after two atoms |
 | D4 | Kitty repeat as the second atom | detach, matching legacy repeat behavior |
 | D5 | Kitty same-key release between two atoms | release does not count or break; successful chord forwards nothing |
-| D6 | Kitty shifted-key field identifies code point 92 with Control+Shift | detach after two atoms |
+| D6 | `ESC [ 124 : 92 ; 6 u` twice, so the Kitty shifted-key subfield identifies code point 92 with encoded Control+Shift modifier `6` | detach after two atoms |
 | D7 | two xterm `CSI 27;5;92~` atoms | detach; forward nothing |
+| D8 | mixed legacy and enhanced atoms, in either order | detach; forward nothing |
 | F1 | first detach atom followed by ordinary text | forward both exactly once and in order |
 | F2 | first Kitty press/release followed by unrelated input | forward press, release, and input exactly once and in order |
 | F3 | unrelated Kitty or xterm key | forward unchanged |
 | F4 | base-layout-only backslash identity | forward unchanged |
-| F5 | missing Control or forbidden Alt/Super/Hyper/Meta/unknown modifier | forward unchanged |
+| F5 | missing Control; each protocol's forbidden Alt/Super-or-Meta/Hyper/Meta/lock/unknown bit; or a shifted field without Shift | forward unchanged |
 | F6 | Kitty release alone or unknown event type | forward unchanged; do not alter chord state |
-| F7 | malformed numeric fields, delimiters, final byte, or extra fields | forward unchanged |
+| F7 | malformed numeric fields, empty fields outside Kitty's permitted shifted slot, delimiters, final byte, associated-text field, or extra fields | forward unchanged |
 | F8 | incomplete supported prefix split across reads then completed | buffer boundedly, then classify correctly |
 | F9 | incomplete or overlong prefix exceeding the cap | flush unchanged with linear work and bounded retained bytes |
 | F10 | Escape, arrows, function keys, paste delimiters, mouse/focus input | forward unchanged without waiting beyond the finite prefix decision |
 | F11 | non-default internal chord | preserve byte-exact matching; no enhanced aliases |
+| F12 | lone `ESC` or stalled supported prefix, including continuously readable provider output, spurious wakes, and empty waits | the owning source wait wakes at the 100 ms ambiguity deadline and flushes unchanged; unrelated activity neither resets nor starves it |
+| F13 | final continuation becomes ready exactly when the ambiguity deadline is due | serialized input owner feeds the ready bytes first; expiry applies only if the candidate remains incomplete |
+| F14 | one accepted detach atom followed by a stalled enhanced-key prefix | expiry forwards the first atom and stalled prefix exactly once and in order, then clears chord state |
 | P1 | POSIX real-PTY bridge receives an enhanced chord | returns `detached`, restores tty, and does not deliver chord bytes to child |
 | W1 | Windows attach-session bridge receives an enhanced chord | returns `detached`, runs existing cleanup, and does not deliver chord bytes to ConPTY |
 
@@ -420,7 +486,8 @@ does not corrupt sessions.
 ### One-way doors and cleanup
 
 There is no one-way door. Do not alter the `wired` schema, child process
-lifecycle, reset blast, or host lease ownership. Detach must still traverse the
+lifecycle, or host lease ownership. The reset blast changes only by the
+append-only `ESC[>4m` recorded in the Deviation Log. Detach must still traverse the
 existing cleanup path on both platforms.
 
 ### Post-rollout success signals
@@ -435,7 +502,11 @@ existing cleanup path on both platforms.
 ### Residual risk
 
 The plan covers the two enhanced encodings evidenced by current provider
-implementations. A future keyboard protocol with a different grammar will
+implementations. The `ESC` gate trusts that a terminal which ignores an
+enhanced-mode request also never sends enhanced keys; a terminal that ignores
+the request costs those users only the bounded Escape hold. With
+`modifyOtherKeys` active, bare Escape is still a legacy `ESC`, so Escape-then-key
+can still coalesce within 100 ms while that mode is on. A future keyboard protocol with a different grammar will
 still require explicit support. The bounded exact-forwarding rule makes that
 failure visible as the current behavior rather than guessing or swallowing
 input.
@@ -477,17 +548,51 @@ out-of-scope disposition below.
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [SUM-7.4] | Hold any `ESC` prefix up to 100 ms for the chord decision. | The hold is armed only while forwarded provider output leaves Kitty flags or `modifyOtherKeys` active; unarmed, `ESC` forwards immediately. | R-01: the unconditional hold delayed Escape and coalesced Escape-then-key into an Alt-key write in the default legacy mode, for every user. | Promoted into [SUM-7.4] in this change. |
+| [SUM-7.4] | A failed candidate forwards all held bytes. | An `ESC` that ends a failed candidate starts a new candidate. | R-02: `Esc` then an enhanced `Ctrl-\` within one read lost a chord atom. | Promoted into [SUM-7.4] in this change. |
+| [SUM-7.4] reset blast | Reset blast unchanged. | POSIX and Windows clear the bounded Kitty stack on the current screen, leave alternate mode, clear the main-screen stack, then reset `modifyOtherKeys`. | R-03: enhanced keyboard state is screen-specific and stack-based; leaving any push set makes the next attach's fresh tracker disagree with the physical terminal and can make the detach chord unreachable. | Promoted into [SUM-7.4] in this change. |
 
 ## Review Log
 
 | Date | Reviewer | Baseline / scope | Finding | Disposition |
 |------|----------|------------------|---------|-------------|
+| 2026-09-23 | Claude Opus 4.6, read-only plan review; exit 0, `success` / `end_turn`, `terminal_reason=completed`, `is_error=false`; PASS | `1f3b6c6`; this plan, exact proposed [SUM-7.4] delta, shared matcher, platform bridges, and named tests | F-01 (P3): xterm grammar was implicit in normative text. | Accepted: proposed text now names exact `CSI 27;<modifier>;92~` grammar. |
+| 2026-09-23 | same | same | F-02 (P3): “same key” release identity was undefined. | Accepted: proposed text now applies the same logical identity/modifier rules and event type 3. |
+| 2026-09-23 | same | same | F-03 (nit): no mixed legacy/enhanced atom row. | Accepted: D8 requires both mixed orders. |
+| 2026-09-23 | same | same | F-04 (P3): “complete encodings” could obscure necessary prefix buffering. | Accepted: proposed text explicitly permits only bounded prefix holding and distinguishes it from interception. |
+| 2026-09-23 | same | same | F-05 (nit): diagnosis/gate/coupling prose is partly repetitive. | Rejected: each occurrence serves a separate zero-context role (evidence, comprehension gate, invariant); no implementation scope results. |
+| 2026-09-23 | same | same | F-06 (P2): an `ESC` prefix could be buffered indefinitely without an expiry path. | Accepted: spec, invariants, tasks, and F12 now require a 100 ms owned deadline composed into each platform's existing source wait and driven deterministically in tests. |
+| 2026-09-23 | Claude Opus 4.6, read-only scoped round 2; exit 0, `success` / `end_turn`, `terminal_reason=completed`, `is_error=false`; PASS | Accepted findings F-01, F-02, F-03, F-04, and F-06 only | Verified every accepted fix, continuous-output starvation prevention, shared cross-platform expiry ownership, and deterministic testability; found no new defect. | Closed: PASS. F-05 was outside the round-2 scope as required. |
+| 2026-09-23 | Owner-supplied independent agent review | Plan after round 2, focused on live failure coverage | F-07 (P2): the prose named Kitty semantic fields but neither a finite colon-field grammar nor the alternate-key/event-type bytes Codex requests, so simpler tests could pass while the live failure remained. Modifier bit meanings were also implicit and xterm was incorrectly told to share Kitty's rule. | Accepted: proposed [SUM-7.4] now contains finite protocol-specific productions and modifier tables; D2/D3 require `CSI 92::92;5u` and `CSI 92::92;5:1u`; task 4 requires event variants. |
+| 2026-09-23 | Claude Opus 4.6, read-only deadline review; exit 0; PASS | Deadline/source-wait correction only | F-08 (P3): “expired prefix” could imply dropping the already-held first chord atom. | Accepted: normative text says all expired pending bytes, and F14 fires the mid-chord expiry path. |
+| 2026-09-23 | same | same | F-09 (P3): no explicit firing row covered expiry after one recognized atom. | Accepted: F14 requires exact ordered forwarding and chord-state reset. |
+| 2026-09-23 | Fresh-eyes scoped reviewer after different-family reviewers timed out; PASS | Corrected Kitty/xterm grammar, modifier arithmetic, and D2-D7/F3-F8 only | No P1/P2/P3/nit finding. Confirmed finite grammar, Codex alternate-key/event fixtures, Kitty accepted values `5,6,69,70,133,134,197,198`, xterm values `5,6`, and primary/shifted/base identity rules. | Closed: PASS. Fallback is disclosed because Claude and OS-sandboxed Grok produced no result before their review bounds. |
+| 2026-09-23 | Fresh-eyes completed-work reviewer; initial verdict BLOCKED | Full implementation diff and D1-D8/F1-F14/P1/W1 firing map | F-IMPL-01 (P2): Windows timed expiry without a final queue-readiness check, so a continuation published at the boundary could lose input priority. | Accepted: the timeout path now performs `get_nowait()` before expiry; a deterministic bridge test publishes the continuation on that recheck and proves detach with no forwarding. |
+| 2026-09-23 | same | same | F-IMPL-02 (P2): D2, F7, F9, F12, and F13 firing proofs were incomplete. | Accepted: both Kitty press forms split at every boundary; malformed grammar categories are enumerated; a 10,000-byte scan count proves bounded work; POSIX drives repeated provider-ready turns; Windows fires the deadline-boundary race. |
+| 2026-09-23 | same | same | F-IMPL-03 (P3): continuation bytes slid the ambiguity deadline, permitting retention beyond 100 ms. | Accepted: the deadline is fixed when the initial `ESC` arrives; code, spec, implementation note, plan, and slow-byte test agree. |
+| 2026-09-23 | Same reviewer, scoped round 2; PASS | F-IMPL-01 through F-IMPL-03 only | Confirmed both blockers and the P3 finding resolved; narrow matcher/bridge suite reported 60 passed and no new finding. | Closed: PASS. |
+| 2026-09-23 | Owner-requested review of uncommitted implementation (Claude Opus 5.5) | Uncommitted diff on `c0a4616` | R-01 (P2): every bare `ESC` was held up to 100 ms and then written together with the next byte, even with no enhanced mode active; probe showed `Esc`, then `j` 40 ms later, forwarded as one `b"\x1bj"` write. | Accepted: hold gated on a per-attach keyboard-mode tracker; see Deviation Log. |
+| 2026-09-23 | same | same | R-02 (P3): an `ESC` that ended a failed candidate was flushed instead of starting a new one. | Accepted: re-armed with its own deadline. |
+| 2026-09-23 | same | same | R-03 (P3, pre-existing, raised in importance by this plan): reset blast lacked `ESC[>4m`. | Accepted: appended on both platforms. Observation only: Kitty pop after `?1049l` targets the main-screen stack; left unchanged because reordering risks leaving a main-screen push active. |
+| 2026-09-23 | Codex independent final review | Final uncommitted implementation and R-01..R-03 follow-up | P2: POSIX popped Kitty only once after leaving alternate mode and Windows did not pop it, so nested or alternate-screen pushes could survive detach and make a later fresh tracker disagree with the physical terminal. P3: the POSIX bridge proof did not assert chord bytes stayed out of child input. | Accepted. Both reset blasts now clear the bounded active-screen stack, leave alternate modes, clear main, then reset `modifyOtherKeys`; tracker tests cover nested main/alternate pushes and Windows parity, and the real POSIX bridge asserts the child receives only ordinary input. Re-review PASS with no remaining finding. |
 
 ## Execution Log
 
 | Date | Slice | Evidence / result |
 |------|-------|-------------------|
-| 2026-09-23 | Diagnosis | Live Summon owner remained on raw `/dev/ttys004`; Codex and Grok received Control-Backslash after enabling enhanced input. `_DetachChordMatcher` accepts only `b"\x1c\x1c"`, while both platform attach loops share it and forward mismatches. Root cause fixed before plan drafting: child output negotiates host key encoding across the transparent bridge. |
+| 2026-09-23 | Diagnosis | Live Summon owner remained on raw `/dev/ttys004`; Codex and Grok received Control-Backslash after enabling enhanced input. `_DetachChordMatcher` accepts only `b"\x1c\x1c"`, while both platform attach loops share it and forward mismatches. Root cause established before plan drafting: child output negotiates host key encoding across the transparent bridge. |
+| 2026-09-23 | Plan review | Claude Opus 4.6 completed in 463 seconds with PASS and six non-blocking findings. F-01 through F-04 and F-06 were incorporated; F-05 was rejected with rationale in the Review Log. Local pre-review gates: plan-status index OK, 12 documentation-reference tests passed, 63-source/1410-claim doc-path check passed, and scoped `git diff --check` passed. |
+| 2026-09-23 | Scoped review round 2 | Claude Opus 4.6 completed in 216 seconds with PASS. It verified all five accepted fixes, including the every-turn expiry check under continuously readable provider output, and found no new defect. |
+| 2026-09-23 | Deadline ownership correction | Replaced poll-turn expiry wording with one matcher deadline composed into the existing POSIX `select()` and Windows input-queue waits. Ready input wins at an equal deadline; unrelated wakes cannot reset or starve it. Scoped Claude review passed and produced F-08/F-09, both incorporated. |
+| 2026-09-23 | Wire-grammar correction | Owner-supplied independent review found that semantic field names did not guarantee support for Codex's colon-form bytes. Added exact Kitty/xterm productions, protocol-specific modifier tables, live alternate-key/event fixtures, and rejection rows. Claude and Grok follow-up invocations timed out without output; disclosed fresh-eyes fallback returned PASS with no findings. |
+| 2026-09-23 | Spec promotion and red-green proof | Promoted [SUM-7.4] against `c0a4616e76e954e3f9fbea93fbf487c3ee660cbe`. The first matcher run failed 14 enhanced/deadline cases for the intended literal-only behavior; after implementation, the final focused matcher/platform selection passed 62 tests. |
+| 2026-09-23 | Implementation | `_DetachChordMatcher` recognizes the reviewed Kitty/xterm forms only for the default chord, retains original bytes, caps individual sequences and total pending bytes, and exposes one fixed monotonic deadline. POSIX `select()` and Windows chunk waits compose that deadline without a new scheduler. Real POSIX and Windows-session tests prove shared use. |
+| 2026-09-23 | Automated verification | Final gates: ordinary Summon suite `313 passed`; process-group Summon suite `340 passed, 9 skipped` for documented platform-only cases; mypy checked 49 files with no issues; Ruff check and format passed; 12 documentation-reference tests passed; doc paths passed for 63 sources/1414 claims; plan index, DOM-15 fixtures, and `git diff --check` passed. |
+| 2026-09-23 | Completed-work review | Initial review blocked on F-IMPL-01/F-IMPL-02 and raised F-IMPL-03. All were accepted and fixed. Scoped round 2 returned PASS with no new finding. |
+| 2026-09-23 | R-01..R-03 follow-up | Red first: the new and updated matcher, tracker, POSIX-wiring, and Windows tests failed on the missing `observe_output`/tracker, the immediate-`ESC` expectation, and the absent `ESC[>4m`. Green: `_KeyboardProtocolTracker` fed before each host write on both platforms; `_flush_failed_candidate` re-arms a terminating `ESC`; both resets append `ESC[>4m`. Real-PTY test now covers Kitty and `modifyOtherKeys` splits after the fake provider requests each mode. Full `extensions/taut_summon/tests` run: pytest exit 0 with only platform-only skips. Mypy under the release-gate invocation: summon 49 files and root 150 files, no issues. Ruff check and format passed. Plan index, `check-doc-paths` (63 sources/1414 claims), 12 documentation-reference tests, and `git diff --check` passed. |
+| 2026-09-23 | Symmetric keyboard reset follow-up | Independent review found the reset did not retire nested, screen-specific Kitty state. Red: tracker models retained enhanced state under the old ordering. Green: shared bounded pop before alternate-screen exit and again on main, followed by xterm reset, passes on POSIX and Windows constants; real POSIX child input remains chord-free. Full Summon gates passed 313 non-group tests and 381 grouped tests with 7 platform-only skips. Scoped re-review PASS. |
+| 2026-09-23 | Manual acceptance | Not run: this non-interactive implementation environment cannot generate a physical terminal's post-negotiation Control-Backslash event. The real PTY, deterministic protocol, and both platform bridge seams are covered; one live Kitty-capable terminal observation remains the explicit residual gate. |
+| 2026-09-23 | 0.9.9 release disposition | The owner explicitly requested the coordinated release after the automated and independent-review gates. Proceed with the physical-terminal observation still recorded as residual risk; do not rewrite it as completed evidence. |
 
 ## Completion Gate
 

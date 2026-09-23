@@ -203,23 +203,33 @@ class PosixPtyHandle:
                 if shutdown.is_set():
                     result = "shutdown"
                     break
-                ready, _, _ = select.select([input_fd, self._master_fd], [], [], 0.1)
+                ambiguity_wait = matcher.seconds_until_deadline()
+                wait_timeout = (
+                    0.1 if ambiguity_wait is None else min(0.1, ambiguity_wait)
+                )
+                ready, _, _ = select.select(
+                    [input_fd, self._master_fd], [], [], wait_timeout
+                )
                 if self._master_fd in ready:
                     try:
                         data = os.read(self._master_fd, 4096)
                     except BlockingIOError:
-                        continue
+                        data = None
                     except OSError:
                         result = "eof"
                         break
-                    if not data:
+                    if data == b"":
                         result = "eof"
                         break
-                    replies = self._terminal.observe_output(data, answer_queries=False)
-                    for reply in replies:
-                        self._write_best_effort(reply)
-                    self._settle_wake.set()
-                    os.write(output_fd, data)
+                    if data is not None:
+                        replies = self._terminal.observe_output(
+                            data, answer_queries=False
+                        )
+                        for reply in replies:
+                            self._write_best_effort(reply)
+                        self._settle_wake.set()
+                        matcher.observe_output(data)
+                        os.write(output_fd, data)
                 if input_fd in ready:
                     data = os.read(input_fd, 4096)
                     if not data:
@@ -231,6 +241,9 @@ class PosixPtyHandle:
                     if detached:
                         result = "detached"
                         break
+                expired = matcher.expire()
+                if expired:
+                    self._write_all(expired)
                 if self._domain.observe_leader_exit() is not None:
                     result = "eof"
                     break

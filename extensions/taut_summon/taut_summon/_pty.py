@@ -14,7 +14,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from taut_summon._adapter import AdapterError, AdapterHandle
@@ -29,6 +29,15 @@ _DEFAULT_ROWS = 24
 _DEFAULT_COLS = 80
 _OUTPUT_ACTIVITY_WINDOW_SECONDS = 10.0
 _DEFAULT_DETACH_CHORD = b"\x1c\x1c"
+_DETACH_SEQUENCE_LIMIT = 64
+_DETACH_PENDING_LIMIT = 256
+_DETACH_AMBIGUITY_SECONDS = 0.1
+# Per-screen Kitty flag-stack depth; deeper pushes evict the oldest entry as
+# terminals do. Deliberately no shallower than real terminals' stacks, so a
+# depth mismatch can only leave the model believing enhanced keys are on.
+_KEYBOARD_STACK_LIMIT = 256
+_KITTY_DETACH_MODIFIERS = frozenset({5, 6, 69, 70, 133, 134, 197, 198})
+_XTERM_DETACH_MODIFIERS = frozenset({5, 6})
 _OUTPUT_TAIL_RAW_CAP = 4096
 _OUTPUT_TAIL_TEXT_CAP = 1024
 # Complete terminal sequences, removed with their parameter/string bodies so
@@ -54,16 +63,19 @@ _TERMINAL_SEQUENCE = re.compile(
     rb"|\x1b[ -/]*\Z"  # dangling ESC form at buffer end
 )
 _TERMINAL_RESPONSE_BUFFER_LIMIT = 4096
+_KITTY_KEYBOARD_RESET = ESC + b"[<" + str(_KEYBOARD_STACK_LIMIT).encode() + b"u"
 _TTY_RESET = (
     b"\x18"
     + ST
+    + _KITTY_KEYBOARD_RESET
     + b"\x1b[?1049l\x1b[?47l\x1b[?1047l"
+    + _KITTY_KEYBOARD_RESET
     + b"\x1b[?25h\x1b[r\x1b[0m\x1b[?7h\x1b[?2026l\x1b[?1007l"
     + b"\x1b[?1l\x1b>"
     + b"\x1b[?1004l"
     + b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l"
     + b"\x1b[?1006l\x1b[?1015l"
-    + b"\x1b[?2004l\x1b[<u"
+    + b"\x1b[?2004l\x1b[>4m"
 )
 
 
@@ -174,7 +186,10 @@ class _TerminalInputModeTracker:
 
     def feed(self, data: bytes) -> None:
         self._buffer += data
-        while (sequence := self._take_csi()) is not None:
+        while True:
+            sequence, self._buffer = _take_csi(self._buffer)
+            if sequence is None:
+                return
             body = sequence[2:-1]
             final = sequence[-1:]
             if b"?2004" not in body:
@@ -185,34 +200,112 @@ class _TerminalInputModeTracker:
             elif final == b"l":
                 self.bracketed_paste = False
 
-    def _take_csi(self) -> bytes | None:
-        while True:
-            start = self._buffer.find(ESC)
-            if start < 0:
-                self._buffer = b""
-                return None
-            if start > 0:
-                self._buffer = self._buffer[start:]
-            if len(self._buffer) < 2:
-                return None
-            if self._buffer[1:2] != b"[":
-                self._buffer = self._buffer[2:]
-                continue
-            final_index = next(
-                (
-                    index
-                    for index in range(2, len(self._buffer))
-                    if 0x40 <= self._buffer[index] <= 0x7E
-                ),
-                None,
+
+class _KeyboardProtocolTracker:
+    """Model whether the physical terminal may send enhanced key encodings.
+
+    Fed only with provider output that one attach session forwards to the
+    physical terminal, before it is written, so a key encoded under a new mode
+    can never reach the detach matcher ahead of that mode's request. Kitty
+    keeps an independent flag stack per screen; ``modifyOtherKeys`` is global.
+    Uncertainty biases toward enhanced: a stale "on" costs only the bounded
+    Escape hold, while a stale "off" would make the detach chord unreachable.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._buffer = b""
+        self._alternate = False
+        # Index 0 is the flags in effect when the screen's stack is empty.
+        self._kitty: dict[bool, list[int]] = {False: [0], True: [0]}
+        self._modify_other_keys = 0
+
+    @property
+    def enhanced(self) -> bool:
+        with self._lock:
+            return (
+                self._modify_other_keys > 0
+                or self._kitty[False][-1] != 0
+                or self._kitty[True][-1] != 0
             )
-            if final_index is None:
-                if len(self._buffer) > _TERMINAL_RESPONSE_BUFFER_LIMIT:
-                    self._buffer = self._buffer[-_TERMINAL_RESPONSE_BUFFER_LIMIT:]
-                return None
-            sequence = self._buffer[: final_index + 1]
-            self._buffer = self._buffer[final_index + 1 :]
-            return sequence
+
+    def feed(self, data: bytes) -> None:
+        with self._lock:
+            self._buffer += data
+            while True:
+                sequence, self._buffer = _take_csi(self._buffer)
+                if sequence is None:
+                    return
+                self._apply(sequence[2:-1], sequence[-1:])
+
+    def _apply(self, body: bytes, final: bytes) -> None:
+        if final == b"u" and body[:1] in (b">", b"<", b"="):
+            self._apply_kitty(body[:1], _csi_numbers(body[1:]))
+        elif final in (b"h", b"l") and body.startswith(b"?"):
+            if {b"47", b"1047", b"1049"} & set(body[1:].split(b";")):
+                self._alternate = final == b"h"
+        elif final in (b"m", b"n") and body.startswith(b">"):
+            fields = _csi_numbers(body[1:])
+            if fields[:1] == [4]:
+                level = fields[1] if final == b"m" and len(fields) > 1 else 0
+                self._modify_other_keys = level
+
+    def _apply_kitty(self, kind: bytes, fields: list[int]) -> None:
+        stack = self._kitty[self._alternate]
+        if kind == b">":
+            stack.append(fields[0] if fields else 0)
+            if len(stack) > _KEYBOARD_STACK_LIMIT + 1:
+                del stack[1]
+        elif kind == b"<":
+            count = fields[0] if fields and fields[0] > 0 else 1
+            if count >= len(stack) - 1:
+                stack[:] = [0]
+            else:
+                del stack[-count:]
+        else:
+            flags = fields[0] if fields else 0
+            mode = fields[1] if len(fields) > 1 else 1
+            if mode == 2:
+                flags |= stack[-1]
+            elif mode == 3:
+                flags = stack[-1] & ~flags
+            stack[-1] = flags
+
+
+def _csi_numbers(parameters: bytes) -> list[int]:
+    """Parse ``;``-separated decimal CSI parameters; empty means zero."""
+
+    numbers: list[int] = []
+    for field in parameters.split(b";"):
+        if field and not field.isdigit():
+            break
+        numbers.append(int(field) if field else 0)
+    return numbers
+
+
+def _take_csi(buffer: bytes) -> tuple[bytes | None, bytes]:
+    """Return the next complete CSI sequence and the unconsumed remainder."""
+
+    while True:
+        start = buffer.find(ESC)
+        if start < 0:
+            return None, b""
+        if start > 0:
+            buffer = buffer[start:]
+        if len(buffer) < 2:
+            return None, buffer
+        if buffer[1:2] != b"[":
+            buffer = buffer[2:]
+            continue
+        final_index = next(
+            (index for index in range(2, len(buffer)) if 0x40 <= buffer[index] <= 0x7E),
+            None,
+        )
+        if final_index is None:
+            if len(buffer) > _TERMINAL_RESPONSE_BUFFER_LIMIT:
+                buffer = buffer[-_TERMINAL_RESPONSE_BUFFER_LIMIT:]
+            return None, buffer
+        return buffer[: final_index + 1], buffer[final_index + 1 :]
 
 
 class _TerminalState:
@@ -613,13 +706,124 @@ def _sanitize_for_pty(text: str) -> str:
 
 
 class _DetachChordMatcher:
-    def __init__(self, chord: bytes) -> None:
+    def __init__(
+        self,
+        chord: bytes,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         if not chord or chord.startswith(ESC):
             raise AdapterError("detach chord must be non-empty and must not start ESC")
         self._chord = chord
         self._buffer = b""
+        self._semantic = chord == _DEFAULT_DETACH_CHORD
+        self._keyboard = _KeyboardProtocolTracker()
+        self._clock = clock
+        self._sequence_start: int | None = None
+        self._atom_count = 0
+        self._pending_deadline: float | None = None
+
+    @property
+    def pending_deadline(self) -> float | None:
+        return self._pending_deadline
+
+    def observe_output(self, data: bytes) -> None:
+        """Record provider output about to reach this attach's physical terminal."""
+
+        if self._semantic:
+            self._keyboard.feed(data)
+
+    def seconds_until_deadline(self, *, now: float | None = None) -> float | None:
+        deadline = self._pending_deadline
+        if deadline is None:
+            return None
+        current = self._clock() if now is None else now
+        return max(0.0, deadline - current)
+
+    def expire(self, *, now: float | None = None) -> bytes:
+        deadline = self._pending_deadline
+        if deadline is None:
+            return b""
+        current = self._clock() if now is None else now
+        if current < deadline:
+            return b""
+        pending = self._buffer
+        self._reset()
+        return pending
 
     def feed(self, data: bytes) -> tuple[bytes, bool]:
+        if not self._semantic:
+            return self._feed_literal(data)
+
+        out = bytearray()
+        for byte in data:
+            if self._sequence_start is not None:
+                if self._feed_sequence_byte(byte, out):
+                    return bytes(out), True
+                continue
+            if self._feed_plain_byte(byte, out):
+                return bytes(out), True
+        return bytes(out), False
+
+    def _feed_sequence_byte(self, byte: int, out: bytearray) -> bool:
+        assert self._sequence_start is not None
+        self._buffer += bytes([byte])
+        sequence = self._buffer[self._sequence_start :]
+        if (
+            len(sequence) > _DETACH_SEQUENCE_LIMIT
+            or len(self._buffer) > _DETACH_PENDING_LIMIT
+        ):
+            self._flush_failed_candidate(out)
+            return False
+        classification = self._classify_sequence(sequence)
+        if classification == "prefix":
+            return False
+        self._sequence_start = None
+        self._pending_deadline = None
+        if classification == "atom":
+            self._atom_count += 1
+            if self._atom_count == 2:
+                self._reset()
+                return True
+            return False
+        if classification == "release" and self._atom_count == 1:
+            return False
+        self._flush_failed_candidate(out)
+        return False
+
+    def _flush_failed_candidate(self, out: bytearray) -> None:
+        # An ESC that ends a failed candidate may itself begin the next key.
+        pending = self._buffer
+        self._reset()
+        if len(pending) > 1 and pending.endswith(ESC) and self._keyboard.enhanced:
+            out.extend(pending[:-1])
+            self._start_escape()
+        else:
+            out.extend(pending)
+
+    def _start_escape(self) -> None:
+        self._sequence_start = len(self._buffer)
+        self._buffer += ESC
+        self._pending_deadline = self._clock() + _DETACH_AMBIGUITY_SECONDS
+
+    def _feed_plain_byte(self, byte: int, out: bytearray) -> bool:
+        if byte == 0x1C:
+            self._buffer += bytes([byte])
+            self._atom_count += 1
+            if self._atom_count == 2:
+                self._reset()
+                return True
+            return False
+        if byte == ESC[0] and self._keyboard.enhanced:
+            self._start_escape()
+            return False
+        if self._buffer:
+            out.extend(self._buffer)
+            self._reset()
+        out.append(byte)
+        return False
+
+    def _feed_literal(self, data: bytes) -> tuple[bytes, bool]:
         out = bytearray()
         for byte in data:
             candidate = self._buffer + bytes([byte])
@@ -634,3 +838,87 @@ class _DetachChordMatcher:
                 self._buffer = b""
             out.append(byte)
         return bytes(out), False
+
+    def _reset(self) -> None:
+        self._buffer = b""
+        self._sequence_start = None
+        self._atom_count = 0
+        self._pending_deadline = None
+
+    def _classify_sequence(self, sequence: bytes) -> str:
+        if sequence == ESC or sequence == ESC + b"[":
+            return "prefix"
+        if not sequence.startswith(ESC + b"["):
+            return "other"
+        last = sequence[-1]
+        if last in (ord("u"), ord("~")):
+            return self._classify_complete_sequence(sequence)
+        if 0x40 <= last <= 0x7E:
+            return "other"
+        if last not in b"0123456789:;":
+            return "other"
+        return "prefix"
+
+    def _classify_complete_sequence(self, sequence: bytes) -> str:
+        if sequence.endswith(b"u"):
+            return self._classify_kitty(sequence[2:-1])
+        if sequence.endswith(b"~"):
+            fields = sequence[2:-1].split(b";")
+            if (
+                len(fields) == 3
+                and fields[0] == b"27"
+                and fields[1].isdigit()
+                and fields[2] == b"92"
+                and int(fields[1]) in _XTERM_DETACH_MODIFIERS
+            ):
+                return "atom"
+        return "other"
+
+    def _classify_kitty(self, body: bytes) -> str:
+        fields = body.split(b";")
+        if len(fields) != 2:
+            return "other"
+        key_parts = self._parse_kitty_keys(fields[0])
+        modifier_parts = self._parse_kitty_modifiers(fields[1])
+        if key_parts is None or modifier_parts is None:
+            return "other"
+        modifier = int(modifier_parts[0])
+        shifted = key_parts[1] if len(key_parts) >= 2 else b""
+        if shifted and not ((modifier - 1) & 1):
+            return "other"
+        primary_identity = int(key_parts[0]) == 92
+        shifted_identity = bool(shifted) and int(shifted) == 92
+        if not (primary_identity or shifted_identity):
+            return "other"
+
+        event = 1 if len(modifier_parts) == 1 else int(modifier_parts[1])
+        if event in (1, 2):
+            return "atom"
+        if event == 3:
+            return "release"
+        return "other"
+
+    @staticmethod
+    def _parse_kitty_keys(key_field: bytes) -> list[bytes] | None:
+        key_parts = key_field.split(b":")
+        if not 1 <= len(key_parts) <= 3 or not key_parts[0].isdigit():
+            return None
+        if len(key_parts) == 2 and not key_parts[1].isdigit():
+            return None
+        if len(key_parts) == 3 and (
+            (key_parts[1] and not key_parts[1].isdigit()) or not key_parts[2].isdigit()
+        ):
+            return None
+        return key_parts
+
+    @staticmethod
+    def _parse_kitty_modifiers(modifier_field: bytes) -> list[bytes] | None:
+        modifier_parts = modifier_field.split(b":")
+        if not 1 <= len(modifier_parts) <= 2 or not all(
+            part.isdigit() for part in modifier_parts
+        ):
+            return None
+        modifier = int(modifier_parts[0])
+        if modifier not in _KITTY_DETACH_MODIFIERS:
+            return None
+        return modifier_parts

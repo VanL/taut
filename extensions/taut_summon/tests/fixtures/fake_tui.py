@@ -200,6 +200,18 @@ def _record_paths_from_env() -> list[Path]:
     return record_paths
 
 
+def _write_startup_modes(config: dict[str, object]) -> None:
+    if config.get("modes", True):
+        _write(
+            b"\x1b[?1049h\x1b[?25l\x1b[31m\x1b[?7l\x1b[?2026h"
+            b"\x1b[?1007h\x1b[?1h\x1b=\x1b[?1004h"
+            b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1005h"
+            b"\x1b[?1006h\x1b[?1015h\x1b[?2004h\x1b[>1u"
+        )
+    if keyboard := config.get("keyboard"):
+        _write(str(keyboard).encode("latin1"))
+
+
 def _run_startup(config: dict[str, object], record_paths: list[Path]) -> None:
     rows = int(os.environ.get("TAUT_FAKE_TUI_ROWS", "24"))
     cols = int(os.environ.get("TAUT_FAKE_TUI_COLS", "80"))
@@ -218,13 +230,7 @@ def _run_startup(config: dict[str, object], record_paths: list[Path]) -> None:
         env_token=os.environ.get("TAUT_TOKEN"),
     )
 
-    if config.get("modes", True):
-        _write(
-            b"\x1b[?1049h\x1b[?25l\x1b[31m\x1b[?7l\x1b[?2026h"
-            b"\x1b[?1007h\x1b[?1h\x1b=\x1b[?1004h"
-            b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1005h"
-            b"\x1b[?1006h\x1b[?1015h\x1b[?2004h\x1b[>1u"
-        )
+    _write_startup_modes(config)
     if config.get("queries", True):
         _run_queries(record_paths, rows, cols)
     if unknown := config.get("unknown_query"):

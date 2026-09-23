@@ -22,6 +22,7 @@ from taut_summon._adapter import (
     AdapterWriteCancelled,
     ExitEvent,
 )
+from taut_summon._pty import _KITTY_KEYBOARD_RESET
 from taut_summon._win32_io import (
     COORD,
     CREATE_SUSPENDED,
@@ -56,7 +57,12 @@ _ACTIVITY_SECONDS = 10.0
 _CLOSE_TIMEOUT_S = 10.0
 _CANCEL_RECONCILE_S = 0.01
 _GRACEFUL_TIMEOUT_S = 5.0
-_DETACH_RESET = b"\x1b[?1049l\x1b[?25h\x1b[0m\x1b[?2004l"
+_DETACH_RESET = (
+    _KITTY_KEYBOARD_RESET
+    + b"\x1b[?1049l\x1b[?47l\x1b[?1047l"
+    + _KITTY_KEYBOARD_RESET
+    + b"\x1b[?25h\x1b[0m\x1b[?2004l\x1b[>4m"
+)
 logger = logging.getLogger("taut_summon.pty_windows")
 
 
@@ -88,6 +94,12 @@ class TerminalIntegration(Protocol):
 
 class DetachMatcher(Protocol):
     def feed(self, data: bytes) -> tuple[bytes, bool]: ...
+
+    def seconds_until_deadline(self, *, now: float | None = None) -> float | None: ...
+
+    def expire(self, *, now: float | None = None) -> bytes: ...
+
+    def observe_output(self, data: bytes) -> None: ...
 
 
 # Every cleanup net in this module catches this tuple. ``AdapterError`` is a
@@ -354,10 +366,17 @@ class _TerminalReplyWriter:
 class _AttachSink:
     """One generation-owned attach output writer."""
 
-    def __init__(self, api: NativeApi, handle: int, generation: int) -> None:
+    def __init__(
+        self,
+        api: NativeApi,
+        handle: int,
+        generation: int,
+        observe: Callable[[bytes], None],
+    ) -> None:
         self._api = api
         self._handle = handle
         self.generation = generation
+        self._observe = observe
         self._items: queue.Queue[tuple[int, bytes] | None] = queue.Queue()
         self._retired = False
         self._active_thread: int | None = None
@@ -380,6 +399,9 @@ class _AttachSink:
 
     def enqueue(self, generation: int, data: bytes) -> None:
         if not self._retired and generation == self.generation:
+            # Observed before the write is queued, so the detach matcher knows
+            # a keyboard-mode request before the terminal can act on it.
+            self._observe(data)
             self._items.put((generation, data))
 
     def retire(self, *, close_handle: bool = True) -> None:
@@ -603,7 +625,12 @@ class _AttachSession:
         self.owner._attach_generation += 1
         self.generation = self.owner._attach_generation
         assert self.output_handle is not None
-        self.sink = _AttachSink(self.api, self.output_handle, self.generation)
+        self.sink = _AttachSink(
+            self.api,
+            self.output_handle,
+            self.generation,
+            self.matcher.observe_output,
+        )
         self.sink.start()
         self.owner._drain.route(self.generation, self.sink)
         self.routed = True
@@ -640,12 +667,18 @@ class _AttachSession:
         while True:
             if self.shutdown.is_set():
                 return "shutdown"
+            ambiguity_wait = self.matcher.seconds_until_deadline()
+            wait_timeout = 0.05 if ambiguity_wait is None else min(0.05, ambiguity_wait)
             try:
-                item = self.chunks.get(timeout=0.05)
+                item = self.chunks.get(timeout=wait_timeout)
             except queue.Empty:
                 if self.owner._exit_ready.is_set():
                     return "eof"
-                continue
+                try:
+                    item = self.chunks.get_nowait()
+                except queue.Empty:
+                    self._forward_expired_input()
+                    continue
             if isinstance(item, Exception):
                 raise AdapterError(f"attach input failed: {item}") from item
             if item is None or item == b"":
@@ -655,6 +688,12 @@ class _AttachSession:
                 self.owner._writer.write(forward)
             if detached:
                 return "detached"
+            self._forward_expired_input()
+
+    def _forward_expired_input(self) -> None:
+        expired = self.matcher.expire()
+        if expired:
+            self.owner._writer.write(expired)
 
     def _cleanup(self) -> None:
         self.done.set()

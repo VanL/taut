@@ -71,6 +71,403 @@ pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
 posix_only = pytest.mark.posix_only
 
 
+class _MatcherClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _feed_matcher(matcher: Any, chunks: tuple[bytes, ...]) -> tuple[bytes, bool]:
+    forwarded = bytearray()
+    for chunk in chunks:
+        data, detached = matcher.feed(chunk)
+        forwarded.extend(data)
+        if detached:
+            return bytes(forwarded), True
+    return bytes(forwarded), False
+
+
+_KITTY_PUSH = b"\x1b[>1u"
+
+
+def _semantic_matcher(clock: Any = None) -> Any:
+    """A default-chord matcher whose attach output enabled Kitty keys."""
+
+    if clock is None:
+        matcher = _pty_module._DetachChordMatcher(b"\x1c\x1c")
+    else:
+        matcher = _pty_module._DetachChordMatcher(b"\x1c\x1c", clock=clock)
+    matcher.observe_output(_KITTY_PUSH)
+    return matcher
+
+
+@pytest.mark.parametrize(
+    ("case", "atoms"),
+    [
+        ("D1-legacy", (b"\x1c", b"\x1c")),
+        ("D2-kitty-alternate", (b"\x1b[92::92;5u",) * 2),
+        ("D3-kitty-press", (b"\x1b[92::92;5:1u",) * 2),
+        ("D3-kitty-caps", (b"\x1b[92::92;69:1u",) * 2),
+        ("D3-kitty-shift-caps", (b"\x1b[92:124:92;70:1u",) * 2),
+        ("D3-kitty-num", (b"\x1b[92::92;133:1u",) * 2),
+        ("D3-kitty-shift-num", (b"\x1b[92:124:92;134:1u",) * 2),
+        ("D3-kitty-both-locks", (b"\x1b[92::92;197:1u",) * 2),
+        ("D3-kitty-shift-both-locks", (b"\x1b[92:124:92;198:1u",) * 2),
+        ("D4-kitty-repeat", (b"\x1b[92::92;5:1u", b"\x1b[92::92;5:2u")),
+        ("D6-shifted-identity", (b"\x1b[124:92;6u",) * 2),
+        ("D7-xterm", (b"\x1b[27;5;92~",) * 2),
+        ("D8-legacy-kitty", (b"\x1c", b"\x1b[92::92;5u")),
+        ("D8-xterm-legacy", (b"\x1b[27;6;92~", b"\x1c")),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_detach_matcher_accepts_semantic_atoms(
+    case: str, atoms: tuple[bytes, ...]
+) -> None:
+    del case
+    matcher = _semantic_matcher()
+
+    assert _feed_matcher(matcher, atoms) == (b"", True)
+
+
+@pytest.mark.parametrize(
+    "atom",
+    (b"\x1b[92::92;5u", b"\x1b[92::92;5:1u"),
+    ids=("D2-no-event", "D3-explicit-press"),
+)
+def test_detach_matcher_accepts_every_split_of_alternate_key_form(
+    atom: bytes,
+) -> None:
+    for split in range(1, len(atom)):
+        matcher = _semantic_matcher()
+        chunks = (atom[:split], atom[split:], atom)
+        assert _feed_matcher(matcher, chunks) == (b"", True), split
+
+
+def test_detach_matcher_holds_same_key_release_between_atoms() -> None:
+    press = b"\x1b[92::92;5:1u"
+    release = b"\x1b[92::92;5:3u"
+    matcher = _semantic_matcher()
+
+    assert _feed_matcher(matcher, (press, release, press)) == (b"", True)
+
+
+def test_detach_matcher_forwards_release_that_does_not_follow_an_atom() -> None:
+    release = b"\x1b[92::92;5:3u"
+    matcher = _semantic_matcher()
+
+    assert matcher.feed(release) == (release, False)
+    assert matcher.feed(b"\x1c\x1c") == (b"", True)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\x1b[97;5u",  # F3 unrelated key
+        b"\x1b[27;5;97~",  # F3 unrelated xterm key
+        b"\x1b[97::92;5u",  # F4 base-layout identity alone
+        b"\x1b[92::92;1u",  # F5 missing Control
+        b"\x1b[92::92;7u",  # F5 Kitty Alt
+        b"\x1b[92::92;13u",  # F5 Kitty Super
+        b"\x1b[92::92;21u",  # F5 Kitty Hyper
+        b"\x1b[92::92;37u",  # F5 Kitty Meta
+        b"\x1b[92::92;261u",  # F5 Kitty unknown bit
+        b"\x1b[92:124:92;5u",  # F5 shifted field without Shift
+        b"\x1b[27;7;92~",  # F5 xterm Alt
+        b"\x1b[27;13;92~",  # F5 xterm Meta
+        b"\x1b[27;69;92~",  # F5 xterm lock/unknown bit
+        b"\x1b[92::92;5:4u",  # F6 unknown event
+        b"\x1b[;5u",  # F7 missing primary
+        b"\x1b[92:;5u",  # F7 empty shifted without base
+        b"\x1b[92::;5u",  # F7 empty base
+        b"\x1b[9a::92;5u",  # F7 nondigit numeric field
+        b"\x1b[92,92;5u",  # F7 invalid delimiter
+        b"\x1b[92::92;5z",  # F7 wrong final byte
+        b"\x1b[92:::92;5u",  # F7 extra key subfield
+        b"\x1b[92::92;5:1:2u",  # F7 extra modifier subfield
+        b"\x1b[92::92;5:1;92u",  # F7 associated text
+        b"\x1b[A",  # F10 arrow
+        b"\x1b[15~",  # F10 function key
+        b"\x1b[200~",  # F10 paste delimiter
+        b"\x1b[<0;1;1M",  # F10 mouse report
+        b"\x1b[I",  # F10 focus report
+    ],
+)
+def test_detach_matcher_forwards_non_detach_sequences_exactly(payload: bytes) -> None:
+    matcher = _semantic_matcher()
+
+    assert matcher.feed(payload) == (payload, False)
+
+
+def test_detach_matcher_failed_candidate_forwards_exact_order() -> None:
+    press = b"\x1b[92::92;5:1u"
+    release = b"\x1b[92::92;5:3u"
+    matcher = _semantic_matcher()
+
+    assert matcher.feed(press + release) == (b"", False)
+    assert matcher.feed(b"x") == (press + release + b"x", False)
+
+
+def test_detach_matcher_first_atom_then_text_forwards_both() -> None:
+    matcher = _semantic_matcher()
+
+    assert matcher.feed(b"\x1cx") == (b"\x1cx", False)
+
+
+def test_detach_matcher_non_default_chord_has_no_protocol_aliases() -> None:
+    matcher = _pty_module._DetachChordMatcher(b"xx")
+    enhanced = b"\x1b[92::92;5:1u" * 2
+
+    assert matcher.feed(enhanced) == (enhanced, False)
+    assert matcher.feed(b"xx") == (b"", True)
+
+
+def test_detach_matcher_expiry_flushes_mid_chord_pending_bytes() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+    prefix = b"\x1b[92::"
+
+    assert matcher.feed(b"\x1c" + prefix) == (b"", False)
+    deadline = matcher.pending_deadline
+    assert deadline is not None
+    assert deadline == pytest.approx(100.1)
+    clock.now = deadline
+    assert matcher.expire() == b"\x1c" + prefix
+    assert matcher.feed(b"\x1c\x1c") == (b"", True)
+
+
+def test_detach_matcher_lone_escape_deadline_survives_unrelated_checks() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+
+    assert matcher.feed(b"\x1b") == (b"", False)
+    deadline = matcher.pending_deadline
+    assert deadline == pytest.approx(100.1)
+    clock.now = 100.04
+    assert matcher.seconds_until_deadline() == pytest.approx(0.06)
+    assert matcher.expire() == b""
+    assert matcher.pending_deadline == deadline
+    clock.now = 100.1
+    assert matcher.expire() == b"\x1b"
+    assert matcher.pending_deadline is None
+
+
+def test_detach_matcher_prefix_deadline_does_not_slide_with_slow_bytes() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+
+    assert matcher.feed(b"\x1b") == (b"", False)
+    deadline = matcher.pending_deadline
+    for byte in b"[92::":
+        clock.now += 0.01
+        assert matcher.feed(bytes([byte])) == (b"", False)
+        assert matcher.pending_deadline == deadline
+
+
+def test_detach_matcher_ready_input_wins_at_expiry_boundary() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+    atom = b"\x1b[92::92;5:1u"
+
+    assert matcher.feed(atom[:-1]) == (b"", False)
+    clock.now = cast(float, matcher.pending_deadline)
+    assert matcher.feed(atom[-1:] + atom) == (b"", True)
+
+
+def test_detach_matcher_overlong_prefix_is_bounded_and_forwarded() -> None:
+    matcher = _semantic_matcher()
+    payload = b"\x1b[" + (b"9" * 128)
+
+    forwarded, detached = matcher.feed(payload)
+
+    assert detached is False
+    assert forwarded == payload
+    assert matcher.pending_deadline is None
+
+
+def test_detach_matcher_overlong_input_scans_each_bounded_candidate_once() -> None:
+    class CountingMatcher(_pty_module._DetachChordMatcher):
+        classifications = 0
+
+        def _classify_sequence(self, sequence: bytes) -> str:
+            self.classifications += 1
+            return super()._classify_sequence(sequence)
+
+    matcher = CountingMatcher(b"\x1c\x1c")
+    matcher.observe_output(_KITTY_PUSH)
+    payload = b"\x1b[" + (b"9" * 10_000)
+
+    assert matcher.feed(payload) == (payload, False)
+    assert matcher.classifications <= _pty_module._DETACH_SEQUENCE_LIMIT
+
+
+def test_detach_matcher_repeated_releases_cannot_grow_pending_bytes_unbounded() -> None:
+    press = b"\x1b[92::92;5:1u"
+    release = b"\x1b[92::92;5:3u"
+    payload = press + (release * 32)
+    matcher = _semantic_matcher()
+
+    forwarded, detached = matcher.feed(payload)
+
+    assert detached is False
+    assert forwarded
+    assert payload.startswith(forwarded)
+    assert len(payload) - len(forwarded) <= _pty_module._DETACH_PENDING_LIMIT
+
+
+def test_detach_matcher_forwards_escape_immediately_in_legacy_keyboard_mode() -> None:
+    matcher = _pty_module._DetachChordMatcher(b"\x1c\x1c")
+
+    assert matcher.feed(b"\x1b") == (b"\x1b", False)
+    assert matcher.pending_deadline is None
+    assert matcher.feed(b"j") == (b"j", False)
+    assert matcher.feed(b"\x1c") == (b"", False)
+    assert matcher.feed(b"\x1b") == (b"\x1c\x1b", False)
+    assert matcher.pending_deadline is None
+
+
+def test_detach_matcher_legacy_mode_forwards_enhanced_bytes_unchanged() -> None:
+    matcher = _pty_module._DetachChordMatcher(b"\x1c\x1c")
+    enhanced = b"\x1b[92::92;5:1u" * 2
+
+    assert matcher.feed(enhanced) == (enhanced, False)
+    assert matcher.feed(b"\x1c\x1c") == (b"", True)
+
+
+@pytest.mark.parametrize(
+    ("enable", "disable"),
+    [
+        (b"\x1b[>1u", b"\x1b[<u"),
+        (b"\x1b[>8u", b"\x1b[<1u"),
+        (b"\x1b[=1u", b"\x1b[=0u"),
+        (b"\x1b[=1;1u", b"\x1b[=1;3u"),
+        (b"\x1b[>4;2m", b"\x1b[>4m"),
+        (b"\x1b[>4;1m", b"\x1b[>4;0m"),
+        (b"\x1b[>4;2m", b"\x1b[>4n"),
+    ],
+)
+def test_detach_matcher_holds_escape_only_while_enhanced_keys_are_enabled(
+    enable: bytes, disable: bytes
+) -> None:
+    clock = _MatcherClock()
+    matcher = _pty_module._DetachChordMatcher(b"\x1c\x1c", clock=clock)
+
+    matcher.observe_output(b"text" + enable + b"more")
+    assert matcher.feed(b"\x1b") == (b"", False)
+    clock.now = cast(float, matcher.pending_deadline)
+    assert matcher.expire() == b"\x1b"
+    matcher.observe_output(disable)
+    assert matcher.feed(b"\x1b") == (b"\x1b", False)
+
+
+def test_detach_matcher_escape_ending_candidate_starts_new_candidate() -> None:
+    atom = b"\x1b[92::92;5:1u"
+
+    matcher = _semantic_matcher()
+    assert matcher.feed(b"\x1b" + atom + atom) == (b"\x1b", True)
+
+    split = _semantic_matcher()
+    assert split.feed(b"\x1b") == (b"", False)
+    assert split.feed(b"\x1b") == (b"\x1b", False)
+    assert split.pending_deadline is not None
+    assert split.feed(atom[1:] + atom) == (b"", True)
+
+    mid_chord = _semantic_matcher()
+    assert mid_chord.feed(b"\x1c\x1b[9\x1b") == (b"\x1c\x1b[9", False)
+    assert mid_chord.feed(atom[1:] + b"\x1c") == (b"", True)
+
+
+def test_detach_matcher_restarted_escape_gets_its_own_deadline() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+
+    assert matcher.feed(b"\x1b") == (b"", False)
+    clock.now = 100.05
+    assert matcher.feed(b"\x1b") == (b"\x1b", False)
+    assert matcher.pending_deadline == pytest.approx(100.15)
+
+
+def test_detach_matcher_literal_chord_ignores_keyboard_modes() -> None:
+    matcher = _pty_module._DetachChordMatcher(b"xx")
+
+    matcher.observe_output(b"\x1b[>1u")
+    assert matcher.feed(b"\x1b") == (b"\x1b", False)
+
+
+def _tracker_after(*chunks: bytes) -> Any:
+    tracker = _pty_module._KeyboardProtocolTracker()
+    for chunk in chunks:
+        tracker.feed(chunk)
+    return tracker
+
+
+@pytest.mark.parametrize(
+    ("case", "chunks", "enhanced"),
+    [
+        ("initial", (), False),
+        ("zero-push", (b"\x1b[>0u",), False),
+        ("split-push", (b"\x1b[>", b"1u"), True),
+        ("nested-pop-one", (b"\x1b[>1u\x1b[>1u\x1b[<u",), True),
+        ("nested-pop-two", (b"\x1b[>1u\x1b[>1u\x1b[<u\x1b[<u",), False),
+        ("pop-count", (b"\x1b[>1u\x1b[>1u\x1b[<2u",), False),
+        ("over-pop", (b"\x1b[>1u\x1b[<9u",), False),
+        ("pop-resets-set-base", (b"\x1b[=1u\x1b[>0u\x1b[<u",), False),
+        ("set-bits", (b"\x1b[>0u\x1b[=1;2u",), True),
+        ("reset-bits", (b"\x1b[>9u\x1b[=9;3u",), False),
+        ("query-ignored", (b"\x1b[?u",), False),
+        ("cursor-restore-ignored", (b"\x1b[u",), False),
+        ("alt-pop-keeps-main", (b"\x1b[>1u\x1b[?1049h\x1b[>1u\x1b[<u",), True),
+        ("main-pop-after-alt", (b"\x1b[>1u\x1b[?1049h\x1b[?1049l\x1b[<u",), False),
+        ("alt-push-survives-exit", (b"\x1b[?1049h\x1b[>1u\x1b[?1049l",), True),
+        ("alt-47", (b"\x1b[?47h\x1b[>1u\x1b[?47l\x1b[>1u\x1b[<u",), True),
+        ("alt-1047-multi", (b"\x1b[?25;1047h\x1b[>1u\x1b[<u",), False),
+        ("mok-level-2", (b"\x1b[>4;2m",), True),
+        ("mok-other-resource", (b"\x1b[>1;2m",), False),
+        ("mok-and-kitty", (b"\x1b[>4;2m\x1b[>1u\x1b[<u",), True),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_keyboard_protocol_tracker_models_terminal_requests(
+    case: str, chunks: tuple[bytes, ...], enhanced: bool
+) -> None:
+    del case
+    assert _tracker_after(*chunks).enhanced is enhanced
+
+
+def test_keyboard_protocol_tracker_stack_is_bounded_like_the_terminal() -> None:
+    limit = _pty_module._KEYBOARD_STACK_LIMIT
+    tracker = _tracker_after(b"\x1b[>1u" * (limit * 4))
+
+    tracker.feed(b"\x1b[<u" * (limit - 1))
+    assert tracker.enhanced is True
+    tracker.feed(b"\x1b[<u")
+    assert tracker.enhanced is False
+
+
+def test_tty_reset_clears_nested_keyboard_modes_on_both_screens() -> None:
+    tracker = _pty_module._KeyboardProtocolTracker()
+    tracker.feed(b"\x1b[>1u" * 3)
+    tracker.feed(b"\x1b[?1049h")
+    tracker.feed(b"\x1b[>1u" * 4)
+    tracker.feed(b"\x1b[>4;2m")
+    assert tracker.enhanced is True
+
+    tracker.feed(_pty_module._TTY_RESET)
+
+    reset = _pty_module._KITTY_KEYBOARD_RESET
+    assert _pty_module._TTY_RESET.count(reset) == 2
+    assert _pty_module._TTY_RESET.index(reset) < _pty_module._TTY_RESET.index(
+        b"\x1b[?1049l"
+    )
+    assert _pty_module._TTY_RESET.rindex(reset) > _pty_module._TTY_RESET.index(
+        b"\x1b[?1049l"
+    )
+    assert _pty_module._TTY_RESET.endswith(b"\x1b[>4m")
+    assert tracker.enhanced is False
+
+
 class EventPump:
     def __init__(
         self, handle: AdapterHandle, *, thread_name: str | None = None
@@ -2152,12 +2549,33 @@ def test_activity_is_coarse_not_per_redraw(
 
 
 @posix_only
+@pytest.mark.parametrize(
+    ("keyboard", "first_piece", "remaining_input"),
+    [
+        ("", b"\x1c", b"\x1c"),
+        (
+            "\x1b[>1u",
+            b"\x1b[92::",
+            b"92;5:1u\x1b[92::92;5:1u",
+        ),
+        (
+            "\x1b[>4;2m",
+            b"\x1b[27;5",
+            b";92~\x1b[27;5;92~",
+        ),
+    ],
+    ids=("legacy", "P1-enhanced-split", "P1-modify-other-keys-split"),
+)
 def test_attach_bridges_and_split_chord_detaches_with_reset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    keyboard: str,
+    first_piece: bytes,
+    remaining_input: bytes,
 ) -> None:
     handle, log = _spawn_fake(
-        tmp_path, {"queries": False, "modes": False, "redraw": False}
+        tmp_path,
+        {"queries": False, "modes": False, "redraw": False, "keyboard": keyboard},
     )
     user_master, user_slave = pty.openpty()
     saved_termios = termios.tcgetattr(user_slave)
@@ -2174,13 +2592,22 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         def feed(self, data: bytes) -> tuple[bytes, bool]:
             matched = self._delegate.feed(data)
             if (
-                data == b"\x1c"
+                data == first_piece
                 and threading.current_thread().name == "split-chord-attach"
                 and not first_chord_processed.is_set()
             ):
                 first_chord_result.append(matched)
                 first_chord_processed.set()
             return matched
+
+        def seconds_until_deadline(self, *, now: float | None = None) -> float | None:
+            return self._delegate.seconds_until_deadline(now=now)
+
+        def expire(self, *, now: float | None = None) -> bytes:
+            return self._delegate.expire(now=now)
+
+        def observe_output(self, data: bytes) -> None:
+            self._delegate.observe_output(data)
 
     monkeypatch.setattr(_pty_module, "_DetachChordMatcher", ObservedMatcher)
     thread = threading.Thread(
@@ -2204,22 +2631,207 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         else:
             raise AssertionError(f"no bridged input: {_entries(log)!r}")
 
-        os.write(user_master, b"\x1c")
+        os.write(user_master, first_piece)
         assert first_chord_processed.wait(timeout=2.0)
         assert first_chord_result == [(b"", False)]
         assert thread.is_alive()
-        os.write(user_master, b"\x1c")
-        reset = _read_fd_until(user_master, b"\x1b[?2004l", timeout=1.0)
+        os.write(user_master, remaining_input)
+        reset = _read_fd_until(user_master, b"\x1b[>4m", timeout=1.0)
         thread.join(timeout=5.0)
         assert result == ["detached"]
         assert b"\x18\x1b\\" in reset
         assert b"\x1b[?1049l" in reset
         assert b"\x1b[0m" in reset
+        assert reset.count(_pty_module._KITTY_KEYBOARD_RESET) == 2
+        assert b"\x1b[>4m" in reset
+        inputs = [entry["raw"] for entry in _entries(log) if entry["event"] == "input"]
+        assert inputs == ["hello\r"]
         _assert_termios_restored(user_slave, saved_termios)
     finally:
         handle.close()
         os.close(user_master)
         os.close(user_slave)
+
+
+@posix_only
+def test_posix_attach_routes_ambiguity_deadline_through_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _MatcherClock()
+    input_fd = 10
+    master_fd = 20
+    output_fd = 30
+    select_timeouts: list[float] = []
+    input_chunks = iter((b"\x1b", b"\x1c\x1c"))
+    forwarded: list[bytes] = []
+
+    class Terminal:
+        @staticmethod
+        def detach_matcher(chord: bytes) -> Any:
+            return _pty_module._DetachChordMatcher(chord, clock=clock)
+
+        @staticmethod
+        def observe_output(
+            _data: bytes, *, answer_queries: bool = True
+        ) -> tuple[bytes, ...]:
+            del answer_queries
+            return ()
+
+    class Domain:
+        @staticmethod
+        def observe_leader_exit() -> None:
+            return None
+
+    turns = iter(("master", "input", "master", "master", "master", "input"))
+
+    def controlled_select(
+        _readers: list[int],
+        _writers: list[int],
+        _errors: list[int],
+        timeout: float,
+    ) -> tuple[list[int], list[int], list[int]]:
+        select_timeouts.append(timeout)
+        turn = next(turns)
+        if turn == "master":
+            clock.now += min(timeout, 0.04)
+            return [master_fd], [], []
+        return [input_fd], [], []
+
+    def controlled_read(fd: int, _size: int) -> bytes:
+        if fd == input_fd:
+            return next(input_chunks)
+        assert fd == master_fd
+        return b"provider-output" + _KITTY_PUSH
+
+    class TestHandle(PtyHandle):
+        def _write_all(self, data: bytes) -> None:
+            forwarded.append(data)
+
+    handle = object.__new__(TestHandle)
+    handle._master_fd = master_fd
+    handle._terminal = cast(Any, Terminal())
+    handle._settle_wake = threading.Event()
+    handle._domain = cast(Any, Domain())
+    monkeypatch.setattr(_pty_posix_module.select, "select", controlled_select)
+    monkeypatch.setattr(_pty_posix_module.os, "read", controlled_read)
+    monkeypatch.setattr(_pty_posix_module.os, "write", lambda *_args: 1)
+    monkeypatch.setattr(_pty_posix_module.tty, "setraw", lambda _fd: None)
+    monkeypatch.setattr(
+        _pty_posix_module.termios, "tcgetattr", lambda _fd: cast(Any, [])
+    )
+    monkeypatch.setattr(
+        _pty_posix_module.termios,
+        "tcsetattr",
+        lambda _fd, _when, _saved: None,
+    )
+
+    result = handle.attach(
+        shutdown=threading.Event(),
+        input_fd=input_fd,
+        output_fd=output_fd,
+    )
+
+    assert result == "detached"
+    assert select_timeouts == pytest.approx([0.1, 0.1, 0.1, 0.06, 0.02, 0.1])
+    assert forwarded == [b"\x1b"]
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("provider_output", "forwarded_before_eof"),
+    [
+        (b"plain-output", [b"\x1b", b"j"]),
+        (b"plain" + _KITTY_PUSH, [b"\x1bj"]),
+    ],
+    ids=("legacy-forwards-escape-at-once", "kitty-output-arms-the-hold"),
+)
+def test_posix_attach_gates_escape_hold_on_forwarded_provider_output(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_output: bytes,
+    forwarded_before_eof: list[bytes],
+) -> None:
+    input_fd = 10
+    master_fd = 20
+    output_fd = 30
+    order: list[tuple[str, bytes]] = []
+    forwarded: list[bytes] = []
+    input_chunks = iter((b"\x1b", b"j", b""))
+    turns = iter(("master", "input", "input", "input"))
+    real_matcher = _pty_module._DetachChordMatcher
+
+    class ObservedMatcher(real_matcher):  # type: ignore[misc, valid-type]
+        def observe_output(self, data: bytes) -> None:
+            order.append(("observe", data))
+            super().observe_output(data)
+
+    class Terminal:
+        @staticmethod
+        def detach_matcher(chord: bytes) -> Any:
+            return ObservedMatcher(chord)
+
+        @staticmethod
+        def observe_output(
+            _data: bytes, *, answer_queries: bool = True
+        ) -> tuple[bytes, ...]:
+            del answer_queries
+            return ()
+
+    class Domain:
+        @staticmethod
+        def observe_leader_exit() -> None:
+            return None
+
+    def controlled_select(
+        _readers: list[int],
+        _writers: list[int],
+        _errors: list[int],
+        _timeout: float,
+    ) -> tuple[list[int], list[int], list[int]]:
+        turn = next(turns)
+        return ([master_fd] if turn == "master" else [input_fd]), [], []
+
+    def controlled_read(fd: int, _size: int) -> bytes:
+        return next(input_chunks) if fd == input_fd else provider_output
+
+    def controlled_write(_fd: int, data: bytes) -> int:
+        order.append(("host", data))
+        return len(data)
+
+    class TestHandle(PtyHandle):
+        def _write_all(self, data: bytes) -> None:
+            forwarded.append(data)
+
+    handle = object.__new__(TestHandle)
+    handle._master_fd = master_fd
+    handle._terminal = cast(Any, Terminal())
+    handle._settle_wake = threading.Event()
+    handle._domain = cast(Any, Domain())
+    monkeypatch.setattr(_pty_posix_module.select, "select", controlled_select)
+    monkeypatch.setattr(_pty_posix_module.os, "read", controlled_read)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.tty, "setraw", lambda _fd: None)
+    monkeypatch.setattr(
+        _pty_posix_module.termios, "tcgetattr", lambda _fd: cast(Any, [])
+    )
+    monkeypatch.setattr(
+        _pty_posix_module.termios,
+        "tcsetattr",
+        lambda _fd, _when, _saved: None,
+    )
+
+    result = handle.attach(
+        shutdown=threading.Event(),
+        input_fd=input_fd,
+        output_fd=output_fd,
+    )
+
+    assert result == "eof"
+    assert forwarded == forwarded_before_eof
+    assert order == [
+        ("observe", provider_output),
+        ("host", provider_output),
+        ("host", _pty_module._TTY_RESET),
+    ]
 
 
 @posix_only

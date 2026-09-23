@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.9.9 - 2026-09-23
+
+- The documented `Ctrl-\ Ctrl-\` Summon detach chord now recognizes the
+  equivalent Kitty CSI-u and xterm `modifyOtherKeys` encodings after an
+  attached provider enables enhanced keyboard reporting. The shared POSIX and
+  Windows matcher keeps failed or incomplete input byte-exact, bounds ambiguous
+  escape prefixes to the owning input wait, and resets `modifyOtherKeys` on
+  detach without adding provider- or terminal-specific branches.
+
 - Current floor statements now match the packaged requirements:
   SimpleBroker 8.4.0 and simplebroker-pg 4.4.0. [TAUT-9] states the shipped
   Postgres trust boundary in the present tense, and the README describes

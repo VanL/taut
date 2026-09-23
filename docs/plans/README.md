@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-09-23-summon-enhanced-keyboard-detach-plan.md` | draft | no | Class 5 hardened plan for protocol-aware `Ctrl-\\ Ctrl-\\` detach across legacy, Kitty CSI-u, and xterm `modifyOtherKeys`; implementation awaits independent plan/spec-delta review. |
+| `2026-09-23-summon-enhanced-keyboard-detach-plan.md` | active | no | Protocol-aware `Ctrl-\\ Ctrl-\\` detach and symmetric keyboard reset pass automated gates and independent review. Physical-terminal observation remains pending and was explicitly waived for the owner-requested 0.9.9 release; commit and hosted qualification remain. |
 | `2026-09-19-reactor-restoration-plan.md` | completed | no | Class 5 reactor restoration and cruft audit; core, Summon, MCP, and TUI changes reviewed and locally verified. Native Windows/Linux qualification remains an explicit platform limit. |
 | `2026-09-16-windows-lifecycle-determinism-plan.md` | active | no | Class 4 correction of Windows lifecycle/test boundaries; S1-S3 and S5 implemented, native S2/S5 qualification passed, and final review found no new code blocker. S4 DM-navigation cause remains unresolved and blocks closure/release. |
 | `2026-09-16-coordinated-0-9-8-preparation-plan.md` | completed | no | Class 5+P coordinated 0.9.8 preparation: synchronized metadata, dependency-floor reconciliation, release-gate isolation, PG lifecycle-test alignment, final checks, artifact build, and independent review passed. |

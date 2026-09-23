@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -1262,6 +1263,238 @@ def _run_attach(api: _AttachApi, drain: _AttachDrain) -> None:
     finally:
         if drain.sink is not None and not drain.sink._done.is_set():
             drain.sink.retire(close_handle=False)
+
+
+def test_attach_session_detaches_on_split_enhanced_chord_without_forwarding() -> None:
+    from taut_summon._pty_windows import _AttachSession
+
+    class Api(_AttachApi):
+        def __init__(self) -> None:
+            super().__init__(console=False)
+            self.input_chunks = iter(
+                (
+                    b"\x1b[92::",
+                    b"92;5:1u\x1b[92::92;5:1u",
+                )
+            )
+
+        def read(self, _handle: int) -> bytes:
+            from taut_summon._win32_io import ERROR_OPERATION_ABORTED, Win32IoError
+
+            try:
+                return next(self.input_chunks)
+            except StopIteration:
+                self.cancelled.wait(10.0)
+                raise Win32IoError("ReadFile", ERROR_OPERATION_ABORTED) from None
+
+    class Writer:
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        def write(self, payload: bytes) -> None:
+            self.payloads.append(payload)
+
+    class KittyDrain(_AttachDrain):
+        def route(self, generation: int, sink: Any) -> None:
+            super().route(generation, sink)
+            sink.enqueue(generation, b"\x1b[>1u")
+
+    api = Api()
+    drain = KittyDrain(unroute_error=None)
+    owner = _attach_owner(api, drain)
+    writer = Writer()
+    owner._writer = writer
+    session = _AttachSession(
+        owner,
+        shutdown=threading.Event(),
+        input_fd=0,
+        output_fd=1,
+        detach_chord=b"\x1c\x1c",
+    )
+
+    assert session.run() == "detached"
+    assert writer.payloads == []
+    assert api.cancelled.is_set()
+
+
+def test_attach_session_without_enhanced_output_forwards_escape_at_once() -> None:
+    from taut_summon._pty_windows import _AttachSession
+
+    enhanced = b"\x1b[92::92;5:1u" * 2
+
+    class Api(_AttachApi):
+        def __init__(self) -> None:
+            super().__init__(console=False)
+            self.input_chunks = iter((b"\x1b", enhanced, b""))
+
+        def read(self, _handle: int) -> bytes:
+            from taut_summon._win32_io import ERROR_OPERATION_ABORTED, Win32IoError
+
+            try:
+                return next(self.input_chunks)
+            except StopIteration:
+                self.cancelled.wait(10.0)
+                raise Win32IoError("ReadFile", ERROR_OPERATION_ABORTED) from None
+
+    class Writer:
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        def write(self, payload: bytes) -> None:
+            self.payloads.append(payload)
+
+    api = Api()
+    owner = _attach_owner(api, _AttachDrain(unroute_error=None))
+    writer = Writer()
+    owner._writer = writer
+    session = _AttachSession(
+        owner,
+        shutdown=threading.Event(),
+        input_fd=0,
+        output_fd=1,
+        detach_chord=b"\x1c\x1c",
+    )
+
+    assert session.run() == "eof"
+    assert writer.payloads == [b"\x1b", enhanced]
+
+
+def test_detach_reset_clears_nested_keyboard_modes_on_both_screens() -> None:
+    from taut_summon._pty import _KEYBOARD_STACK_LIMIT, _KeyboardProtocolTracker
+    from taut_summon._pty_windows import _DETACH_RESET
+
+    tracker = _KeyboardProtocolTracker()
+    tracker.feed(b"\x1b[>1u" * 3)
+    tracker.feed(b"\x1b[?1049h")
+    tracker.feed(b"\x1b[>1u" * 4)
+    tracker.feed(b"\x1b[>4;2m")
+    assert tracker.enhanced is True
+
+    tracker.feed(_DETACH_RESET)
+
+    reset = b"\x1b[<" + str(_KEYBOARD_STACK_LIMIT).encode() + b"u"
+    assert _DETACH_RESET.count(reset) == 2
+    assert _DETACH_RESET.index(reset) < _DETACH_RESET.index(b"\x1b[?1049l")
+    assert _DETACH_RESET.rindex(reset) > _DETACH_RESET.index(b"\x1b[?1049l")
+    assert _DETACH_RESET.endswith(b"\x1b[>4m")
+    assert tracker.enhanced is False
+
+
+def test_windows_attach_routes_ambiguity_deadline_through_chunk_wait() -> None:
+    from taut_summon._pty_windows import _AttachSession
+
+    class Clock:
+        now = 100.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    class Chunks:
+        def __init__(self, clock: Clock) -> None:
+            self.clock = clock
+            self.calls = 0
+            self.timeouts: list[float] = []
+
+        def get(self, *, timeout: float) -> bytes:
+            self.calls += 1
+            self.timeouts.append(timeout)
+            if self.calls == 1:
+                return b"\x1b"
+            if self.calls in (2, 3):
+                self.clock.now += timeout
+                raise queue.Empty
+            return b""
+
+        @staticmethod
+        def get_nowait() -> bytes:
+            raise queue.Empty
+
+    class Writer:
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        def write(self, payload: bytes) -> None:
+            self.payloads.append(payload)
+
+    clock = Clock()
+    chunks = Chunks(clock)
+    writer = Writer()
+    session = object.__new__(_AttachSession)
+    session.shutdown = threading.Event()
+    session.owner = cast(
+        Any,
+        type(
+            "Owner",
+            (),
+            {"_exit_ready": threading.Event(), "_writer": writer},
+        )(),
+    )
+    session.matcher = _DetachChordMatcher(b"\x1c\x1c", clock=clock)
+    session.matcher.observe_output(b"\x1b[>1u")
+    session.chunks = cast(Any, chunks)
+
+    assert session._bridge() == "eof"
+    assert chunks.timeouts == pytest.approx([0.05, 0.05, 0.05, 0.05])
+    assert writer.payloads == [b"\x1b"]
+
+
+def test_windows_attach_ready_input_wins_at_deadline_boundary() -> None:
+    from taut_summon._pty_windows import _AttachSession
+
+    atom = b"\x1b[92::92;5:1u"
+
+    class Clock:
+        now = 100.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    class Chunks:
+        def __init__(self, clock: Clock) -> None:
+            self.clock = clock
+            self.waits = 0
+            self.rechecks = 0
+
+        def get(self, *, timeout: float) -> bytes:
+            self.waits += 1
+            if self.waits == 1:
+                return atom[:-1]
+            self.clock.now += timeout
+            raise queue.Empty
+
+        def get_nowait(self) -> bytes:
+            self.rechecks += 1
+            if self.rechecks == 2:
+                return atom[-1:] + atom
+            raise queue.Empty
+
+    class Writer:
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        def write(self, payload: bytes) -> None:
+            self.payloads.append(payload)
+
+    clock = Clock()
+    chunks = Chunks(clock)
+    writer = Writer()
+    session = object.__new__(_AttachSession)
+    session.shutdown = threading.Event()
+    session.owner = cast(
+        Any,
+        type(
+            "Owner",
+            (),
+            {"_exit_ready": threading.Event(), "_writer": writer},
+        )(),
+    )
+    session.matcher = _DetachChordMatcher(b"\x1c\x1c", clock=clock)
+    session.matcher.observe_output(b"\x1b[>1u")
+    session.chunks = cast(Any, chunks)
+
+    assert session._bridge() == "detached"
+    assert chunks.rechecks == 2
+    assert writer.payloads == []
 
 
 def test_attach_cleanup_survives_adapter_error_from_unroute() -> None:
