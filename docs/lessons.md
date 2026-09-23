@@ -165,7 +165,7 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   pin across every coordinated gate, and treat the failed pre-upload run plus
   untouched PyPI state as recoverable evidence rather than rerunning it.
 
-- 2026-08-08 (revised 2026-08-13): A dependency-floor bump must reconcile
+- 2026-08-08: (revised 2026-08-13) A dependency-floor bump must reconcile
   manifests and maintained documentation, but Python tests should not mirror
   third-party requirement bounds or lock selections. The package manifest owns
   the supported range; the owning retained lock supplies reproducibility; and
@@ -175,13 +175,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   refresh. Add a compatibility lane only when the project deliberately promises
   support beyond the retained lock.
 
-- 2026-08-05: Do not infer a security classification from opacity or identity
-  selection. Name the actual authority boundary, emitted and persistent
-  surfaces, live-state lifetime, and debug-only retention separately. A
-  continuity token can be application data a deployment chooses to handle
-  carefully without being a credential or security boundary. Calling it a
-  secret can overclaim the product's posture and motivate lower-locality code
-  whose only purpose is traceback scrubbing.
+- 2026-08-05: continuity-token classification, verified distilled —
+  [MCP-10] names storage access as the boundary, treats the token as an
+  identity selector rather than a credential, allows a deployment to handle
+  it as sensitive application data, and allows caught traceback frames to
+  retain it for local debugging (`docs/specs/05-taut-mcp.md`,
+  `docs/implementation/07-taut-mcp-architecture.md`).
+  (distilled from 1 entry, 2026-08-05..2026-08-05, source 70ac379e2)
 
 - 2026-08-04: A ported policy generator can pass an exhaustive isolated fixture
   suite while still targeting the wrong live document seam. The fixture and the
@@ -671,12 +671,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   Do not poll a timeout-bound negative condition based on an “about to call”
   signal.
 
-- 2026-07-27: A durable pointer can outlive the record that made it
-  actionable. Before rendering a follow-up command from a notification or
-  index row, revalidate the source through a cursor-neutral exact lookup and
-  omit the action when it is gone. Do not reuse a stateful convenience API
-  whose read side effects would change the user's position merely to decide
-  what hint to print.
+- 2026-07-27: stale notification reply actions, verified distilled —
+  [IAN-7.4] advertises `taut reply` only after cursor-neutral `peek_one()`
+  confirms the source, omits the action when that peek misses, and does not
+  use `show_message()` for the check; [IAN-9] records the same cursor-neutral
+  miss (`docs/specs/03-identity-addressing-notifications.md`).
+  (distilled from 1 entry, 2026-07-27..2026-07-27, source 70ac379e2)
 
 - 2026-07-28: Raising a dependency floor can change control-flow semantics
   outside the new API that motivated the bump. After a floor change, run the
