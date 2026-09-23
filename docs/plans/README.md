@@ -104,10 +104,6 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |
 | `2026-08-12-live-point-in-time-dump-plan.md` | completed | no | Completed: live logical dump, strict restore chronology, Taut-to-broker skew configuration, and integrated SQLite/PostgreSQL verification passed. |
 | `2026-08-12-taut-tui-implementation-plan.md` | completed | no | Completed: human-first TUI, responsive reflow, native system actions, Summon rich-host lifecycle, and full retained-environment verification passed. |
-| `2026-06-17-implementation-review-followups-plan.md` | retired-pending | no | Soft-retired 2026-08-24 after the four-part harvest gate passed; source `348eae9`. |
-| `2026-06-17-taut-pg-extension-plan.md` | retired-pending | no | Soft-retired 2026-08-24 after the four-part harvest gate passed; source `24dc2bc`. |
-| `2026-06-18-member-identity-addressing-plan.md` | retired-pending | no | Soft-retired 2026-08-24 after the four-part harvest gate passed; source `3cae1f4`. |
-| `2026-06-18-simplebroker-latest-timestamp-plan.md` | retired-pending | no | Soft-retired 2026-08-24 after the four-part harvest gate passed; source `348eae9`. |
 | `2026-06-30-assets-reference-cleanup-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-30-client-module-split-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-01-schema-shim-retirement-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
