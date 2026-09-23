@@ -13,6 +13,9 @@
   between independent runs. Their provider-output deadlines now begin when the
   recovery terminal lease is handed to Summon rather than charging Windows
   process setup and TUI confirmation work against the behavior under test.
+  The headless TUI harness gives the blocking suspension body its own checked
+  owner, matching the existing lease-protocol tests instead of blocking the
+  same asyncio loop that drives Textual's test pilot.
 - TUI focus tests now synchronize on both the closed reply model state and the
   completed Textual focus transition, avoiding an early observation of the
   framework event cycle without weakening the focus assertion.

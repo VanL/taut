@@ -1918,11 +1918,32 @@ def _gate_app(db: Path) -> Any:
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.suspensions = 0
+            self.lease_threads: list[Thread] = []
 
         @contextmanager
         def suspend(self) -> Iterator[None]:
             self.suspensions += 1
             yield
+
+        def post_message(self, message: Any) -> bool:
+            # Textual's headless pilot and the app share one asyncio loop,
+            # while the production handler deliberately blocks that loop for
+            # the full terminal suspension. Confirmation messages still use
+            # Textual; only the unsupported headless lease body gets the same
+            # test-owned thread seam as the focused lease protocol tests.
+            from taut_tui.summon import TerminalLeaseRequest
+
+            if not isinstance(message, TerminalLeaseRequest):
+                return super().post_message(message)
+            thread = Thread(
+                target=message.hold,
+                args=(self,),
+                daemon=True,
+                name="tui-gate-terminal-lease",
+            )
+            self.lease_threads.append(thread)
+            thread.start()
+            return True
 
     return _GatePilotApp(db_path=str(db), as_name="van", continuity_token=None)
 
@@ -2053,7 +2074,8 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
                     assert _gate_inputs(log) == []
                     assert _gate_menu_answers(log) == []
 
-                    offer.action_confirm()
+                    await pilot.pause()
+                    await pilot.click("#confirmation-confirm")
                     acknowledgement = await _pushed_confirmation(
                         pilot, app, replacing=offer, timeout=10.0
                     )
@@ -2065,7 +2087,8 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
                         "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
                         in acknowledgement.prompt
                     )
-                    acknowledgement.action_confirm()
+                    await pilot.pause()
+                    await pilot.click("#confirmation-confirm")
 
                     try:
                         await _await_until(
@@ -2111,9 +2134,13 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
             finally:
                 answerer.request_stop()
                 answerer.join(timeout=20.0)
+                for lease_thread in app.lease_threads:
+                    lease_thread.join(timeout=20.0)
             assert answerer.finished.is_set()
             assert answerer.failures == []
             assert answerer.answered.is_set()
+            assert app.lease_threads
+            assert not any(thread.is_alive() for thread in app.lease_threads)
 
         asyncio.run(exercise())
     finally:
