@@ -1786,21 +1786,32 @@ class _GateAnswerer(Thread):
         self._terminal = terminal
         self.failures: list[str] = []
         self.answered = Event()
+        self.finished = Event()
+        self.stage = "waiting for gate menu"
 
     def run(self) -> None:
-        if b"Trust this folder?" not in self._terminal.read_until(
-            b"Trust this folder?"
-        ):
-            self.failures.append("the gate menu never reached the leased terminal")
-            return
-        self._terminal.write(b"\x14")
-        if b"chat>" not in self._terminal.read_until(b"chat>"):
-            self.failures.append("trusting the folder never opened the chat prompt")
-            return
-        self.answered.set()
-        self._terminal.write(b"\x1c\x1c")
-        if b"\x1b[?2004l" not in self._terminal.read_until(b"\x1b[?2004l"):
-            self.failures.append("the detach reset blast never arrived")
+        try:
+            if b"Trust this folder?" not in self._terminal.read_until(
+                b"Trust this folder?"
+            ):
+                self.failures.append("the gate menu never reached the leased terminal")
+                return
+            self.stage = "gate menu reached; sending trust"
+            self._terminal.write(b"\x14")
+            self.stage = "waiting for chat prompt"
+            if b"chat>" not in self._terminal.read_until(b"chat>"):
+                self.failures.append("trusting the folder never opened the chat prompt")
+                return
+            self.answered.set()
+            self.stage = "chat prompt reached; sending detach"
+            self._terminal.write(b"\x1c\x1c")
+            self.stage = "waiting for detach reset"
+            if b"\x1b[?2004l" not in self._terminal.read_until(b"\x1b[?2004l"):
+                self.failures.append("the detach reset blast never arrived")
+                return
+            self.stage = "detach reset reached"
+        finally:
+            self.finished.set()
 
 
 def _gate_db(tmp_path: Path) -> Path:
@@ -2022,11 +2033,31 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
                 )
                 acknowledgement.action_confirm()
 
-                await _await_until(
-                    pilot,
-                    lambda: any(marker in raw for raw in _gate_inputs(log)),
-                    message="post-recovery orientation injection",
-                )
+                try:
+                    await _await_until(
+                        pilot,
+                        answerer.finished.is_set,
+                        message="terminal answerer completion",
+                    )
+                except AssertionError as exc:
+                    exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                    exc.add_note(f"terminal answerer failures: {answerer.failures!r}")
+                    exc.add_note(f"gate events: {_gate_events(log)!r}")
+                    raise
+                assert answerer.failures == []
+                assert answerer.answered.is_set()
+                try:
+                    await _await_until(
+                        pilot,
+                        lambda: any(marker in raw for raw in _gate_inputs(log)),
+                        message="post-recovery orientation injection",
+                    )
+                except AssertionError as exc:
+                    exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                    exc.add_note(f"gate events: {_gate_events(log)!r}")
+                    exc.add_note(f"operation state: {app._operation_state!r}")
+                    exc.add_note(f"owned runs: {app._summon.owned_runs()!r}")
+                    raise
                 await _await_until(
                     pilot,
                     lambda: app._operation_state == "summon live",
@@ -2043,6 +2074,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
 
         asyncio.run(exercise())
         answerer.join(timeout=10.0)
+        assert answerer.finished.is_set()
         assert answerer.failures == []
         assert answerer.answered.is_set()
     finally:
