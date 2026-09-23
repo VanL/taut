@@ -236,8 +236,13 @@ class TuiSummonOperations:
             if callback is not None:
                 callback(projection)
 
+        scope_factory = getattr(interaction, "operation_scope", None)
+        operation_interaction = (
+            scope_factory() if callable(scope_factory) else interaction
+        )
+
         def run() -> None:
-            self._run_owned(record, request, interaction, on_ready)
+            self._run_owned(record, request, operation_interaction, on_ready)
 
         future = self._submit_foreground(run)
         with self._lock:
@@ -492,6 +497,51 @@ class TerminalAttachConfirmationRequest(TextualMessage):
             return
 
 
+class _ScopedTuiSummonInteraction:
+    """One logical foreground run's authority over the shared TUI terminal."""
+
+    def __init__(self, owner: TuiSummonInteraction, token: object) -> None:
+        self._owner = owner
+        self._token = token
+        self._lock = threading.Lock()
+        self._released = False
+
+    def _require_active(self) -> None:
+        with self._lock:
+            if self._released:
+                raise RuntimeError("Summon terminal operation is closed")
+
+    def terminal_availability(self, intent: object) -> object:
+        self._require_active()
+        return self._owner._terminal_availability(intent, owner=self._token)
+
+    def supports_setup_recovery(self) -> bool:
+        self._require_active()
+        return self._owner.supports_setup_recovery()
+
+    def confirm_terminal_attach(
+        self,
+        notice: _TerminalAttachNotice,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> bool:
+        self._require_active()
+        return self._owner._confirm_terminal_attach(
+            notice, owner=self._token, cancel=cancel
+        )
+
+    def terminal_lease(self) -> Any:
+        self._require_active()
+        return self._owner._terminal_lease(owner=self._token)
+
+    def release_current_worker(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+        self._owner._release_operation(self._token)
+
+
 class TuiSummonInteraction:
     """Cooperative public Summon interaction over Textual's suspend seam."""
 
@@ -507,14 +557,17 @@ class TuiSummonInteraction:
         self._timeout = timeout
         self._lock = threading.Lock()
         self._closed = False
-        self._terminal_owner: int | None = None
+        self._terminal_owner: object | None = None
         self._pending_confirmation: TerminalAttachConfirmationRequest | None = None
         self._pending_stop: threading.Event | None = None
         self._lease_active = False
         self._lease_broken = False
 
     def terminal_availability(self, intent: object) -> object:
-        del intent
+        return self._terminal_availability(intent, owner=threading.current_thread())
+
+    def _terminal_availability(self, intent: object, *, owner: object) -> object:
+        del intent, owner
         api = load_summon_api()
         if not _standard_terminal_is_suitable():
             return api.TerminalAvailability.NO_TTY
@@ -524,6 +577,11 @@ class TuiSummonInteraction:
             if self._closed or self._terminal_owner is not None or self._lease_broken:
                 return api.TerminalAvailability.UNAVAILABLE
         return api.TerminalAvailability.AVAILABLE
+
+    def operation_scope(self) -> _ScopedTuiSummonInteraction:
+        """Bind confirmation and lease phases to one logical foreground run."""
+
+        return _ScopedTuiSummonInteraction(self, object())
 
     def supports_setup_recovery(self) -> bool:
         """Accept [SUM-7.4] acknowledgements outside the bootstrap window.
@@ -541,7 +599,16 @@ class TuiSummonInteraction:
         *,
         cancel: threading.Event | None = None,
     ) -> bool:
-        owner = threading.get_ident()
+        owner = threading.current_thread()
+        return self._confirm_terminal_attach(notice, owner=owner, cancel=cancel)
+
+    def _confirm_terminal_attach(
+        self,
+        notice: _TerminalAttachNotice,
+        *,
+        owner: object,
+        cancel: threading.Event | None = None,
+    ) -> bool:
         request = TerminalAttachConfirmationRequest(notice)
         if not self._reserve_confirmation(request, owner=owner, cancel=cancel):
             return False
@@ -574,7 +641,7 @@ class TuiSummonInteraction:
         self,
         request: TerminalAttachConfirmationRequest,
         *,
-        owner: int,
+        owner: object,
         cancel: threading.Event | None,
     ) -> bool:
         """Claim the single acknowledgement seat, or refuse without erroring."""
@@ -632,17 +699,37 @@ class TuiSummonInteraction:
             pending.resolve(False)
 
     def release_current_worker(self) -> None:
-        self._release_owner(threading.get_ident())
+        self._release_owner(threading.current_thread())
 
-    def _release_owner(self, owner: int) -> None:
+    def _release_owner(self, owner: object) -> None:
         with self._lock:
-            if self._terminal_owner == owner and not self._lease_active:
+            if self._terminal_owner is owner and not self._lease_active:
                 self._terminal_owner = None
 
+    def _release_operation(self, owner: object) -> None:
+        pending: TerminalAttachConfirmationRequest | None = None
+        stop: threading.Event | None = None
+        with self._lock:
+            if self._terminal_owner is not owner or self._lease_active:
+                return
+            self._terminal_owner = None
+            pending = self._pending_confirmation
+            stop = self._pending_stop
+            self._pending_confirmation = None
+            self._pending_stop = None
+        if stop is not None:
+            stop.set()
+        if pending is not None:
+            pending.resolve(False)
+
     @contextmanager
-    def terminal_lease(self) -> Iterator[_TerminalLease]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-088] exception
+    def terminal_lease(self) -> Iterator[_TerminalLease]:
+        with self._terminal_lease(owner=threading.current_thread()) as lease:
+            yield lease
+
+    @contextmanager
+    def _terminal_lease(self, *, owner: object) -> Iterator[_TerminalLease]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-088] exception
         api = load_summon_api()
-        owner = threading.get_ident()
         with self._lock:
             if self._closed:
                 raise RuntimeError("Summon terminal interaction is closed")
@@ -650,7 +737,7 @@ class TuiSummonInteraction:
                 raise RuntimeError(
                     "Summon terminal is unavailable after a failed lease"
                 )
-            if self._terminal_owner != owner:
+            if self._terminal_owner is not owner:
                 raise RuntimeError(
                     "Summon terminal attach was not acknowledged by this worker"
                 )
@@ -697,7 +784,7 @@ class TuiSummonInteraction:
                     cleanup_error.__cause__ = request.error
             with self._lock:
                 self._lease_active = False
-                if self._terminal_owner == owner:
+                if self._terminal_owner is owner:
                     self._terminal_owner = None
                 if cleanup_error is not None:
                     self._lease_broken = True

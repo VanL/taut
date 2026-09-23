@@ -451,6 +451,12 @@ closed for the rest of the app lifetime. Logger scopes share process-level
 ownership, so overlapping TUI hosts may restore out of order without leaving a
 retired forwarding handler installed.
 
+`TuiSummonOperations` also creates one scoped interaction per foreground run.
+Its unique in-memory token crosses Summon's separate confirmation and attach
+phase threads and is released in the retained worker's `finally` path. The
+shared terminal coordinator compares those tokens by identity. It never uses
+numeric thread IDs, which Python may recycle after a phase thread exits.
+
 All core, extension, diagnostic, path, target, and message projections pass
 through extension-owned display widgets. Plain strings are escaped when a
 widget installs or updates content. Styled content is assembled only through a

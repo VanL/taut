@@ -16,6 +16,10 @@
   The headless TUI harness gives the blocking suspension body its own checked
   owner, matching the existing lease-protocol tests instead of blocking the
   same asyncio loop that drives Textual's test pilot.
+- TUI terminal acknowledgement ownership now follows the exact foreground run
+  across Summon's separate confirmation and attachment phase threads. It no
+  longer depends on Python recycling a retired phase thread's numeric ID before
+  the lease begins.
 - TUI focus tests now synchronize on both the closed reply model state and the
   completed Textual focus transition, avoiding an early observation of the
   framework event cycle without weakening the focus assertion. Confirmation

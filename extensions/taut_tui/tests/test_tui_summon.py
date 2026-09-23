@@ -579,6 +579,104 @@ def test_terminal_attach_confirmation_is_exclusive_and_precedes_lease(
     assert app.restored.is_set()
 
 
+def test_terminal_lease_ownership_survives_distinct_driver_phase_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TUI-11.3] ownership follows one run, not a recycled thread id."""
+
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui import summon as tui_summon
+
+    monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
+    app = _LeaseApp(confirmation_decision=True)
+    interaction = tui_summon.TuiSummonInteraction(app, timeout=2.0)
+    operation = interaction.operation_scope()
+    decisions: list[bool] = []
+    keep_confirmation_thread = Event()
+
+    def confirm_on_first_phase() -> None:
+        decisions.append(
+            operation.confirm_terminal_attach(
+                TerminalAttachNotice(
+                    member="grok",
+                    provider="grok",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                )
+            )
+        )
+        assert keep_confirmation_thread.wait(timeout=2.0)
+
+    confirmation = Thread(
+        target=confirm_on_first_phase,
+        daemon=True,
+    )
+    confirmation.start()
+    deadline = time.monotonic() + 2.0
+    while not decisions and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert decisions == [True]
+    assert confirmation.is_alive()
+
+    leased = Event()
+
+    def lease_on_later_phase() -> None:
+        with operation.terminal_lease():
+            leased.set()
+
+    lease = Thread(target=lease_on_later_phase, daemon=True)
+    lease.start()
+    lease.join(timeout=2.0)
+    app.join_handler()
+    keep_confirmation_thread.set()
+    confirmation.join(timeout=2.0)
+    assert not confirmation.is_alive()
+    assert not lease.is_alive()
+    assert leased.is_set()
+    assert app.restored.is_set()
+    operation.release_current_worker()
+    operation.release_current_worker()
+    with pytest.raises(RuntimeError, match="operation is closed"):
+        operation.supports_setup_recovery()
+
+
+def test_owned_run_uses_and_releases_one_operation_interaction_scope() -> None:
+    from taut_tui.summon import TuiSummonOperations
+
+    released = Event()
+
+    class Scope:
+        def release_current_worker(self) -> None:
+            released.set()
+
+    scope = Scope()
+
+    class Interaction:
+        def operation_scope(self) -> Scope:
+            return scope
+
+    class CapturingController(_Controller):
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del request, on_ready
+            assert interaction is scope
+            assert install_signal_handlers is False
+
+    operations = TuiSummonOperations(controller=CapturingController())
+    try:
+        _token, worker = operations.start(object(), Interaction())
+        assert worker.result(timeout=2.0) is None
+        assert released.is_set()
+    finally:
+        operations.close()
+
+
 def test_terminal_attach_confirmation_close_and_post_failure_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

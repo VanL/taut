@@ -718,3 +718,20 @@ the 2026-08-18/19 promotions); Task 3 deliberately defers exact modal
 file naming to the comprehension gate because the handler location is
 owned by the 2026-08-17 plan's implementation — the implementer must
 read it, not guess it.
+
+## 2026-09-23 Release-hardening correction
+
+The 0.9.9 Windows matrix exposed a hidden coupling in the completed ownership
+implementation: confirmation and attachment are separate Summon phase threads,
+but the TUI used `threading.get_ident()` as if they were one worker. Passing
+runs depended on numeric thread-ID reuse. The correction binds one opaque token
+to each `TuiSummonOperations` foreground record, passes its scoped interaction
+through every phase, and releases it in the record's existing `finally` path.
+The shared coordinator still permits exactly one acknowledgement or lease; it
+compares logical-run tokens by identity and never retains a global token set.
+
+Verification requires a firing test that keeps the confirmation thread alive
+while a distinct attachment thread leases successfully, a composition test
+that proves `TuiSummonOperations` supplies and releases the scope, the complete
+TUI suite under retained parallelism, and the hosted Windows matrix. Rollback
+is the single scoped-interaction commit; no persistence or wire format changes.

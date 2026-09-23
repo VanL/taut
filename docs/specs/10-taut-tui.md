@@ -831,7 +831,10 @@ requests the run's stop so the driver's shutdown event is set, then
 resolves any pending prompt as refused — the foreground worker cannot
 remain stranded, and a shutdown-produced refusal takes the [SUM-7.4]
 shutdown class rather than ending as a decline or a cancel. One coordinator
-excludes concurrent acknowledgement and lease owners.
+excludes concurrent acknowledgement and lease owners. Ownership is scoped to
+the exact foreground run across Summon's distinct confirmation and attachment
+phase threads; a recyclable Python or OS thread identifier is not an ownership
+token.
 
 Only after confirmation and provider bootstrap does the interaction marshal
 a separate lease handshake to the UI loop. One handler enters Textual's
