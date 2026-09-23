@@ -1763,6 +1763,7 @@ def test_detach_waits_for_callable_return_without_retirement_polling(
 
 @pytest.mark.timeout(5)
 def test_quiet_owner_return_settles_admission_without_clock(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[MCP-8] A callable that publishes nothing still has a completion event."""
@@ -1773,7 +1774,9 @@ def test_quiet_owner_return_settles_admission_without_clock(
         reactor = ProcessReactor(loop)
         try:
             with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
-                await asyncio.wait_for(reactor.attach_workspace("/missing", "token"), 1)
+                await asyncio.wait_for(
+                    reactor.attach_workspace(str(tmp_path / "missing"), "token"), 1
+                )
             assert not reactor._candidates
         finally:
             await reactor.aclose()
@@ -1821,7 +1824,7 @@ def test_real_executor_start_failure_never_grants_failed_owner_authority(
         monkeypatch.setattr(reactor, "_new_owner", new_owner)
         try:
             with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
-                await reactor.attach_workspace("/missing", "secret")
+                await reactor.attach_workspace(str(tmp_path / "missing"), "secret")
             attached = await asyncio.wait_for(
                 reactor.attach_workspace(str(workspace), token), 2
             )
@@ -1885,7 +1888,9 @@ def test_failed_submit_can_already_be_running_without_workspace_authority(
 
             monkeypatch.setattr(threading.Thread, "start", fail_second_worker)
             with _tool_error(workspace_reactor.ATTACHMENT_FAILED):
-                await reactor.attach_workspace("/never-resolve", "secret")
+                await reactor.attach_workspace(
+                    str(tmp_path / "never-resolve"), "secret"
+                )
             assert entered.is_set()
             assert resolved == [str(workspace)]
             monkeypatch.setattr(threading.Thread, "start", real_start)
