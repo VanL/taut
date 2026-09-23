@@ -1793,27 +1793,25 @@ class _GateHostInteraction:
 class _GateAnswerer(Thread):
     """Answer the provider's trust gate through the leased terminal fds."""
 
-    def __init__(
-        self, terminal: HostTerminal, *, generation_started: Callable[[], bool]
-    ) -> None:
+    def __init__(self, terminal: HostTerminal, *, lease_acquired: Event) -> None:
         super().__init__(daemon=True, name="tui-gate-answerer")
         self._terminal = terminal
-        self._generation_started = generation_started
+        self._lease_acquired = lease_acquired
         self._stop_requested = Event()
         self.failures: list[str] = []
         self.answered = Event()
         self.finished = Event()
-        self.stage = "waiting for recovery generation"
+        self.stage = "waiting for terminal lease"
 
     def request_stop(self) -> None:
         self._stop_requested.set()
 
     def run(self) -> None:
         try:
-            while not self._generation_started():
+            while not self._lease_acquired.is_set():
                 if self._stop_requested.wait(0.01):
                     return
-            self.stage = "recovery generation started; waiting for gate menu"
+            self.stage = "terminal lease acquired; waiting for gate menu"
             output = self._terminal.read_until(b"Trust this folder?")
             if b"Trust this folder?" not in output:
                 self.failures.append(
@@ -1970,6 +1968,7 @@ def _prepare_gate_recovery(
     name: str,
     marker: str,
     terminal: HostTerminal,
+    lease_acquired: Event | None = None,
 ) -> tuple[Path, Path, Path]:
     """Wire the member, then arm the un-trusted re-summon the TUI will own."""
 
@@ -1997,11 +1996,13 @@ def _prepare_gate_recovery(
         wiring_terminal.close()
     log = _configure_gate_pty(monkeypatch, log_dir=tmp_path / "run2", pretrusted=False)
     monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
-    monkeypatch.setattr(
-        tui_summon,
-        "_standard_terminal_fds",
-        lambda: (terminal.lease_input_fd, terminal.lease_output_fd),
-    )
+
+    def terminal_fds() -> tuple[int, int]:
+        if lease_acquired is not None:
+            lease_acquired.set()
+        return terminal.lease_input_fd, terminal.lease_output_fd
+
+    monkeypatch.setattr(tui_summon, "_standard_terminal_fds", terminal_fds)
     return db, prompt_path, log
 
 
@@ -2020,6 +2021,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
 
     marker = "tui-gate-orientation-probe"
     terminal = HostTerminal.open()
+    lease_acquired = Event()
     try:
         db, prompt_path, log = _prepare_gate_recovery(
             tmp_path,
@@ -2027,13 +2029,12 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
             name="gated",
             marker=marker,
             terminal=terminal,
+            lease_acquired=lease_acquired,
         )
 
         async def exercise() -> None:
             app = _gate_app(db)
-            answerer = _GateAnswerer(
-                terminal, generation_started=lambda: _gate_starts(log) == 2
-            )
+            answerer = _GateAnswerer(terminal, lease_acquired=lease_acquired)
             answerer.start()
             try:
                 async with app.run_test(size=(100, 30)) as pilot:
