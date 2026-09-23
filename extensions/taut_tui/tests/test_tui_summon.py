@@ -1937,15 +1937,23 @@ def _prepare_gate_recovery(
     prompt_path = tmp_path / "gate-prompt.txt"
     prompt_path.write_text(marker, encoding="utf-8")
     db = _gate_db(tmp_path)
-    _wire_gate_member(
-        db=db,
-        name=name,
-        prompt_path=prompt_path,
-        marker=marker,
-        terminal=terminal,
-        monkeypatch=monkeypatch,
-        log_dir=tmp_path / "run1",
-    )
+    # Each foreground attach owns one host-terminal session.  In particular,
+    # do not reuse a Windows anonymous-pipe lease after its prior attach reader
+    # was cancelled: unread reset bytes and cancelled-I/O state belong to that
+    # completed session, not to the recovery attach this test is proving.
+    wiring_terminal = HostTerminal.open()
+    try:
+        _wire_gate_member(
+            db=db,
+            name=name,
+            prompt_path=prompt_path,
+            marker=marker,
+            terminal=wiring_terminal,
+            monkeypatch=monkeypatch,
+            log_dir=tmp_path / "run1",
+        )
+    finally:
+        wiring_terminal.close()
     log = _configure_gate_pty(monkeypatch, log_dir=tmp_path / "run2", pretrusted=False)
     monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
     monkeypatch.setattr(

@@ -486,6 +486,7 @@ class TautOptionList(OptionList):
             self._last_pointer_chain = 0
             self._pointer_pending = False
             return
+        self._declare_user_viewport_intent()
         self.highlighted = clicked_option
         self.focus()
         chain = int(getattr(event, "chain", 1))

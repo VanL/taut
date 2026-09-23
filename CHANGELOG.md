@@ -4,6 +4,13 @@
 
 ## 0.9.9 - 2026-09-23
 
+- TUI search-result jumps now retain ownership of the selected message while
+  the transcript rebuild and viewport restore complete. Stale highlight events
+  from a superseded render can no longer retarget the selection; explicit
+  keyboard and pointer input still take ownership immediately.
+- TUI recovery tests give each foreground attach its own host-terminal session,
+  preventing cancelled Windows pipe I/O and unread reset output from leaking
+  between independent runs.
 - The documented `Ctrl-\ Ctrl-\` Summon detach chord now recognizes the
   equivalent Kitty CSI-u and xterm `modifyOtherKeys` encodings after an
   attached provider enables enhanced keyboard reporting. The shared POSIX and

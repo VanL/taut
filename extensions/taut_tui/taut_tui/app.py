@@ -769,6 +769,13 @@ class TautApp(App[None]):
         elif event.option_list.id == "transcript" and 0 <= event.option_index < len(
             self._message_rows
         ):
+            if self._pending_search_anchor is not None:
+                # Rebuilding an OptionList posts highlight messages. One from
+                # the superseded render may arrive after a search jump has
+                # taken ownership of selection and viewport restoration. User
+                # viewport input clears that ownership before its highlight is
+                # posted; only render-driven or stale messages reach this arm.
+                return
             message = self._message_rows[event.option_index]
             self.visual_state = replace(
                 self.visual_state,

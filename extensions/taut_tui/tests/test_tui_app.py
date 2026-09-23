@@ -3114,6 +3114,51 @@ def test_completed_search_restore_releases_viewport_ownership() -> None:
     asyncio.run(exercise())
 
 
+def test_pending_search_anchor_rejects_stale_render_highlight() -> None:
+    from types import SimpleNamespace
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 4)
+    )
+    hit = messages[1]
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            transcript = app.query_one("#transcript", TautOptionList)
+            app._message_rows = messages
+            transcript.add_options(item.text for item in messages)
+            app._conversation_intent = 7
+            app.visual_state = replace(app.visual_state, selected_message_id=hit.ts)
+            app._arm_search_anchor(7, hit.ts)
+
+            stale = transcript.OptionHighlighted(
+                transcript,
+                transcript.get_option_at_index(2),
+                2,
+            )
+            app.on_option_list_option_highlighted(stale)
+
+            assert app.visual_state.selected_message_id == hit.ts
+            assert app.visual_state.scroll_anchor.message_id == hit.ts
+            assert app._pending_search_anchor == (7, hit.ts)
+
+            transcript.on_click(
+                SimpleNamespace(
+                    style=SimpleNamespace(meta={"option": 2}),
+                    chain=1,
+                )
+            )
+            assert app._pending_search_anchor is None
+
+    asyncio.run(exercise())
+
+
 def test_search_anchor_restore_owner_is_intent_exact() -> None:
     from taut.client import Message
     from taut_tui.app import TautApp
