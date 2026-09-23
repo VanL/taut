@@ -200,6 +200,10 @@ async def _submit_form(
 async def _cancel_confirmation(context: HandlerContext, exact_target: str) -> None:
     assert isinstance(context.app.screen, ConfirmationScreen)
     assert exact_target in context.app.screen.prompt
+    await _eventually(
+        context.pilot,
+        lambda: bool(context.app.screen.query("#confirmation-cancel")),
+    )
     context.app.screen.query_one("#confirmation-cancel", Button).press()
     await context.pilot.pause()
 
@@ -207,6 +211,10 @@ async def _cancel_confirmation(context: HandlerContext, exact_target: str) -> No
 async def _accept_confirmation(context: HandlerContext, exact_target: str) -> None:
     assert isinstance(context.app.screen, ConfirmationScreen)
     assert exact_target in context.app.screen.prompt
+    await _eventually(
+        context.pilot,
+        lambda: bool(context.app.screen.query("#confirmation-confirm")),
+    )
     context.app.screen.query_one("#confirmation-confirm", Button).press()
     await context.pilot.pause()
 

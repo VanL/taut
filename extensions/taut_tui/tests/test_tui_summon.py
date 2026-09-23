@@ -2074,8 +2074,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
                     assert _gate_inputs(log) == []
                     assert _gate_menu_answers(log) == []
 
-                    await pilot.pause()
-                    await pilot.click("#confirmation-confirm")
+                    offer.action_confirm()
                     acknowledgement = await _pushed_confirmation(
                         pilot, app, replacing=offer, timeout=10.0
                     )
@@ -2087,8 +2086,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
                         "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
                         in acknowledgement.prompt
                     )
-                    await pilot.pause()
-                    await pilot.click("#confirmation-confirm")
+                    acknowledgement.action_confirm()
 
                     try:
                         await _await_until(

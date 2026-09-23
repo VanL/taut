@@ -18,7 +18,9 @@
   same asyncio loop that drives Textual's test pilot.
 - TUI focus tests now synchronize on both the closed reply model state and the
   completed Textual focus transition, avoiding an early observation of the
-  framework event cycle without weakening the focus assertion.
+  framework event cycle without weakening the focus assertion. Confirmation
+  helpers likewise wait for their concrete controls to mount before pressing
+  them, instead of treating screen-object creation as full UI readiness.
 - The documented `Ctrl-\ Ctrl-\` Summon detach chord now recognizes the
   equivalent Kitty CSI-u and xterm `modifyOtherKeys` encodings after an
   attached provider enables enhanced keyboard reporting. The shared POSIX and
