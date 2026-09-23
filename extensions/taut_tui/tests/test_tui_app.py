@@ -3553,7 +3553,9 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
             assert await pilot.click("#reply-affordance") is True
             await _pause_until(
                 pilot,
-                lambda: app.visual_state.open_reply_thread is None,
+                lambda: (
+                    app.visual_state.open_reply_thread is None and transcript.has_focus
+                ),
             )
             assert app.visual_state.focus.surface is LogicalSurface.CONVERSATION
             assert app.visual_state.pane_choice is LogicalSurface.CONVERSATION

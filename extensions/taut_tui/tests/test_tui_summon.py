@@ -1695,7 +1695,19 @@ def _configure_gate_pty(
 def _gate_events(log: Path) -> list[dict[str, Any]]:
     if not log.exists():
         return []
-    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    text = log.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    events: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            # The fixture appends complete JSONL records, but a concurrent
+            # reader is not guaranteed to observe the final write atomically.
+            if index == len(lines) - 1 and not text.endswith("\n"):
+                break
+            raise
+    return events
 
 
 def _gate_inputs(log: Path) -> list[str]:
@@ -1781,33 +1793,51 @@ class _GateHostInteraction:
 class _GateAnswerer(Thread):
     """Answer the provider's trust gate through the leased terminal fds."""
 
-    def __init__(self, terminal: HostTerminal) -> None:
+    def __init__(
+        self, terminal: HostTerminal, *, generation_started: Callable[[], bool]
+    ) -> None:
         super().__init__(daemon=True, name="tui-gate-answerer")
         self._terminal = terminal
+        self._generation_started = generation_started
+        self._stop_requested = Event()
         self.failures: list[str] = []
         self.answered = Event()
         self.finished = Event()
-        self.stage = "waiting for gate menu"
+        self.stage = "waiting for recovery generation"
+
+    def request_stop(self) -> None:
+        self._stop_requested.set()
 
     def run(self) -> None:
         try:
-            if b"Trust this folder?" not in self._terminal.read_until(
-                b"Trust this folder?"
-            ):
-                self.failures.append("the gate menu never reached the leased terminal")
+            while not self._generation_started():
+                if self._stop_requested.wait(0.01):
+                    return
+            self.stage = "recovery generation started; waiting for gate menu"
+            output = self._terminal.read_until(b"Trust this folder?")
+            if b"Trust this folder?" not in output:
+                self.failures.append(
+                    f"the gate menu never reached the leased terminal: {output[-256:]!r}"
+                )
                 return
             self.stage = "gate menu reached; sending trust"
             self._terminal.write(b"\x14")
             self.stage = "waiting for chat prompt"
-            if b"chat>" not in self._terminal.read_until(b"chat>"):
-                self.failures.append("trusting the folder never opened the chat prompt")
+            output = self._terminal.read_until(b"chat>")
+            if b"chat>" not in output:
+                self.failures.append(
+                    f"trusting the folder never opened the chat prompt: {output[-256:]!r}"
+                )
                 return
             self.answered.set()
             self.stage = "chat prompt reached; sending detach"
             self._terminal.write(b"\x1c\x1c")
             self.stage = "waiting for detach reset"
-            if b"\x1b[?2004l" not in self._terminal.read_until(b"\x1b[?2004l"):
-                self.failures.append("the detach reset blast never arrived")
+            output = self._terminal.read_until(b"\x1b[?2004l")
+            if b"\x1b[?2004l" not in output:
+                self.failures.append(
+                    f"the detach reset blast never arrived: {output[-256:]!r}"
+                )
                 return
             self.stage = "detach reset reached"
         finally:
@@ -1998,85 +2028,93 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
             marker=marker,
             terminal=terminal,
         )
-        answerer = _GateAnswerer(terminal)
 
         async def exercise() -> None:
             app = _gate_app(db)
-            async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
-                app._complete_summon_start(_gate_submission("gated", prompt_path))
+            answerer = _GateAnswerer(
+                terminal, generation_started=lambda: _gate_starts(log) == 2
+            )
+            answerer.start()
+            try:
+                async with app.run_test(size=(100, 30)) as pilot:
+                    await pilot.pause()
+                    app._complete_summon_start(_gate_submission("gated", prompt_path))
+                    offer = await _pushed_confirmation(pilot, app, timeout=45.0)
+                    assert "Looks like gated needs interaction." in offer.prompt
+                    assert "Trust this folder?" in offer.prompt
+                    assert "Attach?" in offer.prompt
+                    assert "This is provider setup" not in offer.prompt
+                    # The offer precedes readiness: the run is still pending-owned
+                    # and nothing has been injected into the menu.
+                    assert [run.pending for run in app._summon.owned_runs()] == [True]
+                    assert app._operation_state == "summon gated starting"
+                    assert _gate_starts(log) == 1
+                    assert _gate_inputs(log) == []
+                    assert _gate_menu_answers(log) == []
 
-                offer = await _pushed_confirmation(pilot, app, timeout=45.0)
-                assert "Looks like gated needs interaction." in offer.prompt
-                assert "Trust this folder?" in offer.prompt
-                assert "Attach?" in offer.prompt
-                assert "This is provider setup" not in offer.prompt
-                # The offer precedes readiness: the run is still pending-owned
-                # and nothing has been injected into the menu.
-                assert [run.pending for run in app._summon.owned_runs()] == [True]
-                assert app._operation_state == "summon gated starting"
-                assert _gate_starts(log) == 1
-                assert _gate_inputs(log) == []
-                assert _gate_menu_answers(log) == []
+                    offer.action_confirm()
+                    acknowledgement = await _pushed_confirmation(
+                        pilot, app, replacing=offer, timeout=10.0
+                    )
+                    assert (
+                        "This is provider setup, not Taut chat."
+                        in acknowledgement.prompt
+                    )
+                    assert (
+                        "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
+                        in acknowledgement.prompt
+                    )
+                    acknowledgement.action_confirm()
 
-                answerer.start()
-                offer.action_confirm()
-                acknowledgement = await _pushed_confirmation(
-                    pilot, app, replacing=offer, timeout=10.0
-                )
-                assert (
-                    "This is provider setup, not Taut chat." in acknowledgement.prompt
-                )
-                assert (
-                    "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
-                    in acknowledgement.prompt
-                )
-                acknowledgement.action_confirm()
-
-                try:
+                    try:
+                        await _await_until(
+                            pilot,
+                            answerer.finished.is_set,
+                            message="terminal answerer completion",
+                        )
+                    except AssertionError as exc:
+                        exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                        exc.add_note(
+                            f"terminal answerer failures: {answerer.failures!r}"
+                        )
+                        exc.add_note(f"gate events: {_gate_events(log)!r}")
+                        raise
+                    assert answerer.failures == []
+                    assert answerer.answered.is_set()
+                    try:
+                        await _await_until(
+                            pilot,
+                            lambda: any(marker in raw for raw in _gate_inputs(log)),
+                            message="post-recovery orientation injection",
+                        )
+                    except AssertionError as exc:
+                        exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                        exc.add_note(f"gate events: {_gate_events(log)!r}")
+                        exc.add_note(f"operation state: {app._operation_state!r}")
+                        exc.add_note(f"owned runs: {app._summon.owned_runs()!r}")
+                        raise
                     await _await_until(
                         pilot,
-                        answerer.finished.is_set,
-                        message="terminal answerer completion",
+                        lambda: app._operation_state == "summon live",
+                        message="post-recovery readiness",
                     )
-                except AssertionError as exc:
-                    exc.add_note(f"terminal answerer stage: {answerer.stage}")
-                    exc.add_note(f"terminal answerer failures: {answerer.failures!r}")
-                    exc.add_note(f"gate events: {_gate_events(log)!r}")
-                    raise
-                assert answerer.failures == []
-                assert answerer.answered.is_set()
-                try:
+                    assert app.suspensions == 1
+                    assert [run.pending for run in app._summon.owned_runs()] == [False]
+                    app._summon.request_owned_stops()
                     await _await_until(
                         pilot,
-                        lambda: any(marker in raw for raw in _gate_inputs(log)),
-                        message="post-recovery orientation injection",
+                        lambda: not app._owned_summon_tokens,
+                        message="owned worker return",
                     )
-                except AssertionError as exc:
-                    exc.add_note(f"terminal answerer stage: {answerer.stage}")
-                    exc.add_note(f"gate events: {_gate_events(log)!r}")
-                    exc.add_note(f"operation state: {app._operation_state!r}")
-                    exc.add_note(f"owned runs: {app._summon.owned_runs()!r}")
-                    raise
-                await _await_until(
-                    pilot,
-                    lambda: app._operation_state == "summon live",
-                    message="post-recovery readiness",
-                )
-                assert app.suspensions == 1
-                assert [run.pending for run in app._summon.owned_runs()] == [False]
-                app._summon.request_owned_stops()
-                await _await_until(
-                    pilot,
-                    lambda: not app._owned_summon_tokens,
-                    message="owned worker return",
-                )
+
+            finally:
+                answerer.request_stop()
+                answerer.join(timeout=20.0)
+            assert answerer.finished.is_set()
+            assert answerer.failures == []
+            assert answerer.answered.is_set()
 
         asyncio.run(exercise())
-        answerer.join(timeout=10.0)
-        assert answerer.finished.is_set()
-        assert answerer.failures == []
-        assert answerer.answered.is_set()
     finally:
         terminal.close()
 

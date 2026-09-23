@@ -10,7 +10,12 @@
   keyboard and pointer input still take ownership immediately.
 - TUI recovery tests give each foreground attach its own host-terminal session,
   preventing cancelled Windows pipe I/O and unread reset output from leaking
-  between independent runs.
+  between independent runs. Their provider-output deadlines now begin from the
+  fresh recovery generation rather than charging Windows process setup and TUI
+  confirmation work against the behavior under test.
+- TUI focus tests now synchronize on both the closed reply model state and the
+  completed Textual focus transition, avoiding an early observation of the
+  framework event cycle without weakening the focus assertion.
 - The documented `Ctrl-\ Ctrl-\` Summon detach chord now recognizes the
   equivalent Kitty CSI-u and xterm `modifyOtherKeys` encodings after an
   attached provider enables enhanced keyboard reporting. The shared POSIX and
