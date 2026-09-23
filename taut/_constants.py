@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-__version__: Final[str] = "0.9.8"
+__version__: Final[str] = "0.9.9"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
