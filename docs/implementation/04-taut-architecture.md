@@ -408,9 +408,13 @@ come from the root lock.
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
 `taut/state/_dialect.py` holds the minimal SQL dialect marker, and
-`taut/state/_sql.py` is the only production module with sidecar SQL. The
-historical schema compatibility shim has been retired
-(`docs/plans/2026-07-01-schema-shim-retirement-plan.md`); all callers,
+`taut/state/_sql.py` is the only production module with sidecar SQL.
+`dialect_for_taut_target()` accepts only a Taut-resolved target. A plain
+string is an explicit SQLite filesystem path. A bare string taken from an
+arbitrary `Queue.db_target` may be a backend DSN and must not be passed
+there. The historical schema compatibility shim has been retired
+(retired: 2026-07-01-schema-shim-retirement-plan, source `3cae1f4`; see the
+ledger in `docs/plans/README.md`); all callers,
 including tests, go through `taut/state/`. That boundary matters because SQL
 sidecar tables are the current state mapping, while [TAUT-12.2] reserves a
 future non-SQL mapping behind the same state-access boundary.
@@ -1122,7 +1126,10 @@ requirement or auditing implementation coverage.
 Read `docs/specs/02-taut-core.md`,
 `docs/specs/03-identity-addressing-notifications.md`, and the active plan for
 the behavior before editing. Prefer extending `TautClient` and `taut/state/`
-over adding logic in the CLI or watcher.
+over adding logic in the CLI or watcher. Public dataclasses in
+`taut/client/_models.py` set `__module__` to `taut.client`, so introspection
+follows the facade import path. `tests/test_public_api.py` pins that
+assignment for `SearchHit`.
 
 The canonical full local verification block lives in `README.md` under
 **Development**. Do not duplicate it here. For state/release changes, add the
@@ -1174,8 +1181,10 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
   see the ledger in `docs/plans/README.md`)
 - retired: 2026-06-18-simplebroker-latest-timestamp-plan (source `348eae9`;
   see the ledger in `docs/plans/README.md`)
-- `docs/plans/2026-07-01-schema-shim-retirement-plan.md`
-- `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md`
+- retired: 2026-07-01-schema-shim-retirement-plan (source `3cae1f4`; see the
+  ledger in `docs/plans/README.md`)
+- retired: 2026-07-01-taut-state-sql-dialect-plan (source `3cae1f4`; see the
+  ledger in `docs/plans/README.md`)
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md`
 - `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md`
 - `docs/plans/2026-07-09-taut-reactor-safety-plan.md`

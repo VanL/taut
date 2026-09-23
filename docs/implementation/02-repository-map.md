@@ -89,10 +89,10 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` | SimpleBroker-style release helper target, batch, and summon release gate port plan |
 | retired: 2026-06-17-implementation-review-followups-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
 | retired: 2026-06-18-simplebroker-latest-timestamp-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Indexed `list` metadata via SimpleBroker's latest pending timestamp API |
-| `docs/plans/2026-06-30-assets-reference-cleanup-plan.md` | Implemented cleanup of stale `assets/` and `generate_knot.py` lint references |
-| `docs/plans/2026-06-30-client-module-split-plan.md` | Implemented split of `taut.client` into a package facade and concern-specific mixins |
-| `docs/plans/2026-07-01-schema-shim-retirement-plan.md` | Implemented retirement of the historical schema compatibility shim in favor of `taut/state/` |
-| `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` | Implemented `TautState` interface and SQL dialect seam refactor |
+| retired: 2026-06-30-assets-reference-cleanup-plan (source `33e13ee`; see the ledger in docs/plans/README.md) | One-time cleanup of stale `assets/` and `generate_knot.py` lint references |
+| retired: 2026-06-30-client-module-split-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | Split of `taut.client` into a package facade and concern-specific mixins |
+| retired: 2026-07-01-schema-shim-retirement-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | Retirement of the historical schema compatibility shim in favor of `taut/state/` |
+| retired: 2026-07-01-taut-state-sql-dialect-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | `TautState` interface and SQL dialect seam refactor |
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
 | `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |

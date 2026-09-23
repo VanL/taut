@@ -3231,10 +3231,8 @@ expression behavior.
 - `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned reactor drive
   ownership, shutdown ordering, fixed lifecycle templates, and
   reference-reactor test ports.
-- `docs/plans/2026-06-30-client-module-split-plan.md` — structural
-  refactor of `taut.client` from a single module into a package facade and
-  concern-specific mixins while preserving the [TAUT-8.3] public import and
-  Python API contract.
+- retired: 2026-06-30-client-module-split-plan — source `3cae1f4`; see the
+  ledger in `docs/plans/README.md`.
 - retired: 2026-06-18-member-identity-addressing-plan — source `3cae1f4`; see
   the ledger in `docs/plans/README.md`.
 - retired: 2026-06-12-taut-foundation-plan — source `f1259c0`; see the
@@ -3254,10 +3252,8 @@ expression behavior.
   `348eae9`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-06-18-simplebroker-latest-timestamp-plan — source `348eae9`;
   see the ledger in `docs/plans/README.md`.
-- `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` — implemented
-  [TAUT-12.2] state-module refactor: introduce an internal `TautState`
-  interface and `SqlDialect` seam while preserving current SQLite/Postgres
-  behavior.
+- retired: 2026-07-01-taut-state-sql-dialect-plan — source `3cae1f4`; see
+  the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md` — implemented
   [TAUT-8.4] follow-up: replace `TautWatcher` access to `TautClient` private
   state and decoder methods with an internal `TautWatchRuntime` seam.
