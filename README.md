@@ -95,7 +95,7 @@ default, or a few machines through the Postgres extension.
 - **Real history** — ordinary reads never consume messages. Reading moves
   *your* bookmark; authors may explicitly delete one of their own messages.
 - **Disposable full-text search** — `taut search parser --channel general`
-  searches current source history without moving a cursor. SQLite uses its
+  searches visible history without moving a cursor. SQLite uses its
   built-in FTS5 support; `taut-pg` uses PostgreSQL's built-in text search and
   GIN, with no optional server extension required.
 - **Portable workspace dump/load** — `taut system dump --output backup.jsonl`
@@ -654,7 +654,11 @@ messages per thread. To drain a large backlog, run `taut read` again until it
 exits `2` for nothing unread.
 
 Search is also source-hydrated and cursor-neutral. Its index stores derived
-lexemes and message identity, not a second verbatim body. Bare search covers
+lexemes and message identity, not a second verbatim body. A direct broker
+insert below a thread's latest indexed message can stay missing until search
+fully reconciles that thread. Each search does that for one rotating thread,
+so continued searches converge. Hydration still drops a hit whose source row
+is gone. Bare search covers
 registered channels, their sub-threads, and DMs visible to the resolved actor;
 explicit scope flags replace that default with their union. Results are newest
 first. The SQLite and PostgreSQL interfaces, filters, visibility checks, and
@@ -876,13 +880,16 @@ Owning contracts: [TAUT-7] read model in the
 <summary><strong>Where's the daemon?</strong></summary>
 
 There isn't one. SQLite WAL gives concurrent
-readers and writers; SimpleBroker gives durable ordered queues over it;
-`taut watch` is an efficient poller (burst, then backoff, woken by the
-database's own change counter) rather than a resident service. When no
-one is watching, taut is no processes at all. The no-daemon account —
-including what could ever change it — is adopted alternative A4 in the
+readers and writers; SimpleBroker gives durable ordered queues over it.
+`taut watch` is a foreground follower, not a resident service. It waits on
+SimpleBroker's retained strategy: a native waiter when the backend has one,
+and a quiet poll otherwise. On SQLite, that quiet path wakes from the
+database change counter and does not check each queue while the counter is
+unchanged. When no one is watching, taut is no processes at all. The
+no-daemon account — including what could ever change it — is adopted
+alternative A4 in the
 [program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md);
-watcher behavior is [TAUT-8.4] in the
+watcher behavior is [TAUT-8.4] and [TAUT-8.5] in the
 [core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
 </details>
 

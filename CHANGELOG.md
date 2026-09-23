@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Current floor statements now match the packaged requirements:
+  SimpleBroker 8.4.0 and simplebroker-pg 4.4.0. [TAUT-9] states the shipped
+  Postgres trust boundary in the present tense, and the README describes
+  `taut watch` through the retained strategy in [TAUT-8.5].
+- The program-theory watcher row names one follower: Postgres
+  `LISTEN`/`NOTIFY` or SQLite burst-then-backoff for queue wakes, a
+  latch for PTY and other OS completions, and a deadline for clock work.
+  The README search summary states the [SRCH-10.2] bound: a direct insert
+  below a thread's latest indexed message can stay missing until that
+  thread's reconciliation turn.
 - Membership refresh racing shutdown now recognizes a typed topology-stop
   rejection; unrelated runtime failures still propagate.
 - Summon hard interrupts reuse native operation workers, keeping broker control

@@ -77,17 +77,8 @@ Recorded at cutover (2026-08-08) per the conflict rule; each remains
 README-owned until a spec absorbs it. The full audit is in the creating
 plan's equivalence ledger:
 
-- the shipped-Postgres trust boundary stated present-tense ("with
-  Postgres, the boundary is who can reach and write the configured
-  database/schema"): [TAUT-9]'s corresponding sentence still reads
-  future-tense ("when a server-backed broker arrives") and is recorded
-  stale in the creating plan's deviation log — the README's
-  present-tense statement is the accurate account and wins as an
-  explicit promise-level exception until [TAUT-9] is realigned
 - the no-daemon / no-server / zero-resident-process property as a core
   product statement (natural future home: [TAUT-2])
-- live-watch pacing mechanics — WAL concurrency, burst-then-backoff,
-  wake on the database change counter (natural home: [TAUT-8.4])
 - presence semantics for `taut who` (local liveness vs remote-style
   presence; no spec home today)
 - the identity heuristic of looking past shells and wrapper commands,

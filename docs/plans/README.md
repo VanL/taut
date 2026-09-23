@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-09-23-summon-enhanced-keyboard-detach-plan.md` | draft | no | Class 5 hardened plan for protocol-aware `Ctrl-\\ Ctrl-\\` detach across legacy, Kitty CSI-u, and xterm `modifyOtherKeys`; implementation awaits independent plan/spec-delta review. |
 | `2026-09-19-reactor-restoration-plan.md` | completed | no | Class 5 reactor restoration and cruft audit; core, Summon, MCP, and TUI changes reviewed and locally verified. Native Windows/Linux qualification remains an explicit platform limit. |
 | `2026-09-16-windows-lifecycle-determinism-plan.md` | active | no | Class 4 correction of Windows lifecycle/test boundaries; S1-S3 and S5 implemented, native S2/S5 qualification passed, and final review found no new code blocker. S4 DM-navigation cause remains unresolved and blocks closure/release. |
 | `2026-09-16-coordinated-0-9-8-preparation-plan.md` | completed | no | Class 5+P coordinated 0.9.8 preparation: synchronized metadata, dependency-floor reconciliation, release-gate isolation, PG lifecycle-test alignment, final checks, artifact build, and independent review passed. |
@@ -160,7 +161,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-07-taut-dump-load-spec-draft.md` | superseded | no | Historical reviewed [PIO-*] draft superseded by active `docs/specs/08-persistence-io.md`. |
 | `2026-08-10-mcp-search-plan.md` | completed | no | Class 5 explicit MCP adapter for core search; exact manifest/result contracts, immutable selector transport, real SQLite/stdio/PostgreSQL proof, documentation, and final Opus review passed before owner-authorized close-out. |
 | `2026-08-10-simplebroker-7-json-id-boundary-plan.md` | completed | no | Class 5 SimpleBroker 7 floor and external JSON timestamp-string compatibility migration; implementation, local verification, and independent review passed before the owner-authorized close-out commit. |
-| `2026-08-10-stable-dm-send-plan.md` | active | no | Class 5 existing-conversation stable-handle `say` target; `@route` remains the sole DM creator; focused Opus plan review passed. |
+| `2026-08-10-stable-dm-send-plan.md` | completed | no | Class 5 existing-conversation stable-handle `say` shipped; `@route` remains the sole DM creator. Final implementation review passed 2026-08-11 at `3204467`. Current proof includes `test_project_stable_dm_say_existing_conversation_contract`. The coordinated `taut-chat==0.9.8` pin discharges the old release-floor gate. |
 | `2026-08-10-system-doctor-plan.md` | completed | no | Class 5 actor-free report-only system doctor; implementation, real SQLite/PostgreSQL verification, final Opus review, and owner-authorized close-out passed. |
 | `2026-08-10-test-quality-remediation-plan.md` | completed | no | Class 4 repository-wide test-oracle remediation; 81 audited dispositions with hosted OS/Python, required-path, and coverage-preservation evidence recorded in the plan. |
 | `2026-08-11-eventually-test-helper-adoption-plan.md` | completed | no | Class 5+P repository-only sync/async eventual-evidence helper; seven eligible loop migrations, one audited Summon retention, full local verification, and final independent review passed before owner-authorized close-out. |

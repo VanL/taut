@@ -107,7 +107,7 @@ messages mean.
 | Bookmark / unread | Per-member cursor; unread = past the bookmark | Core read model | [TAUT-7.2], [TAUT-7.3] |
 | Notification inbox | Consumable pointers; claimed, drainable, unrepaired | Core | [IAN-2.5], [IAN-6.5], [IAN-7] |
 | Durable queue mechanics | Queue ordering, persistence, and activity-wait primitives | SimpleBroker (upstream; not re-specified here) | SimpleBroker's own contracts |
-| Live chat watcher | Burst-then-backoff following of joined threads | Core (scheduling base attributed to Weft) | [TAUT-8.4] |
+| Live chat watcher | One foreground follower. Queue wakes use SimpleBroker's retained strategy: Postgres `LISTEN`/`NOTIFY` on the shared connection, SQLite that strategy's burst-then-backoff poll keyed by the database change counter. PTY and other OS completions latch the same follower after publishing their result. Clock work is a deadline on that same wait. No second poll of the same state | Core (scheduling base attributed to Weft) | [TAUT-8.4], [TAUT-8.5] |
 | Summoned member | A hosted harness acting as an ordinary member | Summon; the member model stays core's | [SUM-2], [SUM-4] |
 | Human-first terminal UI | Interactive reflection over core and loaded extension capabilities | `taut-tui` composition root; domain semantics stay with their owners | [TUI-1]–[TUI-14] |
 | Terminal escape policy | Display-time safety control against accidental relay; `.taut.toml` is the operator policy input | Core presentation | [TAUT-6.4] |
@@ -325,3 +325,27 @@ Evidence:
   pre-release remediation plan, Unit E "Owner Amendment After
   Experimental Re-review (Revision 5)", and its 2026-08-06
   BEGIN-EXCLUSIVE lesson on out-of-layer enforcement
+
+### [REV-THEORY-002] The live watcher has one wake path for every event kind (2026-09-23)
+
+Current account: [THEORY-3]'s live-chat-watcher row is one foreground
+follower. Queue activity uses SimpleBroker's retained strategy:
+Postgres waits on the shared `LISTEN`/`NOTIFY` connection, and SQLite
+uses that strategy's burst-then-backoff poll, keyed by the database
+change counter. PTY and other OS work publish a result and then latch
+the same follower. Clock work is a deadline on that same wait. The row
+cites [TAUT-8.4] and [TAUT-8.5].
+Supersedes: the row's earlier names for this concept, first
+"Burst-then-backoff following of joined threads," then the same-day
+narrowing to "a native waiter, or a quiet poll." The first name described
+only the SQLite queue schedule. The second name described only the queue
+wake and dropped both that schedule and the latch and deadline.
+Pressure: The owner corrected both shortenings on 2026-09-23. Queue
+wake is backend-specific, and PTY, OS, and timer events are the other
+two inputs of the same arbiter. A second poll of those events would
+be a second reactor.
+Evidence:
+- owner correction on 2026-09-23
+- [TAUT-8.5] and [TAUT-12.1] in `docs/specs/02-taut-core.md`
+- SimpleBroker `PollingStrategy` and simplebroker-pg's shared
+  `LISTEN` connection

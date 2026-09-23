@@ -40,7 +40,7 @@ replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
 properties Summon requires. Version 5.6.1 added core reaction fanout; the
 repository-wide supported floor is now `simplebroker>=8.4.0`, aligned with
-`simplebroker-pg>=4.3.1`. The pair also exposes closeable public Queue
+`simplebroker-pg>=4.4.0`. The pair also exposes closeable public Queue
 iterators with same-thread synchronous operation cleanup. Version 8.0.0 makes
 ascending public message id the default retrieval order and advances the
 SQL/backend compatibility line; neither change alters Summon's read-one

@@ -2026,10 +2026,11 @@ plainly rather than imply otherwise:
   selected acting member id. It prevents ordinary accidents; it is not an
   authorization boundary because storage access and `--as` can select or
   rewrite either side.
-- The boundary is the file system. Sharing with another uid means loosening
-  file permissions yourself; taut will neither manage nor monitor that.
-  When a server-backed broker arrives ([TAUT-12.1]), the boundary becomes
-  database reachability — wider, but the same shape: storage access is
+- The boundary is storage access. For the default SQLite workspace, that is
+  the file system: sharing with another uid means loosening file permissions
+  yourself, and taut will neither manage nor monitor that. With the shipped
+  Postgres backend ([TAUT-12.1]), the boundary is who can reach and write the
+  configured database or schema. Wider, same shape: storage access is
   membership.
 - Threat model in one line: taut assumes every participant could already
   do worse than lie in chat, because they run inside your trust domain.

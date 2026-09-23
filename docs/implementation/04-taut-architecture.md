@@ -77,8 +77,10 @@ retrying the operation, or changing errors for PostgreSQL targets. This keeps
 corrupt-file diagnostics actionable while leaving backend policy with
 SimpleBroker.
 
-The current SimpleBroker minimum is `simplebroker>=8.3.1`, aligned with the
-current `simplebroker-pg>=4.3.1` minimum and their owning lock selections.
+The current SimpleBroker minimum is `simplebroker>=8.4.0`, aligned with the
+current `simplebroker-pg>=4.4.0` minimum and their owning lock selections.
+Version 8.4.0 adds bounded native waits and coalescing local activity
+notification for the shared reactor.
 Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 8.2.2 supplies the declaration-driven `Config`, explicit-source

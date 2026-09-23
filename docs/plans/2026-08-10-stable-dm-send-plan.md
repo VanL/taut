@@ -2,7 +2,9 @@
 
 Date: 2026-08-10
 
-Status: active after independent plan review
+Status: completed (see `docs/plans/README.md` status index). Final
+implementation review passed 2026-08-11 at `3204467`. The post-0.8.2
+release-floor gate is discharged by the coordinated `taut-chat==0.9.8` pin.
 
 Class: 5 — expands the public `say` address contract across Python, CLI, JSON,
 and MCP. It changes no durable schema or queue format.
@@ -478,3 +480,14 @@ and absence of negative-case state creation on both real backends. They must
 also confirm `@route` remains the sole creator, MCP and CLI teach the asymmetry,
 all external IDs remain strings, docs and registry ownership agree, and the
 reviewed work is present in git history.
+
+## Completion
+
+Closed 2026-09-23. The 2026-08-11 final implementation review passed, and
+`3204467` contains the reviewed behavior. Stable-handle `say` is the current
+contract: `@route` creates a conversation, `dm.d_*` only reopens one, and a
+miss does not repair state. Current proof includes
+`tests/test_shared_contract.py::test_project_stable_dm_say_existing_conversation_contract`
+and the CLI stable-send tests. `extensions/taut_mcp` depends on
+`taut-chat==0.9.8`, which discharges the post-`0.8.2` floor gate in the
+deviation log.
