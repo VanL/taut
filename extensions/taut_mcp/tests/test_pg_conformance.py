@@ -42,24 +42,17 @@ def test_postgres_owner_detach_reattach_and_shutdown_close_sessions(
 
     monkeypatch.setattr(BrokerSession, "close", record_close)
 
-    async def wait_for_closes(expected: int, description: str) -> None:
-        deadline = asyncio.get_running_loop().time() + 5
-        while len(close_calls) != expected:
-            if asyncio.get_running_loop().time() >= deadline:
-                raise AssertionError(
-                    f"{description}: expected {expected}, got {len(close_calls)}"
-                )
-            await asyncio.sleep(0.01)
-
     async def scenario() -> None:
-        reactor = ProcessReactor(asyncio.get_running_loop())
+        failed_reactor = ProcessReactor(asyncio.get_running_loop())
         with pytest.raises(WorkspaceToolError, match="workspace identity invalid"):
-            await reactor.attach_workspace(
+            await failed_reactor.attach_workspace(
                 str(taut_pg_project),
                 "taut-invalid-token",
             )
-        await wait_for_closes(1, "failed candidate session close")
+        await failed_reactor.aclose()
+        assert len(close_calls) == 1
 
+        reactor = ProcessReactor(asyncio.get_running_loop())
         attached = await reactor.attach_workspace(
             str(taut_pg_project),
             member.token or "",
@@ -67,12 +60,12 @@ def test_postgres_owner_detach_reattach_and_shutdown_close_sessions(
         canonical = canonical_of(attached)
         assert len(close_calls) == 1
         await reactor.detach_workspace(canonical)
-        await wait_for_closes(3, "detached client and watcher session close")
+        assert len(close_calls) == 3
 
         await reactor.attach_workspace(str(taut_pg_project), member.token or "")
         assert len(close_calls) == 3
         await reactor.aclose()
-        await wait_for_closes(5, "shutdown client and watcher session close")
+        assert len(close_calls) == 5
 
     asyncio.run(scenario())
     assert len({id(session) for session, _thread_id in close_calls}) == 5

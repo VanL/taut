@@ -56,6 +56,9 @@
   visible.
 - MCP workspace completion now wakes the parent directly, removing maintenance
   and shutdown polls. Failed executor submission cannot grant workspace authority.
+- PostgreSQL MCP lifecycle coverage now waits for the failed workspace owner's
+  executor completion before reattaching. It no longer mistakes an observed
+  broker-session close for release of the reactor's attachment reservation.
 - TUI presentation failures are reported instead of swallowed. Reaction
   configuration failures have a typed public exception; duplicate private
   validation and diagnostic fallbacks are removed.
