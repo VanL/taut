@@ -1,7 +1,8 @@
 # Watch Interrupt Drain Plan
 
-Status: draft — defect reproduced under load; owner chose exit 130 on
-2026-09-24; awaiting independent plan review.
+Status: completed — 2026-09-24; implementation and verification complete;
+owner chose exit 130; independent plan and completed-work reviews passed with
+dispositions recorded below.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the
 normative signal-handling sentence in [TAUT-8.5], declares the
@@ -32,18 +33,18 @@ raises in place. Evidence: `docs/plans/artifacts/2026-09-23-deep-dive-review.md`
 
 ## Requested Outcomes
 
-- [ ] SIGINT on the main-thread drive records pending state, wakes the
+- [x] SIGINT on the main-thread drive records pending state, wakes the
   arbiter, and lets the turn loop unwind at its next boundary; cleanup
   closes every scope; `KeyboardInterrupt` is re-raised after cleanup so
   embedders still observe it.
-- [ ] A second SIGINT while the first is pending raises immediately (escape
+- [x] A second SIGINT while the first is pending raises immediately (escape
   hatch for a blocked delivery write).
-- [ ] `taut watch` interrupted by SIGINT exits 130 in every phase, with the
+- [x] `taut watch` interrupted by SIGINT exits 130 in every phase, with the
   one-line `interrupted` diagnostic on stderr, never 1, never a traceback.
-- [ ] [TAUT-8.5] names `TAUT_MAX_INTERVAL` (the `TAUT` namespace) as the
+- [x] [TAUT-8.5] names `TAUT_MAX_INTERVAL` (the `TAUT` namespace) as the
   tuning knob, states the per-chunk recheck floor, and records the owner's
   idle-cost budget (ceiling 2.5% of one core per idle SQLite follower).
-- [ ] A firing test delivers a real SIGINT while the owner thread is inside
+- [x] A firing test delivers a real SIGINT while the owner thread is inside
   SimpleBroker I/O.
 
 ## Source Documents
@@ -80,7 +81,11 @@ Supporting context:
 
 - `c0a4616e76e954e3f9fbea93fbf487c3ee660cbe` — `docs/specs/02-taut-core.md`
   at plan authoring time; unchanged through `c894059` (0.9.9 release SHA).
-- Promotion baseline identifier: recorded after the spec-promotion slice.
+- Promotion baseline identifier: `docs/specs/02-taut-core.md` at worktree
+  SHA-256 `8112a261759fa209887a35ce0cffa193f1302cc9cb463e4375efb01041dbdd3e`
+  over Git base `cfd8799`. The worktree already contained concurrent,
+  unrelated edits in [TAUT-3.2], [TAUT-7.2], other [TAUT-8.1] rows, and the
+  related-plans list; the interrupt delta was applied without replacing them.
 
 ## Proposed Spec Delta
 
@@ -119,7 +124,7 @@ Proposed text:
 
 Current: `` `BROKER_MAX_INTERVAL` is the product tuning knob. ``
 
-Proposed (owner-approved wording 2026-09-24; task 5 fills in the measured
+Proposed (owner-approved wording 2026-09-24; task 3 fills in the measured
 numbers before promotion):
 
 > `TAUT_MAX_INTERVAL` is the product tuning knob for the SQLite backoff
@@ -127,8 +132,10 @@ numbers before promotion):
 > ignores ambient `BROKER_*` values ([TAUT-3.2]). The knob bounds the
 > quiet-pass interval only: the retained strategy rechecks the data
 > version on every wait chunk regardless of the ceiling, so idle cost has a
-> floor the knob cannot move (measured at about one percent of one core and
-> roughly sixty data-version queries per second per idle SQLite follower).
+> floor the knob cannot move (the 2026-09-24 30-second local probe measured
+> 1.41 percent of one core and 63.8 data-version queries per second at the
+> default, versus 1.17 percent and 51.6 queries per second with
+> `TAUT_MAX_INTERVAL=1.0`).
 > The accepted budget for an idle follower is at most 2.5 percent of one
 > core; one to two percent is the deliberate trade for sub-100 ms local
 > responsiveness. Lower the floor upstream in the strategy, never with a
@@ -144,6 +151,11 @@ or DM miss` with:
 > `EXIT_INTERRUPTED` convention); 1 error; 2 unrecognized member / explicit
 > thread or DM miss. An interrupt that lands before the watcher is
 > constructed uses the same 130 and prints no traceback.
+
+In the exit-code rule after the command table, add:
+
+> Signal-interrupted `watch` is the fourth exit class: 130 after cleanup,
+> matching SimpleBroker's `EXIT_INTERRUPTED` convention.
 
 ### `## Related Plans` — add
 
@@ -234,8 +246,8 @@ unclosed and logs one line.
 - Source revert. No storage change. No one-way door.
 - Post-deploy signal: 200 interrupted `taut watch --json` runs under a
   concurrent writer (the review's randomized-offset SIGINT shape) all exit with
-  the declared code and empty stderr; `lsof` shows no `.taut.db` handles
-  after exit.
+  the declared code and exactly `taut: interrupted\n` on stderr; `lsof` shows
+  no `.taut.db` handles after exit.
 
 ## Dependency-Ordered Tasks
 
@@ -243,8 +255,12 @@ unclosed and logs one line.
    SimpleBroker's `EXIT_INTERRUPTED` and its `interrupted` stderr line.
 2. **Independent plan review** including the [TAUT-8.5] delta and the
    supersession of restoration-plan finding P2-1.
-3. **Spec-promotion slice**; record the promotion baseline.
-4. **Red test inside broker I/O.** `tests/test_watcher.py`: wrap the real
+3. **Measure the knob.** Before editing [TAUT-8.5]'s knob sentence, run an
+   idle `taut watch` for 30 s with and without `TAUT_MAX_INTERVAL=1.0` and
+   count backend data-version queries (not only calls through the public
+   `Queue.get_data_version` method). Record the numbers; pick the knob wording.
+4. **Spec-promotion slice**; record the promotion baseline.
+5. **Red test inside broker I/O.** `tests/test_watcher.py`: wrap the real
    `release_current_thread_connection` (the seam the review's deterministic
    reproduction used: raising at entry to that call left an open operation) so that the real SIGINT handler fires at
    entry, drive `run_forever` on the main thread, and assert: no
@@ -252,23 +268,23 @@ unclosed and logs one line.
    (`lsof`-style check via the existing handle-lifetime helpers), and
    `KeyboardInterrupt` observed by the caller. Must fail at baseline with
    the close error. What stays real: SQLite, the strategy, the signal.
-5. **Measure the knob.** Before editing [TAUT-8.5]'s knob sentence, run an
-   idle `taut watch` for 30 s with and without `TAUT_MAX_INTERVAL=1.0` and
-   count data-version queries (the review measured 1087 vs 900 over 15 s).
-   Record the numbers; pick the knob wording.
 6. **Implement flag-and-drain** in `BaseReactor._sigint_handler` (record
    `_pending_interrupt`, call `notify_activity()`, return; second signal
    raises), observe the flag in the turn loop at the boundary where
    `_stop_requested` is already observed, and raise `KeyboardInterrupt`
-   after `_finalize_run` in `run_forever`. In `watch.py`, map the
-   interrupt to the declared code; in `_dispatch.py`, make an interrupt
-   that escapes before `run_forever` produce the same code without a
-   traceback. Rewrite the two pinned tests. Stop if the change needs a
-   thread, timer, or Event in the handler.
+   after `_finalize_run` in `run_forever`. Let `watch.py` unwind its existing
+   `finally: watcher.stop(...)`; do not convert the exception to a command
+   return there. Catch the escaping interrupt once in `dispatch()` after
+   confirming the selected verb is `watch`, print the diagnostic, and return
+   130. This covers pre-construction interruption without widening the command
+   adapter return-code validator beyond 0/1/2. Rewrite every test pinned to the
+   immediate raise, including the command-registry interrupt cases. Stop if the
+   change needs a thread, timer, or Event in the handler.
 7. **Stress proof.** Add a marked-slow test that runs the review's
    concurrent-writer SIGINT scenario 60 times and asserts every exit is the
    declared code (this is the regression for the flaky CLI test). Make the
-   existing CLI test capture stderr and assert it is empty.
+   existing CLI test capture stderr and assert the one-line interrupt
+   diagnostic with no traceback.
 8. **Docs, CHANGELOG, traceability, completed-work review, index flip.**
    Update `docs/implementation/04-taut-architecture.md` with the reason
    taut now matches SimpleBroker's handler and record in the restoration
@@ -321,16 +337,50 @@ within one strategy pass? Is the second-SIGINT escape necessary or armor?"
 2. **Resolved 2026-09-24 (owner):** name the real knob; naming the
    SimpleBroker value was always an error. The owner's idle-cost ceiling is
    2.5% of one core per idle follower, with 1–2% accepted as the trade for
-   responsiveness; task 5 records the measured numbers in the sentence.
+   responsiveness; task 3 records the measured numbers in the sentence.
 
 ## Deviation Log
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TAUT-8.1] | `watch.py` maps the interrupt to 130 and `_dispatch.py` covers pre-construction interruption | `watch.py` performs cleanup and re-raises; public `dispatch()` maps only selected `watch` interrupts to the diagnostic and 130 | One boundary covers every watch phase, avoids duplicate diagnostics, and preserves the 0/1/2 command-adapter return contract | No semantic change; promoted text still declares 130 for interrupted watch |
 
 ## Review Log
 
 (append-only)
+
+- 2026-09-24 — Independent plan review attempt 1: Claude 2.1.273,
+  read-only safe/plan mode with matched `Read,Grep,Glob` tools, strict MCP
+  configuration, closed stdin, and no session persistence. The 540-second
+  bound expired with no response or verdict (exit 124); no approval is
+  inferred and no repository write occurred. Relaunch with a 900-second bound
+  is a distinct attempt calibrated to this machine's prior 561–583 second
+  reviews.
+- 2026-09-24 — Independent plan review attempt 2: Claude Opus 4.6,
+  identical read-only containment, 900-second bound. Completed in 558 seconds
+  with success/end-turn signals and verdict PASS. P1-1 (the adapter validator
+  rejects a returned 130) accepted as a design constraint and avoided: the
+  command adapter re-raises, while `dispatch()` owns the selected-watch exit
+  mapping. P1-2 (catch location underspecified) accepted and fixed in task 6.
+  P2-2 (the general exit-code paragraph omitted 130) accepted in the proposed
+  spec delta. P2-1 (claimed `_ActiveOperationCloseError` did not exist) rejected
+  after checking the project `uv` environment: SimpleBroker 8.4.0 defines it
+  in `simplebroker/session.py`, and `BrokerSession.close()` raises it when the
+  current thread retains an operation depth. The reviewer had inspected only
+  `_broker_session.py`. No repository write occurred.
+- 2026-09-24 — Independent completed-work review: Claude Opus 4.6 under the
+  same read-only containment returned PASS with no blockers. P1-1 observed
+  that the copied scheduler's narrow `_topology_sigint_critical` /
+  `_topology_deferred_sigint` path is now dead for `BaseReactor`; accepted as
+  out-of-scope cleanup because the general flag-and-drain rule deliberately
+  subsumes it. P2-1 observed that the dispatch boundary re-parses `argv` after
+  an interrupt and a concurrent malformed invocation could replace the
+  interrupt with `_UsageError`; accepted because valid `watch` invocations
+  cover the declared contract and refactoring the dispatcher for this compound
+  edge is disproportionate. The reviewer separately noted that a broken stderr
+  could replace the diagnostic with `BrokenPipeError`; accepted as pre-existing
+  terminal-loss behavior outside this signal-lifecycle delta. No repository
+  write occurred.
 
 ## Execution Log
 
@@ -342,6 +392,45 @@ within one strategy pass? Is the second-SIGINT escape necessary or armor?"
   the `BROKER_` name was an error from before the namespace split. Idle
   budget: ceiling 2.5% of one core per follower, 1–2% accepted for
   responsiveness.
+- 2026-09-24 — Task 3 measurement, real `taut watch --json`, real SQLite,
+  backend `PRAGMA data_version` boundary, 30 seconds each. Default: 1.41% of
+  one core, 1,915 queries (63.8/s). `TAUT_MAX_INTERVAL=1.0`: 1.17%, 1,549
+  queries (51.6/s). A first high-level counter was discarded because it missed
+  the strategy's retained bound callback. Both accepted measurements remain
+  within the owner's 2.5% ceiling and demonstrate the 20 ms recheck floor.
+- 2026-09-24 — Task 4 spec promotion completed with strategy A. Promoted
+  [TAUT-8.1]'s watch exit and global interrupt class, [TAUT-8.5]'s signal
+  drain and measured tuning-knob text, and the reciprocal related-plan link.
+  The promotion baseline is recorded above; `git diff --check` passed for the
+  spec and plan.
+- 2026-09-24 — Task 5 RED observed before production edits:
+  `uv run --extra dev pytest tests/test_watcher.py::test_base_reactor_sigint_drains_real_broker_operation_before_cleanup -n 0 -q`
+  failed because the real SIGINT interrupted
+  `release_current_thread_connection`; the child reported
+  `_ActiveOperationCloseError`, the interrupt carried the reactor-cleanup
+  failure note, and `_resources_closed` remained false. The first probe run
+  exposed a test-wrapper signature error and was corrected before this valid
+  behavioral RED.
+- 2026-09-24 — Tasks 6–8 completed. The first SIGINT now latches pending state,
+  wakes the existing activity strategy, and raises only at a turn boundary;
+  the second signal remains an immediate escape. `watch.py` performs cleanup
+  and re-raises, while the public dispatcher maps only `watch` interrupts to
+  exit 130 and `taut: interrupted\n`. A non-watch interrupt firing test proves
+  the boundary did not widen. The terminal-sink inventory records the added
+  diagnostic write.
+- 2026-09-24 — Verification: the focused watcher, CLI, and command-registry
+  suites passed; the real 60-run randomized concurrent-writer SIGINT stress
+  passed; Summon signal neighbors passed 3 tests and MCP shutdown neighbors
+  passed 2 tests; touched-code Ruff and repository-wide mypy passed;
+  `check-doc-paths`, `check-plan-status-index`, `check-cli-claims`, and
+  `git diff --check` passed. The repository-wide suite reached 2,314 passed
+  and 5 skipped before the terminal-sink inventory correction; that corrected
+  gate then passed independently. Three residual full-suite failures are from
+  concurrent out-of-scope identity and terminal/TUI/Summon edits: one reply
+  semantic assertion and two Ruff-policy gates. Repository-wide Ruff reports
+  the same unrelated new-file/import and complexity findings. The mutation
+  requirement is satisfied by the recorded baseline RED, which ran the old
+  in-frame handler against the real broker-operation probe.
 
 ## Fresh-Eyes Review
 

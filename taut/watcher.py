@@ -1639,6 +1639,7 @@ class BaseReactor(MultiQueueWatcher):
         self._drive_loop_active = False
         self._stop_once_lock = threading.Lock()
         self._stop_requested = False
+        self._pending_interrupt = False
         self._resources_closed = False
         self._resources_closing = False
         if not hasattr(self, "_cursors"):
@@ -1818,13 +1819,17 @@ class BaseReactor(MultiQueueWatcher):
         self._strategy.notify_activity()
 
     def _sigint_handler(self, signum: int, frame: Any) -> None:
-        """Defer only atomic topology publication; never acquire signal-frame locks."""
+        """Latch one graceful interrupt; let a second escape immediately."""
+        del signum, frame
+        if self._pending_interrupt:
+            raise KeyboardInterrupt
+        self._pending_interrupt = True
         self._stop_requested = True
-        if self._topology_sigint_critical:
-            self._topology_deferred_sigint = True
-            return
-        # Outside publication, synchronous unwind owns stop and cleanup.
-        raise KeyboardInterrupt
+        self._strategy.notify_activity()
+
+    def _raise_if_interrupt_pending(self) -> None:
+        if self._pending_interrupt:
+            raise KeyboardInterrupt
 
     @final
     def wait_for_activity(self, timeout: float | None = None) -> None:
@@ -1854,12 +1859,15 @@ class BaseReactor(MultiQueueWatcher):
             self._thread = weakref.ref(current)
         iterations = 0
         try:
+            self._raise_if_interrupt_pending()
             if self._stop_event.is_set():
                 return
             self._ensure_wait_strategy_started()
             while not self._stop_event.is_set():
+                self._raise_if_interrupt_pending()
                 self.process_once()
                 iterations += 1
+                self._raise_if_interrupt_pending()
                 if max_iterations is not None and iterations >= max_iterations:
                     break
                 if self._stop_event.is_set():
@@ -1928,7 +1936,13 @@ class BaseReactor(MultiQueueWatcher):
                     signal.signal(signal.SIGINT, previous_sigint_handler)
             finally:
                 try:
-                    self._finalize_run()
+                    if self._pending_interrupt and sys.exception() is None:
+                        try:
+                            raise KeyboardInterrupt
+                        finally:
+                            self._finalize_run()
+                    else:
+                        self._finalize_run()
                 finally:
                     self._running_event.clear()
 

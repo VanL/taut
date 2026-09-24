@@ -1833,6 +1833,14 @@ query on a confirmed turn; avoiding it is optional optimization, not restoration
 P2-4 no action: redundant refresh closes the startup race, verified on both
 backends. Copied Weft docstring stays intact for source equivalence.
 
+2026-09-24 supersession note: P2-1's trace that immediate in-frame unwind was
+safe was incorrect under load. A SIGINT between SimpleBroker operation begin
+and release leaves the current thread's operation depth open, so
+`BrokerSession.close()` refuses with `_ActiveOperationCloseError`. The active
+`docs/plans/2026-09-24-watch-interrupt-drain-plan.md` replaces that disposition
+with first-signal flag-and-drain, second-signal escape, and a real-SQLite
+operation-release regression.
+
 ### 2026-09-22 S6 measured source work
 
 Bounded real-strategy probe (40 hot writes at nominal 50 ms spacing) counts calls

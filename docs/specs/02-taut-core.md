@@ -1233,7 +1233,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace persistence maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
 | `system doctor` | Actor-free fixed report of bounded core, broker, extension, and search-work observations under spec 09. It performs no repair and makes no quiescence, dump-safety, process-census, or exhaustive-health claim. | 0 complete healthy report; 1 usage/target/access/framework failure prevented a complete report; 2 complete report has a fail or dependency skip |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
-| `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
+| `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean programmatic stop; 130 when stopped by SIGINT, after cleanup, with the one-line `taut: interrupted` diagnostic on stderr (SimpleBroker's `EXIT_INTERRUPTED` convention); 1 error; 2 unrecognized member / explicit thread or DM miss. An interrupt that lands before the watcher is constructed uses the same 130 and prints no traceback. |
 | `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
@@ -1254,6 +1254,8 @@ subcommands, missing or malformed arguments rejected by the parser — are
 errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
 class so that polling idioms like `taut read -q && handle_new` cannot
 mistake a typo for "nothing new". `--help` and `--version` exit 0.
+Signal-interrupted `watch` is the fourth exit class: 130 after cleanup,
+matching SimpleBroker's `EXIT_INTERRUPTED` convention.
 `system doctor` is the scoped exception: exit 2 means that its complete fixed
 report contains a finding or dependency skip. An incomplete doctor report or
 inspection-framework failure exits 1. No other command inherits this meaning.
@@ -1684,12 +1686,16 @@ I/O with an actionable extension-upgrade diagnostic rather than drive unsafely.
 
 Stop has two stages. Ordinary owner or foreign-thread `request_stop()`
 publishes stop state and wakes its reactor without joining or closing owned
-resources. Python signal handlers publish plain pending state and use only
-the supported signal-safe notifier; they perform no Event, lock, logging,
-adapter or resource operation. Core synchronous watch preserves immediate
-`KeyboardInterrupt` outside waiter replacement and defers that raise until
-ownership transfer commits inside the replacement critical section. Normal
-stack unwind and owner execution perform cleanup.
+resources. Python signal handlers publish plain pending state and use only the
+supported signal-safe notifier; they perform no Event, lock, logging, adapter
+or resource operation, and they never raise into the interrupted frame. The
+first SIGINT on the drive owner records a pending interrupt and wakes the
+arbiter; the turn loop observes it at its next boundary, completes the current
+broker operation, unwinds through the ordinary finalizer that closes every
+owned scope, and then raises `KeyboardInterrupt` to the caller. A second SIGINT
+while one is pending raises immediately so a blocked delivery write can be
+escaped; that path may leave scopes for the finalizer's best-effort close.
+Waiter-replacement deferral is subsumed by this rule.
 `stop(join=...)` may join an owner from another thread, but it must not close
 reactor-owned handles while that owner is driving. The drive finalizer runs
 only after the turn loop has unwound, and closes owned queues, waiters, strategy
@@ -1730,7 +1736,18 @@ hints. Notification is a latch observed on strategy return, not a guaranteed
 interrupt of the waiter call already in progress. The native strategy checks
 that latch after each pass bounded by `max(delay, burst_sleep)`, so the default
 local response arrives after one roughly 100 ms quiet pass (before configured
-jitter) without a deadline. `BROKER_MAX_INTERVAL` is the product tuning knob.
+jitter) without a deadline. `TAUT_MAX_INTERVAL` is the product tuning knob for
+the SQLite backoff ceiling; Taut resolves its configuration in the `TAUT`
+namespace and ignores ambient `BROKER_*` values ([TAUT-3.2]). The knob bounds
+the quiet-pass interval only: the retained strategy rechecks the data version
+on every wait chunk regardless of the ceiling, so idle cost has a floor the
+knob cannot move (the 2026-09-24 30-second local probe measured 1.41 percent of
+one core and 63.8 data-version queries per second at the default, versus 1.17
+percent and 51.6 queries per second with `TAUT_MAX_INTERVAL=1.0`). The accepted
+budget for an idle follower is at most 2.5 percent of one core; one to two
+percent is the deliberate trade for sub-100 ms local responsiveness. Lower the
+floor upstream in the strategy, never with a second Taut-side sleep
+([REV-THEORY-002]).
 
 Inputs have four origins. Broker activity is observed directly by the strategy.
 In-process completion or a self-write publishes state and calls
@@ -3076,6 +3093,11 @@ expression behavior.
 
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
   existing human message-time formatter for shared CLI/TUI rendering.
+
+- `docs/plans/2026-09-24-watch-interrupt-drain-plan.md` — replaces the
+  immediate in-frame `KeyboardInterrupt` with flag-and-drain on the reactor
+  owner, declares the interrupted-watch exit code, and corrects the
+  tuning-knob name.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   reactor wake ownership and safe signal handling by replacing the drifted

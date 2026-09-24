@@ -1483,9 +1483,7 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
 
 
 @_BASE_REACTOR_SIGINT_PROBE_GROUP
-def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits() -> (
-    None
-):
+def test_base_reactor_defers_sigint_until_waiter_replacement_commits() -> None:
     result = _run_base_reactor_sigint_probe()
 
     assert result == {
@@ -1533,7 +1531,7 @@ def test_base_reactor_sigint_probe_rejects_unexpected_startup_status() -> None:
         _run_base_reactor_sigint_probe(mode="unexpected-startup")
 
 
-def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(
+def test_base_reactor_sigint_flags_first_and_second_escapes(
     tmp_path: Path,
 ) -> None:
     stop_event = threading.Event()
@@ -1545,12 +1543,14 @@ def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(
         polling_strategy=strategy,
     )
 
-    with pytest.raises(KeyboardInterrupt):
-        watcher._sigint_handler(signal.SIGINT, None)
+    watcher._sigint_handler(signal.SIGINT, None)
 
     assert not stop_event.is_set()  # Lock-taking publication follows signal unwind.
     assert watcher._stop_requested is True
+    assert watcher._pending_interrupt is True
     assert watcher._resources_closed is False
+    with pytest.raises(KeyboardInterrupt):
+        watcher._sigint_handler(signal.SIGINT, None)
 
     watcher.stop(join=False)
 
@@ -1637,6 +1637,56 @@ def test_base_reactor_run_cleans_up_if_running_state_publication_is_interrupted(
         watcher.run_forever()
 
     assert running_event.clear_calls == 1
+    assert watcher._resources_closed is True
+
+
+def test_base_reactor_run_raises_sigint_latched_as_drive_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"signal.return": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+    )
+    monkeypatch.setattr(
+        watcher,
+        "run_until_stopped",
+        lambda: watcher._sigint_handler(signal.SIGINT, None),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher.run_forever()
+
+    assert watcher._resources_closed is True
+    assert watcher.is_running() is False
+
+
+def test_base_reactor_late_sigint_keeps_cleanup_failure_as_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"signal.cleanup": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+    )
+    close_resources = watcher._close_reactor_resources
+    monkeypatch.setattr(
+        watcher,
+        "run_until_stopped",
+        lambda: watcher._sigint_handler(signal.SIGINT, None),
+    )
+    monkeypatch.setattr(
+        watcher,
+        "_close_reactor_resources",
+        lambda: (_ for _ in ()).throw(RuntimeError("late cleanup failed")),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        watcher.run_forever()
+
+    assert caught.value.__notes__ == ["reactor cleanup failed: late cleanup failed"]
+    monkeypatch.setattr(watcher, "_close_reactor_resources", close_resources)
+    watcher.stop(join=False)
     assert watcher._resources_closed is True
 
 
@@ -3891,6 +3941,18 @@ def test_reactor_restoration_real_signal_with_held_event_lock() -> None:
         "status": "ok",
         "interrupted": True,
         "resources_closed": True,
+    }
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_drains_real_broker_operation_before_cleanup() -> None:
+    assert _run_base_reactor_sigint_probe(mode="broker-io") == {
+        "cleanup_error": None,
+        "interrupt_notes": [],
+        "interrupted": True,
+        "resources_closed": True,
+        "signal_delivered": True,
+        "status": "ok",
     }
 
 

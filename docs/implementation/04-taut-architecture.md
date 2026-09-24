@@ -792,11 +792,17 @@ recycles the owner thread; it may idempotently close an already-closed queue lea
 Cleanup failures preserve the active exception and permit an explicit retry.
 A live turn must unwind before a foreign stop caller can close its resources.
 
-SIGINT assigns plain state and raises promptly outside topology publication.
-Inside that atomic boundary it records a deferred interrupt, which the copied
-transaction delivers after coherent publication. No Event lock or resource
-cleanup is entered from the signal frame. The run boundary restores the prior
-handler even when startup or cleanup fails.
+SIGINT now matches SimpleBroker's flag-and-drain discipline. The first signal
+records a pending interrupt and arms the retained strategy's plain-state local
+latch; it never raises into broker bookkeeping, topology publication, an Event
+lock, or resource cleanup. The owner finishes the current operation, observes
+the flag at the next turn boundary, and raises `KeyboardInterrupt` through the
+ordinary finalizer. A second signal while the flag is pending raises
+immediately as the escape for a blocked delivery write. The run boundary
+restores the prior handler even when startup or cleanup fails. The CLI owns one
+outer mapping for selected `watch` invocations, so interrupts before watcher
+construction and during the drive both exit 130 with one diagnostic after
+cleanup; command adapters retain their 0/1/2 return contract.
 
 Persistent clients lazily acquire a separate scope at their first persistent
 queue request, including a notification activity queue on an otherwise
@@ -806,9 +812,11 @@ uses another small scope. `client.watch()` recycles construction-thread state
 through that runtime before handoff, and the watcher owner closes runtime and
 reactor scopes independently. Constructor rollback retains the original error
 while attempting every acquired owner.
-The firing proof for the real SIGINT path runs the reactor in a dedicated child
-process. The child first emits structured startup readiness after imports; only
-then does the parent start the strict three-second behavior watchdog. A distinct
+The firing proofs for the real SIGINT path run the reactor in a dedicated child
+process, including a signal delivered exactly at SimpleBroker operation release
+and a signal delivered while the stop Event lock is held. The child first emits
+structured startup readiness after imports; only then does the parent start the
+strict three-second behavior watchdog. A distinct
 bounded startup watchdog diagnoses scheduler or interpreter-launch stalls
 without weakening the production-deadlock check. All probe and watchdog tests
 share one xdist group. The parent terminates only the child on a hang and
@@ -1131,7 +1139,7 @@ requirement or auditing implementation coverage.
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, `taut/commands/channel.py`, and the other per-verb command adapters | `tests/test_cli.py` parser-inventory, channel-topic/rename, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects, `Channel`, `MessageDeletion`, `MessageReaction`, read-only selected identity, notification activity/peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_identity.py::IdentityMixin.peek_identity`, `taut/client/_notifications.py::NotificationsMixin.notification_activity_queue`, `peek_inbox`, the other client mixins, and lazy root exports | exact public signatures in `tests/test_public_api.py`; selector neutrality, queue reuse/reselection/lifecycle, channel, exact-message, reaction, notification-peek, and other client contracts in `tests/test_client.py`; shared identity/activity/channel/exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL; `tests/test_terminal_text.py`; `tests/test_lazy_imports.py` |
-| [TAUT-8.4], [TAUT-8.5], watcher behavior, public `WatcherRejected`, and shared reactor lifecycle | `taut/_exceptions.py::WatcherRejected`, `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal rejection, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_public_api.py`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
+| [TAUT-8.4], [TAUT-8.5], watcher behavior, public `WatcherRejected`, and shared reactor lifecycle | `taut/_exceptions.py::WatcherRejected`, `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py`, `taut/commands/_dispatch.py` | `tests/test_watcher.py` ownership, stop, wake, real-SIGINT broker-operation drain, cursor replay, construction cleanup, explicit-target resolution, terminal rejection, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_sigint_under_concurrent_writer_always_exits_130`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_command_registry.py` in-watch and pre-construction interrupt cases; `tests/test_public_api.py`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing, stable existing-DM send, and special queue names | `taut/addressing.py`, `taut/client/_base.py::_resolve_direct_message`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_existing_dm`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`; direct selection, corruption, nonhealing, and blank-order cases in `tests/test_direct_messages.py` and `tests/test_client.py`; full valid/miss/name-reassignment matrix in `tests/test_shared_contract.py` on SQLite and PostgreSQL; CLI/registry cases in `tests/test_cli.py` and `tests/test_command_registry.py` |
 | [IAN-7], notification and reaction payloads, activity-waiter handle, observational peek, claiming, and stale pointers after message deletion | `taut/client/_messaging.py::_write_mention_notifications`, `react_to_message`, `delete_message`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `notification_activity_queue`, `peek_inbox`, `inbox`; `taut/commands/_rendering.py`; `taut/watcher.py` notification path | notification activity/reuse, reaction peek, consuming-inbox, audience, broadcast-failure, and deletion-without-cascade cases in `tests/test_client.py`; notification rendering in `tests/test_cli.py`; shared identity/activity/notification/reaction contracts in `tests/test_shared_contract.py`; `tests/test_watcher.py` |

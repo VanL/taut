@@ -73,6 +73,7 @@ _ROOT_LONG_OPTIONS = (
     "--timestamps",
     "--quiet",
 )
+_INTERRUPTED_EXIT = 130
 
 
 def dispatch(
@@ -95,6 +96,13 @@ def dispatch(
             stderr=stderr,
             client_factory=client_factory,
         )
+    except KeyboardInterrupt:
+        _root, verb, _tail, _action, _literal_tail = _split_root(list(argv))
+        if verb != "watch":
+            raise
+        error_stream = stderr if stderr is not None else sys.stderr
+        error_stream.write("taut: interrupted\n")
+        return _INTERRUPTED_EXIT
     except RuntimeError as exc:
         from taut.commands._rendering import _TerminalOutputPolicyError
 

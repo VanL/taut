@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
 
@@ -4269,12 +4269,13 @@ def _dispatch_interrupting_watch(
 
 def test_registry_watch_sigint_json_stops_watcher_and_closes_client() -> None:
     harness = _InterruptingWatchHarness(_interrupting_watch_items())
-    result, stdout, _stderr = _dispatch_interrupting_watch(
+    result, stdout, stderr = _dispatch_interrupting_watch(
         harness,
         json_mode=True,
     )
 
-    assert result == 0
+    assert result == 130
+    assert stderr.getvalue() == "taut: interrupted\n"
     assert len(harness.clients) == 1
     client = harness.clients[0]
     assert client.threads == ["general", "ops"]
@@ -4295,7 +4296,7 @@ def test_registry_watch_sigint_human_stops_watcher_and_closes_client() -> None:
         json_mode=False,
     )
 
-    assert result == 0
+    assert result == 130
     assert len(harness.clients) == 1
     client = harness.clients[0]
     assert client.threads == ["general", "ops"]
@@ -4310,6 +4311,51 @@ def test_registry_watch_sigint_human_stops_watcher_and_closes_client() -> None:
         for character in stdout.getvalue() + stderr.getvalue()
     )
     assert stdout.flush_count == 2
+    assert stderr.getvalue() == "taut: interrupted\n"
+
+
+def test_registry_watch_sigint_before_watcher_construction_exits_130() -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stderr = StringIO()
+
+    def interrupted_client_factory(**_kwargs: object) -> NoReturn:
+        raise KeyboardInterrupt
+
+    result = dispatch(
+        ["watch", "--json"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=stderr,
+        client_factory=interrupted_client_factory,
+    )
+
+    assert result == 130
+    assert stderr.getvalue() == "taut: interrupted\n"
+
+
+def test_registry_non_watch_sigint_still_escapes_dispatch() -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stderr = StringIO()
+
+    def interrupted_client_factory(**_kwargs: object) -> NoReturn:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        dispatch(
+            ["log", "general"],
+            registry=CommandRegistry(entry_points=()),
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=stderr,
+            client_factory=interrupted_client_factory,
+        )
+
+    assert stderr.getvalue() == ""
 
 
 def test_registry_watch_unjoined_filter_keeps_exit_two(tmp_path: Path) -> None:

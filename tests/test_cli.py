@@ -4,11 +4,13 @@ import argparse
 import json
 import os
 import queue as queue_module
+import random
 import re
 import signal
 import subprocess
 import sys
 import threading
+import time
 from io import StringIO
 from pathlib import Path
 from typing import TextIO, cast
@@ -3221,7 +3223,11 @@ def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:  # n
             proc.wait(timeout=10)
         else:
             proc.send_signal(signal.SIGINT)
-            assert proc.wait(timeout=10) == 0
+            assert proc.wait(timeout=10) == 130
+            assert proc.stderr is not None
+            diagnostic = proc.stderr.read()
+            assert diagnostic == "taut: interrupted\n"
+            assert "Traceback" not in diagnostic
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -3230,6 +3236,87 @@ def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:  # n
             proc.stderr.close()
         if proc.stdout is not None:
             proc.stdout.close()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.name == "nt", reason="POSIX real-SIGINT stress probe")
+def test_cli_watch_sigint_under_concurrent_writer_always_exits_130(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.1, TAUT-8.5] SIGINT drains broker I/O before CLI cleanup."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    stop_writer = threading.Event()
+    writer_failure: list[BaseException] = []
+
+    def write_continuously() -> None:
+        peer = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+        sequence = 0
+        try:
+            while not stop_writer.is_set():
+                peer.say("general", f"interrupt stress {sequence}")
+                sequence += 1
+                time.sleep(0.002)
+        except BaseException as exc:  # noqa: BLE001 - surfaced on the owner
+            writer_failure.append(exc)
+        finally:
+            peer.close()
+
+    writer = threading.Thread(target=write_continuously)
+    writer.start()
+    offsets = random.Random(0)
+    try:
+        for iteration in range(60):
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "taut", "--as", "van", "watch", "--json"],
+                cwd=tmp_path,
+                env=build_cli_env(force_unbuffered=False),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            first_record = threading.Event()
+            assert proc.stdout is not None
+            stdout = cast(TextIO, proc.stdout)
+
+            def drain_stdout(
+                stream: TextIO = stdout,
+                ready: threading.Event = first_record,
+            ) -> None:
+                for _line in stream:
+                    ready.set()
+
+            pump = threading.Thread(target=drain_stdout)
+            pump.start()
+            try:
+                assert first_record.wait(10), (
+                    f"watch iteration {iteration} did not become live"
+                )
+                time.sleep(offsets.uniform(0, 0.02))
+                proc.send_signal(signal.SIGINT)
+                assert proc.wait(timeout=10) == 130
+                assert proc.stderr is not None
+                assert proc.stderr.read() == "taut: interrupted\n"
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=10)
+                if proc.stderr is not None:
+                    proc.stderr.close()
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                pump.join(2)
+                assert not pump.is_alive()
+    finally:
+        stop_writer.set()
+        writer.join(10)
+
+    assert not writer.is_alive()
+    assert writer_failure == []
 
 
 def test_cli_watch_policy_failure_stops_without_advancing_cursor(

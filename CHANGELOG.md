@@ -10,6 +10,12 @@
   actor-scoped labels, rapid-resize coverage drives the real watcher and app,
   and fatal Textual exits now return the application's nonzero code.
 
+- `taut watch` now drains the current SimpleBroker operation before handling
+  Ctrl-C, closes its owned resources, prints `taut: interrupted`, and exits
+  130. A second Ctrl-C remains an immediate escape for blocked delivery I/O.
+- The documented SQLite watcher knob is `TAUT_MAX_INTERVAL`, not the ignored
+  `BROKER_MAX_INTERVAL`; the idle follower budget is at most 2.5% of one core.
+
 - POSIX Summon PTY providers now acquire their slave as a controlling terminal
   through the shared process-domain spawn owner. A close-on-exec handshake
   keeps terminal-setup and final-exec failures synchronous and prevents partial

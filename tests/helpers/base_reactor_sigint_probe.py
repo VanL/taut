@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import tempfile
 import threading
@@ -12,8 +13,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
+from simplebroker import _broker_session
 from simplebroker.ext import PollingStrategy
 
+from taut.client import TautClient
 from taut.watcher import BaseReactor
 
 
@@ -54,7 +57,7 @@ class RecordingPollingStrategy(PollingStrategy):
         return super().replace_activity_waiter(activity_waiter)
 
 
-def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-053] exception
+def _run_probe() -> dict[str, object]:
     installed_waiter = FakeWaiter()
     replacement_waiter = FakeWaiter()
     waiters = iter((installed_waiter, replacement_waiter))
@@ -63,23 +66,14 @@ def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF
     class InterruptingStrategy(RecordingPollingStrategy):
         def __init__(self) -> None:
             super().__init__(stop_event)
-            self.reenter_on_notify = False
 
         def replace_activity_waiter(self, activity_waiter: Any | None) -> Any | None:
             self.replacements.append(activity_waiter)
             displaced = PollingStrategy.replace_activity_waiter(self, activity_waiter)
-            self.reenter_on_notify = True
             # A signal handler that sets this Event deadlocks on its own lock.
             with cast(Any, stop_event)._cond:
                 signal.raise_signal(signal.SIGINT)
-                signal.raise_signal(signal.SIGINT)
             return displaced
-
-        def notify_activity(self) -> None:
-            if self.reenter_on_notify:
-                self.reenter_on_notify = False
-                signal.raise_signal(signal.SIGINT)
-            super().notify_activity()
 
     class DynamicReactor(BaseReactor):
         _dynamic_topology = True
@@ -154,11 +148,12 @@ def _run_held_event_probe() -> dict[str, object]:
         interrupted = False
         try:
             with cast(Any, watcher._stop_event)._cond:
-                try:
-                    signal.raise_signal(signal.SIGINT)
-                except KeyboardInterrupt:
-                    interrupted = True
+                signal.raise_signal(signal.SIGINT)
             assert not watcher._resources_closed
+            try:
+                watcher.run_until_stopped()
+            except KeyboardInterrupt:
+                interrupted = True
         finally:
             signal.signal(signal.SIGINT, previous)
             watcher.stop(join=False)
@@ -166,6 +161,65 @@ def _run_held_event_probe() -> dict[str, object]:
             "status": "ok",
             "interrupted": interrupted,
             "resources_closed": watcher._resources_closed,
+        }
+
+
+def _run_broker_io_probe() -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="taut-broker-io-sigint-") as temp_dir:
+        db = Path(temp_dir) / "test.db"
+        TautClient.init(db_path=db)
+        client = TautClient(db_path=db, as_name="van")
+        client.join("general")
+        watcher = client.watch(lambda _item: None)
+        assert watcher._broker_session is not None
+        process_session = watcher._broker_session._process_session
+        original_release = (
+            _broker_session._ProcessBrokerSession.release_current_thread_connection
+        )
+        signal_delivered = False
+
+        def interrupting_release(
+            session: _broker_session._ProcessBrokerSession,
+            *,
+            active_failure: BaseException | None = None,
+        ) -> None:
+            nonlocal signal_delivered
+            if session is process_session and not signal_delivered:
+                signal_delivered = True
+                os.kill(os.getpid(), signal.SIGINT)
+            original_release(session, active_failure=active_failure)
+
+        interrupted = False
+        interrupt_notes: tuple[str, ...] = ()
+        with patch.object(
+            _broker_session._ProcessBrokerSession,
+            "release_current_thread_connection",
+            interrupting_release,
+        ):
+            try:
+                watcher.run_forever()
+            except KeyboardInterrupt as exc:
+                interrupted = True
+                interrupt_notes = tuple(getattr(exc, "__notes__", ()))
+
+        cleanup_error: str | None = None
+        try:
+            watcher.stop(join=False)
+        except Exception as exc:  # noqa: BLE001 - structured child-process evidence
+            cleanup_error = f"{type(exc).__name__}: {exc}"
+        try:
+            client.close()
+        except Exception as exc:  # noqa: BLE001 - structured child-process evidence
+            if cleanup_error is None:
+                cleanup_error = f"client close: {type(exc).__name__}: {exc}"
+
+        return {
+            "cleanup_error": cleanup_error,
+            "interrupt_notes": list(interrupt_notes),
+            "interrupted": interrupted,
+            "resources_closed": watcher._resources_closed,
+            "signal_delivered": signal_delivered,
+            "status": "ok",
         }
 
 
@@ -179,6 +233,7 @@ def main() -> int:
         "--mode",
         choices=(
             "probe",
+            "broker-io",
             "held-event",
             "hang",
             "startup-hang",
@@ -208,7 +263,17 @@ def main() -> int:
 
     _emit({"status": "ready"})
     try:
-        _emit(_run_held_event_probe() if args.mode == "held-event" else _run_probe())
+        if args.mode == "broker-io":
+            result = _run_broker_io_probe()
+        elif args.mode == "held-event":
+            result = _run_held_event_probe()
+        else:
+            result = _run_probe()
+        _emit(result)
+        if args.mode == "broker-io" and result.get("cleanup_error") is not None:
+            # A regressed open operation can stall interpreter finalizers. The
+            # structured result above is the proof; contain the broken child.
+            os._exit(0)
     except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
         _emit(
             {

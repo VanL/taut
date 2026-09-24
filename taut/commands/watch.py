@@ -70,8 +70,6 @@ class WatchCommand:
         watcher = client.watch(handle, threads=args.threads or None)
         try:
             watcher.run_forever()
-        except KeyboardInterrupt:
-            return 0
         finally:
             watcher.stop(join=True, timeout=5.0)
         if policy_failure is not None:

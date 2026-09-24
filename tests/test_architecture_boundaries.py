@@ -411,6 +411,7 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
     # SUM-7.4 exemption.
     expected = [
         ("taut/commands/_dispatch.py", "dispatch", ".write"),
+        ("taut/commands/_dispatch.py", "dispatch", ".write"),
         ("taut/commands/_dispatch.py", "_dispatch", ".write"),
         ("taut/commands/_dispatch.py", "_write_root_help", ".write"),
         (
