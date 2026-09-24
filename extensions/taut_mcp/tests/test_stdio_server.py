@@ -37,7 +37,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "642e45b6c91fbe22945777b642f893eabbedc48057260313587c1b1e7922b76a"
+    "793bb3811a9f9dd914c56af61e6787881783aa5004c200cd36ded17d01d70f17"
 )
 EXPECTED_TOOL_NAMES = {
     "attach_workspace",
@@ -175,6 +175,7 @@ async def _inspect_empty_server(
 
     assert initialized.server_info.name == "taut_mcp"
     assert initialized.server_info.version == EXPECTED_VERSION
+    assert initialized.capabilities.experimental is None
     assert initialized.capabilities.resources is not None
     assert initialized.capabilities.resources.subscribe is True
     assert initialized.capabilities.resources.list_changed is False
@@ -235,6 +236,7 @@ async def _inspect_modern_empty_server(
         assert discovered is not None
         assert client.session.initialize_result is None
         assert discovered.supported_versions == ["2026-07-28"]
+        assert discovered.capabilities.experimental is None
         assert discovered.meta is not None
         assert discovered.meta["io.modelcontextprotocol/serverInfo"] == {
             "name": "taut_mcp",
@@ -359,24 +361,26 @@ def test_main_taut_extension_path_initializes_same_stdio_server() -> None:
 
 
 @pytest.mark.timeout(10)
-def test_main_taut_path_forwards_claude_channel_launch_flag() -> None:
-    """[MCP-3] The main path shares the standalone launch flag grammar."""
+@pytest.mark.parametrize("module", ["taut", "taut_mcp"])
+def test_claude_channel_launch_flag_is_a_usage_error(module: str) -> None:
+    """[MCP-3] Both launch surfaces reject the removed host-specific flag."""
 
-    async def scenario() -> None:
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "taut", "mcp", "--claude-channel"],
-            cwd=EXTENSION_ROOT,
-            env=os.environ.copy(),
-        )
-        async with (
-            stdio_client(parameters) as (read_stream, write_stream),
-            ClientSession(read_stream, write_stream) as session,
-        ):
-            initialized = await session.initialize()
-        assert initialized.capabilities.experimental == {"claude/channel": {}}
+    args = [sys.executable, "-m", module]
+    if module == "taut":
+        args.append("mcp")
+    completed = subprocess.run(
+        [*args, "--claude-channel"],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
 
-    asyncio.run(scenario())
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "unrecognized arguments: --claude-channel" in completed.stderr
+    assert "Traceback" not in completed.stderr
 
 
 @pytest.mark.sqlite_only
@@ -819,14 +823,85 @@ def test_malformed_frame_stays_protocol_clean_and_does_not_traceback() -> None:
 
 
 @pytest.mark.timeout(10)
+def test_large_schema_invalid_frame_keeps_same_connection_live() -> None:
+    """[MCP-10]/[MCP-12] SDK-owned framing accepts the 1 MiB floor."""
+
+    sentinel = "mcp-large-frame-sentinel-30e5d99c"
+    payload = sentinel + "x" * (1_048_576 - len(sentinel))
+    probe = _RawStdioProcess("from taut_mcp.cli import main\nmain([])\n")
+    try:
+        probe.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "large-frame-probe", "version": "1"},
+                },
+            }
+        )
+        initialized = probe.receive_until_id(1)
+        assert initialized["result"]["protocolVersion"] == "2025-11-25"  # type: ignore[index]
+        probe.send_batch(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_workspaces",
+                        "arguments": {"unknown": payload},
+                    },
+                },
+            ]
+        )
+        invalid = probe.receive_until_id(2)
+        assert invalid["result"] == {
+            "content": [
+                {
+                    "text": "invalid tool arguments; inspect the tool schema and retry",
+                    "type": "text",
+                }
+            ],
+            "isError": True,
+        }
+        assert sentinel not in json.dumps(invalid)
+
+        probe.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "list_workspaces", "arguments": {}},
+            }
+        )
+        valid = probe.receive_until_id(3)
+        assert valid["result"]["isError"] is False  # type: ignore[index]
+        assert valid["result"]["structuredContent"] == {"records": []}  # type: ignore[index]
+
+        probe.close_input_and_collect()
+        stderr = probe.stderr.read()
+        assert "Traceback" not in stderr
+        assert sentinel not in stderr
+    finally:
+        if probe.process.poll() is None:
+            probe.terminate_and_read_stderr()
+
+
+@pytest.mark.timeout(10)
 def test_fatal_server_failure_is_one_line_exit_one_without_traceback() -> None:
     """[MCP-3] A fatal startup/runtime failure is concise and content-free."""
 
     server_code = """
 from taut_mcp import cli
 
-async def fail_server(*, claude_channel=False):
-    del claude_channel
+async def fail_server():
     raise RuntimeError("sensitive backend detail")
 
 cli.run_server = fail_server
@@ -855,8 +930,7 @@ def test_main_taut_path_shares_fixed_fatal_failure_mapping() -> None:
 from taut.commands._dispatch import dispatch
 from taut_mcp import cli
 
-async def fail_server(*, claude_channel=False):
-    del claude_channel
+async def fail_server():
     raise RuntimeError("sensitive backend detail")
 
 cli.run_server = fail_server
@@ -1442,6 +1516,101 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(20)
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "diagnostic"),
+    [
+        (
+            "say",
+            {"target": "nochannel", "text": "hello"},
+            "thread not found: nochannel",
+        ),
+        (
+            "say",
+            {"target": "general.1234567890123456789", "text": "hello"},
+            "thread not found: general.1234567890123456789",
+        ),
+        (
+            "say",
+            {"target": "@nobody", "text": "hello"},
+            "member not found: @nobody",
+        ),
+        (
+            "reply",
+            {
+                "thread": "general",
+                "msg_id": "1234567890123456789",
+                "text": "hello",
+            },
+            "message not found: 1234567890123456789",
+        ),
+        ("leave", {"thread": "nochannel"}, "thread not found: nochannel"),
+        (
+            "channel_rename",
+            {"old_name": "nochannel", "new_name": "renamed"},
+            "channel not found: nochannel",
+        ),
+        (
+            "channel_topic",
+            {"channel": "nochannel", "topic": "new"},
+            "channel not found: nochannel",
+        ),
+        (
+            "channel_show",
+            {"channel": "nochannel"},
+            "channel not found: nochannel",
+        ),
+    ],
+)
+def test_stdio_non_private_not_found_is_a_tool_error(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    diagnostic: str,
+) -> None:
+    """[MCP-5]/[MCP-6] Non-private misses are never empty successes."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = workspace / ".taut.db"
+    TautClient.init(db_path=db)
+    selected = TautClient(db_path=db, as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None
+    assert member.token is not None
+    token = member.token
+    selected.close()
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "taut_mcp"],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+        async with (
+            stdio_client(parameters) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool(
+                tool_name,
+                {
+                    "workspace": str(workspace),
+                    "token": token,
+                    **arguments,
+                },
+            )
+
+        assert result.is_error is True
+        assert result.structured_content is None
+        assert result.content == [types.TextContent(text=diagnostic)]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(20)
 def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
     tmp_path: Path,
 ) -> None:
@@ -1770,12 +1939,20 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 {"channel": "general", "topic": "stdio topic"},
             )
             assert topic["records"][0]["topic"] == "stdio topic"  # type: ignore[index]
-            missing_topic = await call(
+            missing_topic = await session.call_tool(
                 "channel_topic",
-                {"channel": "missing", "topic": "not written"},
+                {
+                    "workspace": canonical,
+                    "token": member.token,
+                    "channel": "missing",
+                    "topic": "not written",
+                },
             )
-            assert missing_topic == {"records": []}
-            assert missing_topic["records"] == []
+            assert missing_topic.is_error is True
+            assert missing_topic.structured_content is None
+            assert missing_topic.content == [
+                types.TextContent(text="channel not found: missing")
+            ]
             blank_topic = await session.call_tool(
                 "channel_topic",
                 {

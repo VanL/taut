@@ -321,8 +321,7 @@ Installed, it registers the primary `taut mcp` launch path. The separately
 exposable `taut-mcp` script is a supported convenience alias over the same
 process runner.
 
-Installation, running from a checkout, and host notes (including the
-experimental `--claude-channel` wake cue) live in the
+Installation, running from a checkout, and host registration notes live in the
 [taut-mcp README](https://github.com/VanL/taut/blob/main/extensions/taut_mcp/README.md).
 The full contract is the
 [MCP spec](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md);

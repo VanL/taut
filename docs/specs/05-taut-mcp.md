@@ -28,10 +28,9 @@ JSON-RPC error codes remain era-correct SDK adapter behavior.
 
 The Taut database is authoritative. Tool calls are ordinary Taut operations.
 A resource read is a level-triggered snapshot that recovers from missed,
-coalesced, or dropped update hints. Standard resource notifications and
-optional host-specific callbacks are edge-triggered hints only. Receiving an
-edge never acknowledges a notification and never grants authority to act on
-its content.
+coalesced, or dropped update hints. Standard resource notifications are
+edge-triggered hints only. Receiving an edge never acknowledges a notification
+and never grants authority to act on its content.
 
 Every identity-using workspace call carries two explicit values: an absolute
 local workspace directory locator and an existing Taut continuity token.
@@ -101,8 +100,7 @@ The server starts with no resident workspace and can complete legacy
 initialization or modern discovery in that state. There is no process-wide
 `--db`, `TAUT_DB`, `--token`, `TAUT_TOKEN`, inferred current workspace, or
 default identity. Workspace and identity selection arrive only in
-workspace-scoped tool inputs. The only launch-time behavior flag defined by
-this spec is `--claude-channel`.
+workspace-scoped tool inputs. This spec defines no launch-time behavior flag.
 
 The era-neutral server lifespan starts before request handling and captures
 the running `asyncio` loop used by the process reactor. Every request handler
@@ -160,9 +158,7 @@ Tool execution errors do not terminate the process.
 The portable application contract is era-neutral. `server/discover`,
 result-type envelopes, cache hints, modern `subscriptions/listen`, legacy
 initialization, and legacy resource subscriptions are protocol adapters
-around it. The optional Claude channel remains a host-specific,
-best-effort wake adapter and never changes portable tool or resource
-behavior.
+around it. Taut exposes no host-specific capability or wake adapter.
 
 Modern `server/discover` returns `resultType: "complete"`,
 `supportedVersions: ["2026-07-28"]`,
@@ -184,10 +180,8 @@ and return `ttlMs: 300000` with `cacheScope: "public"`. A complete read of
 request. Legacy clients receive the equivalent application data through
 their era's SDK-owned envelopes without modern cache fields.
 
-With `--claude-channel`, legacy initialization also advertises the existing
-`experimental["claude/channel"]` capability. Modern discovery does not forge
-an equivalent capability: the custom channel is a legacy-host research
-adapter until a separately reviewed modern extension contract exists.
+Neither legacy initialization nor modern discovery advertises a host-specific
+experimental capability.
 
 ## 4. Workspace Attachment and Identity [MCP-4]
 
@@ -808,7 +802,7 @@ Input schemas carry no `$schema` key.
 | `text` | Nonblank message text. |
 | `channel_topic.topic` | Channel topic of at most 500 characters with no line breaks, or null to clear it. |
 | `message_show.msg_id`, `message_delete.msg_id`, `message_react.msg_id` | Exact 19-digit Taut message id, as a string. |
-| `reply.msg_id` | Parent message id, or a unique suffix of at least 4 digits among the channel's most recent 1000 ids. |
+| `reply.msg_id` | Exact 19-digit parent message id; the schema rejects any other shape, as for `message_show`. |
 | `message_react.reaction` | Configured reaction slug. |
 | `read.limit` | Maximum records per selected thread, 1 through 1000; default 100. |
 | `inbox.limit` | Maximum notifications, 1 through 1000; default 1000. |
@@ -837,7 +831,7 @@ Input schemas carry no `$schema` key.
 | `channel_topic` | `workspace: string`, `token: string`, `channel: string`, `topic: string or null` | all | lazily ensures the workspace if needed; calls `TautClient.set_channel_topic(channel, topic)` directly; null clears and current membership is required |
 | `set_name` | `workspace: string`, `token: string`, `name: string` | all | lazily ensures the workspace if needed; no member-id argument |
 | `say` | `workspace: string`, `token: string`, `target: string`, `text: string` | all | lazily ensures the workspace if needed; no stdin sentinel; core blank/size rules apply; `@route` may create a DM, while exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one |
-| `reply` | `workspace: string`, `token: string`, `thread: string`, `msg_id: string`, `text: string` | all | lazily ensures the workspace if needed; core exact/suffix id rules apply |
+| `reply` | `workspace: string`, `token: string`, `thread: string`, `msg_id: string`, `text: string` | all | lazily ensures the workspace if needed; exact 19-digit pattern; calls `TautClient.reply(thread, msg_id, text)` |
 | `message_show` | `workspace: string`, `token: string`, `msg_id: string` | all | lazily ensures the workspace if needed; exact 19-digit pattern; calls `TautClient.show_message(msg_id)`; searches only current registered chat memberships and may advance the located high-water cursor |
 | `message_delete` | `workspace: string`, `token: string`, `msg_id: string` | all | lazily ensures the workspace if needed; exact 19-digit pattern; calls `TautClient.delete_message(msg_id)`; may delete the acting author's own ordinary row after leave and returns no source content |
 | `message_react` | `workspace: string`, `token: string`, `msg_id: string`, `reaction: string` | all | lazily ensures the workspace if needed; exact 19-digit id and stable slug patterns; calls `TautClient.react_to_message(msg_id, reaction)` directly; runtime validates the resident client's configured list |
@@ -884,8 +878,10 @@ quoted `#channel` and channel/sub-thread forms. Core owns semantic parsing of
 that value. It accepts the existing channel/subthread grammar, [IAN-4]'s
 `@route`, and exact stable-DM grammar `^dm\.d_[a-z2-7]{26}$`; malformed syntax
 is a tool error. Per [MCP-6], only a well-formed exact stable-handle miss is
-normalized to the ordinary empty `message` result `{ "records": [] }`. Route-addressed and channel/sub-thread failures retain
-their existing tool-error behavior.
+normalized to the ordinary empty `message` result `{ "records": [] }`. A
+channel, sub-thread, or `@name-or-alias` target that does not exist returns
+`isError` with core's diagnostic ([MCP-6] table), and `@name-or-alias` keeps
+its creation behavior for existing members.
 
 MCP handlers are async while Taut operations are synchronous. The process
 reactor first enters [MCP-4]'s shared ensure lifecycle for a
@@ -980,10 +976,26 @@ output: the record stream the CLI would print, wrapped in the one object MCP
 requires. The object is `{ "records": array }` plus an optional
 `"warnings": array` of strings that is present only when at least one
 warning exists. There is no other top-level field. A single logical result
-is still a one-record array, and an ordinary empty or not-found outcome is
+is still a one-record array, and a content-free empty outcome is
 `{ "records": [] }`. The text content block is the canonical JSON
 serialization of `structuredContent`, for clients that do not consume
 structured output.
+
+Empty results are content-free by design only where a nonempty error would
+leak existence or membership. The classification is fixed:
+
+| Tool | Not-found disposition |
+|------|-----------------------|
+| `read`, `log`, `search` with a DM selector; `message_show`; `message_delete`; `message_react`; `say` to an exact `dm.d_*` handle | content-free typed empty result |
+| `say` to a channel, sub-thread, or `@name-or-alias`; `reply`; `leave`; `channel_rename`; `channel_topic`; `channel_show` | `isError:true` carrying core's diagnostic text for that miss, the same message the CLI prints, with no dispatch-side identity or activity effect |
+
+Except for the first row's privacy-preserving empty results, a mutating tool
+never reports success for work it did not do, and a non-private channel
+metadata lookup does not disguise a missing channel as an empty success. The
+command adapter preserves `NotFoundError` for the second row, and the reactor
+maps it to a tool error before applying the general empty-result rule. Every
+tool not named in the second row keeps that general rule; the first row
+enumerates the privacy-bearing cases whose content-free behavior is invariant.
 
 The manifest carries input schemas only: `tools/list` omits `outputSchema`.
 Closed result shapes are enforced by validating real tool results against
@@ -1123,7 +1135,8 @@ For channel metadata tools, schema-invalid calls fail before child dispatch.
 An in-schema blank topic, absent membership, corrupt topic metadata, or a
 recoverable backend/storage `TautError` returns `isError: true` with one text
 content block and no structured content. An absent or wrong-kind channel
-returns exactly `{ "records": [] }`.
+returns `isError:true` with core's diagnostic under the fixed table above. It
+has no identity, activity, queue, cursor, topic, or notification effect.
 Attachment identity loss retains the fixed `workspace identity lost; detach
 and reattach` result and status transition. An unexpected non-Taut exception
 retains the terminal reactor-fault path and fixed `workspace reactor failed;
@@ -1135,8 +1148,11 @@ thread, or existence distinction. Shape-invalid exact ids are rejected by the
 tool schema. An in-shape but out-of-range id reaches core validation and
 returns `isError` without dispatch-side identity/activity or lookup effects.
 For `say`, a well-formed exact stable `dm.d_*` target that is absent,
-inaccessible, or structurally invalid returns the same empty `message` result; route-addressed `@name-or-alias` keeps its existing error
-and creation behavior. Malformed target syntax remains `isError`.
+inaccessible, or structurally invalid returns the same empty `message` result.
+A channel, sub-thread, or `@name-or-alias` target that does not exist returns
+`isError` with core's diagnostic under the fixed table above;
+`@name-or-alias` keeps its creation behavior for existing members. Malformed
+target syntax remains `isError`.
 Missing, inaccessible, ineligible, and recipient-empty reaction targets return byte-equivalent empty `reaction` results.
 A raised broadcast returns the ordinary nonempty `audience_count` success
 record plus its warning.
@@ -1428,8 +1444,8 @@ master serial point, the first current transition settles the phase and its
 future, and every later event or callback is a no-op.
 
 Era-neutral lifespan startup initializes canonical aggregate text to
-`{"workspaces":[]}`, sets the legacy last-signalled text and optional Claude
-last-attempted text to that baseline, and emits no update. Legacy
+`{"workspaces":[]}`, sets the legacy last-signalled text to that baseline,
+and emits no update. Legacy
 initialization and modern discovery read capabilities/instructions but do
 not create or reset aggregate state. The lifespan-captured running loop owns
 every child-to-master wake, deadline, and response future before any
@@ -1578,9 +1594,9 @@ initialization and modern discovery. They require:
 14. `message_react` advances the actor's high-water cursor and attempts one
     atomic best-effort broadcast to the requested notification queues. A
     warning means the commit result may be uncertain; do not blind-retry.
-15. Standard resource updates and the optional Claude channel are redundant
-    wakes. Coalesce duplicates. Use bounded backoff for workspace-busy or
-    rate-limit errors.
+15. Standard resource updates are wake hints. Reread
+    `taut://notifications/current` when one arrives. Use bounded backoff for
+    workspace-busy or rate-limit errors.
 16. If a lazy or explicit ensure request is canceled or times out, wait up to
     30 seconds, then call `list_workspaces` once. Reuse any ready canonical
     entry. Restart the server process only for the fixed stalled-reservation
@@ -1597,26 +1613,10 @@ per minute. Internal snapshot pacing and process completion callbacks do
 not start model turns and are separate mechanisms. Tests assert the instruction text and
 server behavior, not agent compliance.
 
-An opt-in `--claude-channel` mode declares the experimental
-`capabilities.experimental["claude/channel"] = {}` server capability. On
-each distinct aggregate resource text observed after lifespan startup by the
-process reactor, regardless of standard resource subscription, it must
-attempt one
-`notifications/claude/channel` emission with
-params containing only
-`{ "content": "Taut notifications changed; read taut://notifications/current." }`.
-It must not copy names, messages, mentions, metadata, or other database
-content into the channel event. The event is an unacknowledged best-effort
-wake hint and may be dropped silently when the host did not load the server as
-a channel or policy blocks it. The process reactor records the changed
-text in `last_claude_attempted_text` before the attempt; success, a silent drop, or a
-thrown send failure therefore does not retry unchanged state. This state is
-independent of `last_signalled_text`. Send failure is a fixed, content-free
-stderr warning and does not stop the reactor, standard MCP tools, resources,
-or update hints. The adapter is a research-preview compatibility surface and is
-never required for correctness. Its README documents Claude's current
-development-channel opt-in; no Codex-specific adapter or permission relay is
-part of the host-specific adapter.
+Taut ships no host-specific wake adapter. The standard
+`notifications/resources/updated` on `taut://notifications/current` is the
+only wake hint; a host that gives the agent a turn on some other signal maps
+that signal itself (instruction 6).
 
 ## 10. Trust and Safety [MCP-10]
 
@@ -1696,8 +1696,14 @@ after backoff`. An exhausted resource read returns application JSON-RPC error
 control, not access control; aggressive resource polling may throttle later
 tool admission. It is not configurable and resets only with the process.
 Core message-size, name, limit, and text validation remains authoritative.
-MCP frame-size behavior follows the supported SDK and is covered by an
-oversized-frame acceptance probe.
+MCP framing remains SDK-owned and Taut adds no frame-size limit. A real stdio
+continuity probe sends one newline-delimited, schema-invalid JSON-RPC tool-call
+frame containing an unknown string argument of at least 1,048,576 UTF-8 bytes.
+The server returns the fixed schema-invalid tool result with no traceback or
+echoed payload, then answers a following valid `list_workspaces` request on
+the same connection. This is a large-frame continuity floor, not a declared
+maximum; if the supported SDK later adds a smaller documented limit, revise
+this contract before upgrading it.
 
 ## 11. Failure Modes and Compatibility [MCP-11]
 
@@ -1879,7 +1885,8 @@ Required proof includes:
   tools `listChanged: false`, resources `listChanged: false` and
   `subscribe: true`, canonical instructions, installed `taut_mcp` server info,
   `ttlMs: 3600000`, and `cacheScope: "public"`; every other modern result
-  repeats that server info, and Claude experimental capability is legacy-only;
+  repeats that server info, and neither era advertises a host-specific
+  experimental capability;
 - modern tools/list and resources/list are deterministic and advertise
   `ttlMs: 300000`, `cacheScope: "public"`; current-notifications read
   advertises `ttlMs: 0`, `cacheScope: "private"`;
@@ -1926,9 +1933,10 @@ Required proof includes:
   annotation, dispatch, and result proofs. Schema probes include missing
   fields, additional properties, null clear, blank/Cf-only core rejection,
   500/501 code points, CR and LF in the middle and at the end, and closed
-  channel records. Outcome probes distinguish absent/wrong-kind successful
-  empty channel results from membership, corruption, recoverable storage,
-  identity-loss, and terminal reactor `isError` paths.
+  channel records. Outcome probes distinguish absent/wrong-kind core-diagnostic
+  `isError` results from membership, corruption, recoverable storage,
+  identity-loss, and terminal reactor `isError` paths, while proving the miss
+  has no identity, activity, queue, cursor, topic, or notification effect.
 - real attached-workspace SQLite and PostgreSQL topic flows prove set, show,
   list, rename, clear, same-value no-op, activity effects, no message,
   notification, or cursor effects, exact audit fields, and cancellation
@@ -1957,7 +1965,7 @@ Required proof includes:
 - parity probes showing each MCP tool calls the named public Python behavior
   after the required workspace/token ensure and returns its declared record type without
   parsing CLI text
-- `message_show` and `message_delete` schemas require a decimal-string
+- `reply`, `message_show`, and `message_delete` schemas require a decimal-string
   `msg_id` matching exactly 19 digits; suffixes, signs, whitespace, 18/20
   digits, integers, booleans, and null fail before child dispatch, while a
   19-digit signed-64-bit overflow reaches core range validation and performs
@@ -2254,10 +2262,6 @@ Required proof includes:
   detaching hits create no hidden seat or child and perform no stop, while a
   started alias candidate that reaches the same published outcomes always
   sends one retiring stop/wake and remains cap-counted until owner exit
-- capability-gated Claude channel emission contains only the fixed cue and
-  no metadata, attempts each distinct observed aggregate text exactly once
-  independently of standard subscription, maintains channel-owned change
-  state, and remains correct when the event is unsupported, dropped, or fails
 - per-workspace identity loss and child fault isolation, content-free degraded
   entries, atomic identity-loss result/status/snapshot ordering, healthy-child
   continuity, process-reactor fatal exit, and deterministic process-wide
@@ -2284,9 +2288,10 @@ Required proof includes:
   (including `dms=true`) and cursor-neutral `log` recover current unread state
   and history for channels, subthreads, and accessible DMs, but cannot prove
   which returned page reached the host; blind retry remains unsafe
-- adversarial malformed frames, invalid tool input, oversized bounded input,
-  hostile path/notification text, concurrent attach/detach/external
-  consumption, and transport contamination probes
+- adversarial malformed frames, invalid tool input, the [MCP-10] one-mebibyte
+  schema-invalid frame followed by a valid same-connection request, hostile
+  path/notification text, concurrent attach/detach/external consumption, and
+  transport contamination probes
 - the same public behavior over real SQLite and PostgreSQL state; fake MCP
   capability/notification sinks may isolate host negotiation, but the broker,
   Taut clients, queues, state adapters, child reactors, and process reactor
@@ -2321,13 +2326,18 @@ wheel to register its `mcp` manifest.
 | [MCP-1]–[MCP-3] package, main/standalone launch adapters, dual-era SDK adapter, and stdio lifecycle | `extensions/taut_mcp/pyproject.toml`, `extensions/taut_mcp/taut_mcp/command_manifest.py`, `extensions/taut_mcp/taut_mcp/command.py`, `extensions/taut_mcp/taut_mcp/_version.py`, `extensions/taut_mcp/taut_mcp/cli.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-4] process-local shared ensure, public core identity/activity seams, and workspace lifecycle | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `taut/client/_identity.py::IdentityMixin.peek_identity`, `taut/client/_notifications.py::NotificationsMixin.notification_activity_queue`, and `extensions/taut_mcp/tests/test_resource.py` |
 | [MCP-5]–[MCP-6] manifest, validation, dispatch, and results | `extensions/taut_mcp/taut_mcp/_tools.py`, `extensions/taut_mcp/taut_mcp/_results.py`, `extensions/taut_mcp/taut_mcp/_commands.py`, `extensions/taut_mcp/taut_mcp/server.py` |
-| [MCP-7]–[MCP-8] aggregate resource, reactor hierarchy, and dual notification adapters | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `extensions/taut_mcp/taut_mcp/server.py` |
-| [MCP-9] instructions and legacy-only Claude adapter | `extensions/taut_mcp/taut_mcp/server.py`, `extensions/taut_mcp/taut_mcp/_claude_channel.py` |
+| [MCP-7]–[MCP-8] aggregate resource, reactor hierarchy, and standard legacy/modern notification adapters | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `extensions/taut_mcp/taut_mcp/server.py` |
+| [MCP-9] instructions | `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-10]–[MCP-11] safety and failure behavior | `extensions/taut_mcp/taut_mcp/server.py`, `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` |
 | [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, `extensions/taut_mcp/tests/test_stdio_server.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
 
 ## Related Plans
 
+- `docs/plans/2026-09-24-mcp-not-found-result-contract-plan.md` — fixes
+  non-private misses reporting not-found as empty success, classifies empty
+  versus error per tool, adds the two missing [MCP-12]/[MCP-10] gates, and
+  removes the research-preview Claude channel adapter in favor of the standard
+  resource notification.
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   each workspace as a thin `BaseReactor` subclass over the copied Weft scheduler.
   Notification and `taut.cache_stale` queues are cursor-aware PEEK sources;

@@ -24,6 +24,7 @@ from simplebroker.watcher import PollingStrategy
 from taut import (
     BlankMessageError,
     EmptyResultError,
+    NotFoundError,
     Notification,
     ReactionConfigurationError,
     TautClient,
@@ -61,7 +62,18 @@ INVALID_UTF8_PATH = (
     "workspace path is not valid UTF-8; provide an absolute UTF-8 workspace path"
 )
 SNAPSHOT_INTERVAL_SECONDS = 0.5
+NOT_FOUND_IS_ERROR_TOOLS = frozenset(
+    {
+        "channel_rename",
+        "channel_show",
+        "channel_topic",
+        "leave",
+        "reply",
+        "say",
+    }
+)
 _monotonic = time.monotonic
+_directory_stat = os.stat
 
 
 class _WorkspaceResolutionError(RuntimeError):
@@ -221,7 +233,7 @@ def _resolve_workspace(
     except UnicodeEncodeError as exc:
         raise ValueError(INVALID_UTF8_PATH) from exc
     try:
-        stat = os.stat(canonical)
+        stat = _directory_stat(canonical)
     except OSError as exc:
         raise _WorkspaceResolutionError(DIRECTORY_IDENTITY_UNAVAILABLE) from exc
     directory_identity = (int(stat.st_dev), int(stat.st_ino))
@@ -354,6 +366,10 @@ class _WorkspaceReactor(BaseReactor):
             return False
         except BlankMessageError as exc:
             command_error = str(exc)
+        except NotFoundError as exc:
+            if command.name in NOT_FOUND_IS_ERROR_TOOLS:
+                command_error = str(exc)
+            # Every other tool intentionally keeps the general empty result.
         except EmptyResultError:
             pass
         except (TautError, TypeError, ValueError) as exc:

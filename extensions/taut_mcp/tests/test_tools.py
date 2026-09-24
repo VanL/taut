@@ -19,9 +19,7 @@ from tests.helpers.eventually import async_eventually
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import (
     EmptyResultError,
-    Message,
     MessageDeletion,
-    NotFoundError,
     Notification,
     SearchHit,
     TautClient,
@@ -315,34 +313,6 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
 
     assert result == (record,)
     assert calls == [(method, positional, keywords)]
-
-
-def test_say_normalizes_only_exact_stable_dm_not_found() -> None:
-    failure = NotFoundError("direct message not found or inaccessible")
-    calls: list[tuple[str, str]] = []
-
-    class PublicClientSpy:
-        def say(self, target: str, text: str) -> Message:
-            calls.append((target, text))
-            raise failure
-
-    stable = "dm.d_" + "a" * 26
-    result = execute_command(
-        cast(TautClient, PublicClientSpy()),
-        "say",
-        (("target", stable), ("text", "hello")),
-    )
-
-    assert result == ()
-    assert calls == [(stable, "hello")]
-    for target in ("@missing", "general", "general.1234567890123456789"):
-        with pytest.raises(NotFoundError) as raised:
-            execute_command(
-                cast(TautClient, PublicClientSpy()),
-                "say",
-                (("target", target), ("text", "hello")),
-            )
-        assert raised.value is failure
 
 
 def test_search_command_layer_supplies_every_omitted_default_once() -> None:
@@ -942,13 +912,12 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert shown_channel == topic
 
-            missing_channel = await reactor._execute_ready_tool(
-                canonical,
-                "channel_show",
-                {"channel": "missing"},
-            )
-            _assert_result(missing_channel, record_type="channel")
-            assert missing_channel["records"] == []
+            with _tool_error("channel not found: missing"):
+                await reactor._execute_ready_tool(
+                    canonical,
+                    "channel_show",
+                    {"channel": "missing"},
+                )
 
             listed = await reactor._execute_ready_tool(
                 canonical,
@@ -1041,35 +1010,63 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
-def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
-    """[MCP-6] A registered non-channel row returns the ordinary empty shape."""
+@pytest.mark.parametrize("wrong_kind", [False, True], ids=["absent", "wrong-kind"])
+def test_channel_miss_is_a_tool_error_without_state_effects(
+    tmp_path: Path,
+    wrong_kind: bool,
+) -> None:
+    """[MCP-6] Channel misses preserve diagnostics and all named state."""
 
     workspace, token = _workspace_with_two_members(tmp_path)
-    client = TautClient(db_path=workspace / ".taut.db", as_name="selected")
-    with client._meta_queue.sidecar(transaction=True) as session:
-        session.run(
-            "UPDATE taut_threads SET kind = ? WHERE name = ?",
-            ("subthread", "general"),
-        )
-    client.close()
+    channel = "missing"
+    if wrong_kind:
+        channel = "general"
+        client = TautClient(db_path=workspace / ".taut.db", as_name="selected")
+        with client._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_threads SET kind = ? WHERE name = ?",
+                ("subthread", channel),
+            )
+        client.close()
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
+        observer = TautClient(db_path=workspace / ".taut.db", token=token)
+
+        def snapshot() -> tuple[object, ...]:
+            member = observer._state.get_member_by_token(token)
+            assert member is not None
+            return (
+                member,
+                observer._state.get_identity_claim(
+                    identity.claim_for_token(token).claim_hash
+                ),
+                observer._state.get_membership(
+                    thread="general",
+                    member_id=member["member_id"],
+                ),
+                observer._state.get_thread("general"),
+                tuple(observer.peek_inbox()),
+                reactor.current_text,
+            )
+
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(canonical_of(attached))
             cases: tuple[tuple[str, dict[str, object]], ...] = (
-                ("channel_show", {"channel": "general"}),
+                ("channel_show", {"channel": channel}),
                 (
                     "channel_topic",
-                    {"channel": "general", "topic": "replacement"},
+                    {"channel": channel, "topic": "replacement"},
                 ),
             )
             for name, arguments in cases:
-                result = await reactor._execute_ready_tool(canonical, name, arguments)
-                _assert_result(result, record_type="channel")
-                assert result["records"] == []
+                before = snapshot()
+                with _tool_error(f"channel not found: {channel}"):
+                    await reactor._execute_ready_tool(canonical, name, arguments)
+                assert snapshot() == before
         finally:
+            observer.close()
             await reactor.aclose()
 
     asyncio.run(scenario())
@@ -3004,7 +3001,7 @@ def test_result_schemas_require_canonical_string_timestamps() -> None:
     ],
 )
 @pytest.mark.parametrize(
-    "tool_name", ["message_show", "message_delete", "message_react"]
+    "tool_name", ["reply", "message_show", "message_delete", "message_react"]
 )
 def test_exact_message_tool_schemas_reject_non_exact_string_ids(
     tool_name: str,
@@ -3018,6 +3015,11 @@ def test_exact_message_tool_schemas_reject_non_exact_string_ids(
                 "workspace": "/workspace",
                 "token": "secret",
                 "msg_id": invalid,
+                **(
+                    {"thread": "general", "text": "reply"}
+                    if tool_name == "reply"
+                    else {}
+                ),
                 **({"reaction": "ack"} if tool_name == "message_react" else {}),
             },
             schema=tool.input_schema,
@@ -3372,7 +3374,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "dc143fae2cb91ebd2e386cbb302673f830da7f2bca276ec35959fa8736ab0a87"
+        "60acbdd7972836c5442462499d1d57fdee9df00755301a0ff9bae51959bc2fc7"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -3497,7 +3499,7 @@ EXPECTED_PARAMETER_DESCRIPTIONS: dict[tuple[str, str], str] = {
     (
         "reply",
         "msg_id",
-    ): "Parent message id, or a unique suffix of at least 4 digits among the channel's most recent 1000 ids.",
+    ): "Exact 19-digit parent message id; the schema rejects any other shape, as for `message_show`.",
     ("message_react", "reaction"): "Configured reaction slug.",
     (
         "read",

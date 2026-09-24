@@ -269,8 +269,8 @@ TOOL_DEFINITIONS = (
             "workspace": _WORKSPACE,
             "thread": _CHANNEL,
             "msg_id": _string(
-                "Parent message id, or a unique suffix of at least 4 digits among the channel's most recent 1000 ids.",
-                pattern=r"^[0-9]{4,19}$",
+                "Exact 19-digit parent message id; the schema rejects any other shape, as for `message_show`.",
+                pattern=MESSAGE_ID_PATTERN,
             ),
             "text": _string("Nonblank message text."),
         },

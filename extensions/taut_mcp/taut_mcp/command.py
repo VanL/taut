@@ -14,10 +14,10 @@ class _McpCommand:
         configure_parser(parser)
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        del context
+        del context, args
         from .cli import run_process
 
-        return run_process(claude_channel=bool(args.claude_channel))
+        return run_process()
 
 
 def create_command() -> _McpCommand:

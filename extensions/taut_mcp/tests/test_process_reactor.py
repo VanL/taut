@@ -584,6 +584,36 @@ def test_unrelated_client_validation_error_keeps_generic_attachment_mapping(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
+def test_directory_identity_failure_uses_fixed_attachment_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4]/[MCP-12] A real resolver stat failure fires its fixed class."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+
+    def fail_directory_stat(_: str) -> os.stat_result:
+        raise OSError("participant-controlled stat detail")
+
+    monkeypatch.setattr(workspace_reactor, "_directory_stat", fail_directory_stat)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            with _tool_error(
+                "workspace directory identity unavailable; choose a workspace "
+                "with stable directory identity"
+            ):
+                await reactor.attach_workspace(str(workspace), token)
+            assert reactor.list_workspaces()["records"] == []
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
 def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

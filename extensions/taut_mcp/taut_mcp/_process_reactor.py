@@ -76,7 +76,6 @@ DETACH_JOIN_SECONDS = 5.0
 SHUTDOWN_SECONDS = 10.0
 BUCKET_CAPACITY = 40.0
 BUCKET_REFILL_PER_SECOND = 20.0
-CLAUDE_CHANNEL_FAILURE = "taut-mcp: Claude channel wake failed; continuing"
 WORKSPACE_REACTOR_FAILURE_DIAGNOSTIC = (
     "taut-mcp: workspace reactor failed; detach and reattach"
 )
@@ -273,12 +272,8 @@ class ProcessReactor:
         self._resource_sender: Callable[[], Awaitable[None]] | None = None
         self._modern_resource_sender: Callable[[], Awaitable[None]] | None = None
         self._resource_tasks: set[asyncio.Future[None]] = set()
-        self._claude_sender: Callable[[], Awaitable[None]] | None = None
-        self._claude_warning: Callable[[str], None] | None = None
-        self._claude_tasks: set[asyncio.Future[None]] = set()
         self.current_text = '{"workspaces":[]}'
         self.last_signalled_text = self.current_text
-        self.last_claude_attempted_text = self.current_text
         self._executor = ThreadPoolExecutor(
             max_workers=MAX_WORKSPACES, thread_name_prefix="taut-mcp-workspace"
         )
@@ -630,20 +625,6 @@ class ProcessReactor:
             return
         self._modern_resource_sender = sender
 
-    def configure_claude_channel(
-        self,
-        sender: Callable[[], Awaitable[None]],
-        warning: Callable[[str], None],
-    ) -> None:
-        """Install the optional best-effort edge sender once per connection."""
-
-        if self._closing or self._claude_sender is not None:
-            return
-        self._claude_sender = sender
-        self._claude_warning = warning
-        if self.current_text != self.last_claude_attempted_text:
-            self._signal_claude_change()
-
     def _signal_resource_change(self) -> None:
         if self._closing or not self._subscribed or self._resource_sender is None:
             return
@@ -662,34 +643,6 @@ class ProcessReactor:
         future = asyncio.ensure_future(awaitable, loop=self._loop)
         self._resource_tasks.add(future)
         future.add_done_callback(self._finish_resource_attempt)
-
-    def _signal_claude_change(self) -> None:
-        if (
-            self._closing
-            or self._claude_sender is None
-            or self.current_text == self.last_claude_attempted_text
-        ):
-            return
-        self.last_claude_attempted_text = self.current_text
-        try:
-            awaitable = self._claude_sender()
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
-            if self._claude_warning is not None:
-                self._claude_warning(CLAUDE_CHANNEL_FAILURE)
-            return
-        future = asyncio.ensure_future(awaitable, loop=self._loop)
-        self._claude_tasks.add(future)
-        future.add_done_callback(self._finish_claude_attempt)
-
-    def _finish_claude_attempt(self, future: asyncio.Future[None]) -> None:
-        self._claude_tasks.discard(future)
-        try:
-            future.result()
-        except asyncio.CancelledError:
-            return
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
-            if not self._closing and self._claude_warning is not None:
-                self._claude_warning(CLAUDE_CHANNEL_FAILURE)
 
     def _finish_resource_attempt(self, future: asyncio.Future[None]) -> None:
         self._resource_tasks.discard(future)
@@ -720,7 +673,6 @@ class ProcessReactor:
         self.current_text = updated
         self._signal_resource_change()
         self._signal_modern_change()
-        self._signal_claude_change()
 
     def _candidate_timeout(self, generation: int, expected_phase: str) -> None:
         if self._closing:
@@ -1058,9 +1010,6 @@ class ProcessReactor:
         resource_tasks = list(self._resource_tasks)
         for task in resource_tasks:
             task.cancel()
-        claude_tasks = list(self._claude_tasks)
-        for task in claude_tasks:
-            task.cancel()
         owners: dict[int, _Owner] = {}
         for candidate in self._candidates.values():
             candidate.retiring = True
@@ -1107,9 +1056,8 @@ class ProcessReactor:
             await asyncio.gather(*completions, return_exceptions=True)
         self._executor.shutdown(wait=False)
         self._drain_events()
-        pending_tasks = resource_tasks + claude_tasks
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        if resource_tasks:
+            await asyncio.gather(*resource_tasks, return_exceptions=True)
         self._candidates.clear()
         self._entries.clear()
         self.current_text = '{"workspaces":[]}'

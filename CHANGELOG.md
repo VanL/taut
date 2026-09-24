@@ -16,6 +16,13 @@
 - The documented SQLite watcher knob is `TAUT_MAX_INTERVAL`, not the ignored
   `BROKER_MAX_INTERVAL`; the idle follower budget is at most 2.5% of one core.
 
+- MCP non-private misses, including mutating tools and channel metadata
+  lookups, now return tool errors instead of reporting empty success.
+  Privacy-bearing DM and message misses remain content-free, and
+  `reply.msg_id` now requires exactly 19 digits.
+- MCP now uses only standard legacy and modern resource-update notifications.
+  The research-preview `--claude-channel` flag and capability were removed.
+
 - CLI reads now advance bookmarks only after each record is written and
   flushed, so closed pipes and encoding failures leave undelivered records
   unread. `read -q` and `inbox -q` are usage errors; use `list -q` to poll.

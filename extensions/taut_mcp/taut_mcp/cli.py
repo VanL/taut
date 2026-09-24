@@ -16,12 +16,12 @@ from ._version import SERVER_VERSION
 FATAL_SERVER_ERROR = b"taut-mcp: fatal server error\n"
 
 
-async def run_server(*, claude_channel: bool = False) -> None:
+async def run_server() -> None:
     """Load and run the protocol server only after a launch surface executes."""
 
     from .server import run_server as serve
 
-    await serve(claude_channel=claude_channel)
+    await serve()
 
 
 def _is_broken_transport(error: BaseException) -> bool:
@@ -68,22 +68,17 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     """Add the shared launch-only MCP arguments to one parser."""
 
     parser.add_argument(
-        "--claude-channel",
-        action="store_true",
-        help="enable the experimental Claude channel wake hint",
-    )
-    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {SERVER_VERSION}",
     )
 
 
-def run_process(*, claude_channel: bool = False) -> int:
+def run_process() -> int:
     """Run the process-scoped server and map transport failures to shell status."""
 
     try:
-        asyncio.run(run_server(claude_channel=claude_channel))
+        asyncio.run(run_server())
     except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         if _is_broken_transport(exc):
             _silence_broken_stdout()
@@ -100,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Parse launch-only flags and run the process-scoped server."""
 
     parser = _parser()
-    args = parser.parse_args(argv)
-    result = run_process(claude_channel=bool(args.claude_channel))
+    parser.parse_args(argv)
+    result = run_process()
     if result:
         raise SystemExit(result)

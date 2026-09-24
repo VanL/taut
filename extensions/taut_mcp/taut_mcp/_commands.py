@@ -153,20 +153,14 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
         else:
             records = tuple(client.list_threads(all_threads=all_threads))
     elif name == "channel_show":
-        try:
-            records = (client.get_channel(cast(str, arguments["channel"])),)
-        except NotFoundError:
-            records = ()
+        records = (client.get_channel(cast(str, arguments["channel"])),)
     elif name == "channel_topic":
-        try:
-            records = (
-                client.set_channel_topic(
-                    cast(str, arguments["channel"]),
-                    cast(str | None, arguments.get("topic")),
-                ),
-            )
-        except NotFoundError:
-            records = ()
+        records = (
+            client.set_channel_topic(
+                cast(str, arguments["channel"]),
+                cast(str | None, arguments.get("topic")),
+            ),
+        )
     elif name == "channel_rename":
         records = (
             client.rename_channel(

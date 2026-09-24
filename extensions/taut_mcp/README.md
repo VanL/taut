@@ -59,8 +59,8 @@ return every unread message. Use `inbox(workspace, token, ...)` to consume
 notification pointers and act only on the records returned by that consuming
 call.
 
-The resource is the level-triggered source of truth. Delivery mechanisms are
-redundant hints:
+The resource is the level-triggered source of truth. Standard delivery
+mechanisms are redundant hints:
 
 - legacy clients use `resources/subscribe` and `resources/unsubscribe`;
 - modern clients open a long-lived `subscriptions/listen` request whose
@@ -70,12 +70,6 @@ redundant hints:
 Modern listen filters, acknowledgments, subscription ids, fanout,
 cancellation, and graceful close are owned by the MCP SDK. A dropped,
 duplicated, or delayed hint does not lose Taut data; reread the resource.
-
-`--claude-channel` adds Claude's experimental channel wake only for legacy
-clients. It sends a fixed cue to reread the resource and includes no Taut
-content. Modern discovery does not advertise a corresponding Claude
-capability. The Claude path is host-specific and best-effort; it never
-replaces standard tools, resource reads, or subscriptions.
 
 ## Tool Notes
 
@@ -142,6 +136,32 @@ first coordinated PyPI version is published:
 pipx install 'taut-chat[all]'
 taut mcp
 ```
+
+Register the installed server with a host that launches stdio MCP processes.
+For Claude Code, for example:
+
+```bash
+claude mcp add taut -- taut mcp
+```
+
+The equivalent host configuration is:
+
+```json
+{
+  "mcpServers": {
+    "taut": {
+      "command": "taut",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Each identity-using call still supplies its own `workspace` and `token`.
+Taut prints a new member's continuity token when a command such as
+`taut join general` first creates that member. Store that value in the
+agent's private state and pass it to MCP calls; the MCP server does not mint
+or reveal tokens.
 
 To expose the standalone convenience command too:
 

@@ -16,10 +16,12 @@ implementation rationale and edit points, not protocol requirements.
 
 The search adapter and its review record live in
 the retired plan 2026-08-10-mcp-search-plan (source `58f8524`; see the ledger in `docs/plans/README.md`).
+The not-found result correction, missing verification gates, and removal of
+the research-preview host wake adapter live in
+`docs/plans/2026-09-24-mcp-not-found-result-contract-plan.md`.
 
 The current portable surface is 21 explicit tools plus
-`taut://notifications/current`. The optional Claude channel is a
-legacy-host-only best-effort wake hint. The package was first published as
+`taut://notifications/current`. The package was first published as
 0.7.0 from commit `8dfed910d0429226f2faaab776166ad5fd261189`, with root Test
 run [29455388946](https://github.com/VanL/taut/actions/runs/29455388946), MCP
 run [29455389050](https://github.com/VanL/taut/actions/runs/29455389050), MCP
@@ -34,7 +36,8 @@ as historical release evidence.
   protocol eras, [MCP-4] shared ensure and identity, [MCP-5] tools and
   cancellation, [MCP-6] results and errors, [MCP-7] resource representation,
   [MCP-8] reactor and subscription behavior, [MCP-9] agent instructions and
-  host adapters, [MCP-10] trust and rate limits, [MCP-11] failures, and
+  standard notification adapters, [MCP-10] trust and rate limits, [MCP-11]
+  failures, and
   [MCP-12] proof
 - `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration, [TAUT-4.4]
   channel topics, [TAUT-8.1] CLI-shaped command behavior, [TAUT-8.2] public
@@ -64,7 +67,7 @@ provided through the SDK's legacy initialization path, not by adding a legacy
 version to modern discovery. Both paths use the same manifest, input
 validator, dispatcher, result serializer, fixed tool errors, instructions,
 and Taut operations. The only era checks in application code select
-protocol-owned resource-not-found codes and the legacy-only Claude adapter.
+protocol-owned resource-not-found codes.
 
 SDK cache hints keep fixed discovery and list results reusable while making
 the changing notification resource private and immediately stale. The SDK
@@ -180,7 +183,9 @@ failure. Unknown tools remain protocol errors.
 tools. It calls public `TautClient` methods and serializes public value
 objects. It never launches the CLI, parses terminal output, reflects the
 command registry, or receives MCP identity fields. A startup assertion keeps
-the manifest's domain partition equal to this dispatcher.
+the manifest's domain partition equal to this dispatcher. The `list`, `who`,
+and `whoami` paths inherit core's activity-neutral, non-healing read policy;
+their MCP descriptions state that effect explicitly.
 
 `say.target` intentionally remains a shape-only string in the manifest.
 Core accepts bare and quoted-`#` channel/sub-thread forms as well as route and
@@ -325,13 +330,11 @@ One aggregate comparison independently offers a semantic change to:
   `last_signalled_text`;
 - the modern SDK v2 `InMemorySubscriptionBus`, whose `ListenHandler` owns
   listener filters, acknowledgments, subscription ids, fanout, cancellation,
-  and graceful closure; and
-- when enabled for a legacy client, the Claude channel adapter, tracked by
-  `last_claude_attempted_text`.
+  and graceful closure.
 
 These states are deliberately separate. Failure or duplication in one edge
-path cannot suppress another. The resource read is the level-triggered
-recovery path for all of them.
+path cannot suppress the other. The resource read is the level-triggered
+recovery path for both.
 
 ### Backend neutrality, rate control, and trust
 
@@ -397,13 +400,13 @@ Configuring this path is not evidence that a PyPI version has been published.
 - Eager attach and lazy first use share one ensure lifecycle and one retained
   owner. Do not add a transient client path or an attach-required fallback.
 - Application behavior does not branch by protocol era. Era checks stay at
-  the SDK-owned error, envelope, and host-adapter boundary.
+  the SDK-owned error and envelope boundary.
 - The aggregate resource is notification-only. Do not add unread-thread
   inventory, search results, or consuming watch behavior without a new product
   contract. Search retains only the ordinary post-command observational inbox
   refresh.
-- Legacy updates, modern listen events, and Claude channel cues are redundant
-  hints. Correctness depends only on Taut state and resource reread.
+- Legacy updates and modern listen events are redundant hints. Correctness
+  depends only on Taut state and resource reread.
 - A live stuck child is never force-detached in-process. Restart is safer than
   allowing a second client to overlap unknown backend ownership.
 - Debug capture runs only in the workspace child and only with its frozen
@@ -424,11 +427,10 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/taut_mcp/_results.py` | shared record-type map, domain-tool set, message-id pattern, and [MCP-6] result builder |
 | `extensions/taut_mcp/tests/_result_schemas.py` | test-only closed record schemas and result-wrapper validation |
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
-| `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated legacy-host fixed-payload experimental notification |
 | `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
 | `extensions/taut_mcp/tests/test_process_reactor.py` | shared ensure, alias, lifecycle, cancellation, and process-reactor invariants |
 | `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
-| `extensions/taut_mcp/tests/test_tools.py` | exact stable-only miss normalization, shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
+| `extensions/taut_mcp/tests/test_tools.py` | shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
 | `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL stable-DM and search adapter conformance |
 | `bin/check-core-summon-wheel-matrix.py`, `tests/test_core_summon_wheel_matrix.py` | current MCP/current-core metadata, checkout isolation, and installed stdio attach/list/detach lifecycle gate |
 | `taut/_scripts.py`, `tests/test_dev_scripts.py` | canonical PostgreSQL runner routing and MCP/PG dependency overlay |

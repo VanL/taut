@@ -113,7 +113,9 @@ def test_channel_topic_schema_accepts_clear_and_exact_one_line_text(
 
 
 @pytest.mark.parametrize("tool_name", ["channel_show", "channel_topic"])
-def test_missing_channel_is_an_empty_channel_result(tool_name: str) -> None:
+def test_missing_channel_preserves_not_found_for_reactor_mapping(
+    tool_name: str,
+) -> None:
     class MissingClient:
         def get_channel(self, channel: str) -> object:
             raise NotFoundError(f"channel not found: {channel}")
@@ -126,8 +128,8 @@ def test_missing_channel_is_an_empty_channel_result(tool_name: str) -> None:
     )
     if tool_name == "channel_topic":
         arguments += (("topic", "new"),)
-    result = execute_command(cast(TautClient, MissingClient()), tool_name, arguments)
-    assert result == ()
+    with pytest.raises(NotFoundError, match="^channel not found: missing$"):
+        execute_command(cast(TautClient, MissingClient()), tool_name, arguments)
 
 
 def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
