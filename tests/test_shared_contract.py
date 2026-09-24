@@ -228,7 +228,7 @@ def _agent_capture(*, pid: int, start_time: str) -> identity.IdentityCapture:
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity("host:test", "test-host"),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
         uid=1000,
         login="tester",
         anchor=process,
@@ -1390,7 +1390,7 @@ def test_project_notification_peek_is_observational_contract(
     assert observer._state.get_identity_claim(token_claim.claim_hash) is None
     assert observer.peek_inbox() == []
     assert observer._state.get_identity_claim(token_claim.claim_hash) is None
-    observer.whoami()
+    observer.join("general")
     established_claim = observer._state.get_identity_claim(token_claim.claim_hash)
     assert established_claim is not None
     speaker = TautClient(as_name="speaker")

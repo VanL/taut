@@ -206,6 +206,28 @@ def test_transport_pump_has_no_broker_client_and_owner_rejects_stale_results(
     assert not driver._harness_dead.is_set()
 
 
+def test_activity_event_uses_explicit_activity_write_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Mouth:
+        def touch_identity_activity(self) -> None:
+            calls.append("touch")
+
+        def whoami(self) -> None:
+            pytest.fail("read-only whoami must not be used as an activity write")
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+
+    recorded = module.SummonDriver._record_activity_event(
+        ActivityEvent("output"), cast(Any, Mouth()), 0.0
+    )
+
+    assert recorded == 100.0
+    assert calls == ["touch"]
+
+
 def test_cancelled_delivery_does_not_mark_provider_dead(summon_db: Path) -> None:
     from taut_summon._adapter import AdapterWriteCancelled
 

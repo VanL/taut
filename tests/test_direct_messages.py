@@ -35,7 +35,7 @@ def _agent_capture(*, cwd: str) -> identity.IdentityCapture:
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity("host:test", "test-host"),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
         uid=501,
         login="tester",
         anchor=process,
@@ -47,7 +47,9 @@ def _agent_capture(*, cwd: str) -> identity.IdentityCapture:
 def _human_capture(*, login: str) -> identity.IdentityCapture:
     return identity.IdentityCapture(
         chain=(),
-        host=identity.HostIdentity("host:human-test", "human-test-host"),
+        host=identity.HostIdentity(
+            "host:human-test", "human-test-host", "test host identity"
+        ),
         uid=502,
         login=login,
         anchor=None,
@@ -417,10 +419,14 @@ def test_corrupt_dm_state_fails_closed_before_queue_or_watch_runtime(
         alice.watch(lambda _item: None, threads=[stable])
 
 
-@pytest.mark.parametrize("operation", ["read", "directory", "watch"])
-def test_dm_navigation_touches_activity_without_healing_identity_claims(
+@pytest.mark.parametrize(
+    ("operation", "touches_activity"),
+    [("read", True), ("directory", False), ("watch", True)],
+)
+def test_dm_navigation_activity_policy_never_heals_identity_claims(
     tmp_path: Path,
     operation: str,
+    touches_activity: bool,
 ) -> None:
     db_path = tmp_path / ".taut.db"
     TautClient.init(db_path=db_path)
@@ -462,7 +468,10 @@ def test_dm_navigation_touches_activity_without_healing_identity_claims(
 
     after = navigating._state.get_member(alice_member.member_id)
     assert after is not None
-    assert after["last_active_ts"] > before["last_active_ts"]
+    if touches_activity:
+        assert after["last_active_ts"] > before["last_active_ts"]
+    else:
+        assert after == before
     assert navigating._state.get_identity_claim(changed_claim.claim_hash) is None
 
 

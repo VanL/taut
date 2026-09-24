@@ -441,7 +441,9 @@ def _local_llm_capture() -> identity.IdentityCapture:
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity("host:taut-local-llm", "taut-local-llm"),
+        host=identity.HostIdentity(
+            "host:taut-local-llm", "taut-local-llm", "test host identity"
+        ),
         uid=process.uid or 0,
         login="taut-local-llm",
         anchor=process,

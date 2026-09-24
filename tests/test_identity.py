@@ -38,14 +38,14 @@ from typing import Any, Self, cast
 import psutil
 import pytest
 
-from taut import identity
+from taut import TautClient, identity
 from taut._constants import (
     HISTORICAL_NAME_POOL,
     PER_BASENAME_NAME_POOLS,
     capitalize_automatic_name,
     normalize_name_seed,
 )
-from taut.state import MemberRow
+from taut.state import MemberRow, SqlSidecarTautState
 from tests.conftest import build_cli_env
 
 pytestmark = pytest.mark.sqlite_only
@@ -171,7 +171,7 @@ def _capture(
     )
     return identity.IdentityCapture(
         chain=(proc,),
-        host=identity.HostIdentity("host:test", "test-host"),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
         uid=501,
         login="van",
         anchor=proc if anchor else None,
@@ -249,7 +249,9 @@ def test_capture_identity_selects_agent_anchor_from_captured_chain(
     monkeypatch.setattr(
         identity,
         "capture_host_identity",
-        lambda: identity.HostIdentity("host:test", "test-host"),
+        lambda: identity.HostIdentity(
+            "host:test", "test-host", "test host identity"
+        ),
     )
     monkeypatch.setattr(identity.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(identity.os, "getppid", lambda: 123)
@@ -280,7 +282,9 @@ def test_capture_host_identity_prefers_linux_machine_id(
 
     host = identity.capture_host_identity()
 
-    assert host == identity.HostIdentity("machine-id:machine-123", "workstation")
+    assert host == identity.HostIdentity(
+        "machine-id:machine-123", "workstation", "linux machine-id"
+    )
 
 
 def test_capture_host_identity_uses_macos_platform_uuid(
@@ -290,7 +294,7 @@ def test_capture_host_identity_uses_macos_platform_uuid(
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "mac")
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd == ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
+        assert cmd == ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
         _assert_finite_positive_timeout(kwargs["timeout"])
         return subprocess.CompletedProcess(
             cmd,
@@ -303,7 +307,11 @@ def test_capture_host_identity_uses_macos_platform_uuid(
 
     host = identity.capture_host_identity()
 
-    assert host == identity.HostIdentity("ioplatformuuid:ABC-123", "mac")
+    assert host == identity.HostIdentity(
+        "ioplatformuuid:ABC-123",
+        "mac",
+        "macOS IOKit platform UUID",
+    )
 
 
 def test_capture_host_identity_falls_back_to_hostname(
@@ -319,7 +327,192 @@ def test_capture_host_identity_falls_back_to_hostname(
 
     host = identity.capture_host_identity()
 
-    assert host == identity.HostIdentity("hostname:fallback-host", "fallback-host")
+    assert host == identity.HostIdentity(
+        "hostname:fallback-host", "fallback-host", "hostname fallback"
+    )
+    capture = identity.IdentityCapture(
+        chain=(),
+        host=host,
+        uid=501,
+        login="tester",
+        anchor=None,
+        kind="human",
+        rule="fallback capture",
+    )
+    explanation = identity.explain_capture(capture, "identity claim")
+    assert explanation["rule"] == "identity claim"
+    assert explanation["host_rule"] == "hostname fallback"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS IOKit smoke")
+@pytest.mark.usefixtures("clean_env")
+def test_macos_host_identity_is_path_independent_across_cli_calls(
+    tmp_path: Path,
+) -> None:
+    _init_db(tmp_path)
+    env = build_cli_env({"TAUT_DB": str(tmp_path / ".taut.db"), "PATH": ""})
+
+    joined = subprocess.run(
+        [sys.executable, "-m", "taut", "--json", "join", "general"],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    created = next(obj for obj in _json_lines(joined.stdout) if "token" in obj)
+    resolved = subprocess.run(
+        [sys.executable, "-m", "taut", "--json", "whoami", "--explain"],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    member = _json_lines(resolved.stdout)[-1]
+
+    assert member["member_id"] == created["member_id"]
+    assert member["explain"]["host_rule"] == "macOS IOKit platform UUID"
+    assert member["explain"]["host_id"].startswith("ioplatformuuid:")
+
+
+def test_capture_host_identity_uses_fixed_windows_machine_guid_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "win32")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "windows-host")
+    calls: list[tuple[object, ...]] = []
+
+    class Key:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            del exc_type, exc, traceback
+
+    key = Key()
+
+    def open_key(*args: object) -> Key:
+        calls.append(("open", *args))
+        return key
+
+    def query_value(opened: object, value: str) -> tuple[object, int]:
+        calls.append(("query", opened, value))
+        return "  ABC-123  ", 1
+
+    registry = SimpleNamespace(
+        HKEY_LOCAL_MACHINE=object(),
+        KEY_READ=0x1,
+        KEY_WOW64_64KEY=0x100,
+        OpenKey=open_key,
+        QueryValueEx=query_value,
+    )
+    monkeypatch.setattr(identity, "_load_windows_registry", lambda: registry)
+
+    host = identity.capture_host_identity()
+
+    assert host == identity.HostIdentity(
+        "machine-guid:ABC-123",
+        "windows-host",
+        "Windows machine GUID",
+    )
+    assert calls == [
+        (
+            "open",
+            registry.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Cryptography",
+            0,
+            registry.KEY_READ | registry.KEY_WOW64_64KEY,
+        ),
+        ("query", key, "MachineGuid"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "error"),
+    [
+        (None, ImportError("winreg unavailable")),
+        (None, OSError("registry unavailable")),
+        ("", None),
+        ("   ", None),
+        (123, None),
+    ],
+)
+def test_capture_host_identity_windows_invalid_machine_guid_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: object,
+    error: BaseException | None,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "win32")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "windows-fallback")
+
+    if error is not None:
+        def load_registry() -> object:
+            raise error
+
+        monkeypatch.setattr(identity, "_load_windows_registry", load_registry)
+    else:
+        class Key:
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                traceback: TracebackType | None,
+            ) -> None:
+                del exc_type, exc, traceback
+
+        registry = SimpleNamespace(
+            HKEY_LOCAL_MACHINE=object(),
+            KEY_READ=0x1,
+            KEY_WOW64_64KEY=0x100,
+            OpenKey=lambda *_args: Key(),
+            QueryValueEx=lambda _key, _name: (raw_value, 1),
+        )
+        monkeypatch.setattr(identity, "_load_windows_registry", lambda: registry)
+
+    assert identity.capture_host_identity() == identity.HostIdentity(
+        "hostname:windows-fallback",
+        "windows-fallback",
+        "hostname fallback",
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows registry smoke")
+def test_capture_host_identity_windows_is_path_independent() -> None:
+    env = build_cli_env()
+    env["PATH"] = ""
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from taut.identity import capture_host_identity; "
+                "host = capture_host_identity(); "
+                "print(host.host_id); print(host.host_rule)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    lines = completed.stdout.splitlines()
+    assert lines[0].startswith("machine-guid:")
+    assert len(lines[0]) > len("machine-guid:")
+    assert lines[1] == "Windows machine GUID"
 
 
 def test_capture_process_chain_stops_at_missing_or_self_parent(
@@ -391,6 +584,49 @@ def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
         None,
         "human fallback at top of readable process chain",
     )
+
+
+@pytest.mark.parametrize(
+    ("proc", "expected"),
+    [
+        (
+            identity.ProcessInfo(
+                pid=1,
+                start_time="start",
+                exe="/usr/bin/tmux",
+                argv=("bash",),
+            ),
+            "skip",
+        ),
+        (
+            identity.ProcessInfo(
+                pid=2,
+                start_time="start",
+                exe="/usr/bin/tmux",
+                argv=("tmux",),
+            ),
+            "stop",
+        ),
+        (
+            identity.ProcessInfo(pid=3, exe="/usr/bin/python3", argv=("python3",)),
+            "unanchorable",
+        ),
+        (
+            identity.ProcessInfo(
+                pid=4,
+                start_time="start",
+                exe="/usr/bin/python3",
+                argv=("python3",),
+            ),
+            "agent_candidate",
+        ),
+    ],
+)
+def test_process_role_classification_has_one_fixed_precedence(
+    proc: identity.ProcessInfo,
+    expected: str,
+) -> None:
+    assert identity.classify_process_role(proc) == expected
 
 
 @pytest.mark.parametrize(
@@ -638,22 +874,29 @@ def test_explain_capture_summarizes_anchor_and_chain() -> None:
     explanation = identity.explain_capture(capture, "identity claim")
 
     assert explanation["host_id"] == "host:test"
+    assert explanation["host_rule"] == "test host identity"
     assert explanation["rule"] == "identity claim"
     assert explanation["anchor"]["pid"] == 123
     assert explanation["chain"][0]["argv"] == ["codex", "--work"]
 
 
+def test_explain_capture_reports_host_rule_for_human_capture() -> None:
+    explanation = identity.explain_capture(_capture(anchor=False), "human uid fallback")
+
+    assert explanation["host_rule"] == "test host identity"
+    assert explanation["rule"] == "human uid fallback"
+    assert explanation["anchor"] is None
+
+
 def test_match_anchor_returns_nearest_matching_member() -> None:
+    selected = identity.ProcessInfo(pid=123, start_time="start")
     capture = identity.IdentityCapture(
-        chain=(
-            identity.ProcessInfo(pid=122, start_time=None),
-            identity.ProcessInfo(pid=123, start_time="start"),
-        ),
-        host=identity.HostIdentity("host:test", "test-host"),
+        chain=(identity.ProcessInfo(pid=122, start_time=None), selected),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
         uid=501,
         login="van",
-        anchor=None,
-        kind="human",
+        anchor=selected,
+        kind="agent",
         rule="test",
     )
     host_mismatch = _member_row(host_id="host:other")
@@ -661,6 +904,138 @@ def test_match_anchor_returns_nearest_matching_member() -> None:
 
     assert identity.match_anchor(capture, [host_mismatch, match]) == match
     assert identity.match_anchor(capture, [host_mismatch]) is None
+
+
+@pytest.mark.parametrize(
+    "ancestor",
+    [
+        identity.ProcessInfo(
+            pid=123,
+            start_time="ancestor-start",
+            exe="/bin/bash",
+            argv=("bash",),
+        ),
+        identity.ProcessInfo(
+            pid=123,
+            start_time="ancestor-start",
+            exe="/usr/bin/tmux",
+            argv=("tmux",),
+        ),
+    ],
+)
+def test_match_anchor_allows_legacy_skipped_or_stopped_ancestor(
+    ancestor: identity.ProcessInfo,
+) -> None:
+    selected = identity.ProcessInfo(
+        pid=200,
+        start_time="child-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+    capture = identity.IdentityCapture(
+        chain=(selected, ancestor),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
+        uid=501,
+        login="van",
+        anchor=selected,
+        kind="agent",
+        rule="test",
+    )
+    member = _member_row(
+        anchor_pid=ancestor.pid,
+        anchor_start_time=ancestor.start_time,
+    )
+
+    assert identity.match_anchor(capture, [member]) == member
+
+
+def test_match_anchor_rejects_skipped_descendant_before_selected_anchor() -> None:
+    descendant = identity.ProcessInfo(
+        pid=201,
+        start_time="shell-start",
+        exe="/bin/bash",
+        argv=("bash",),
+    )
+    selected = identity.ProcessInfo(
+        pid=200,
+        start_time="child-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+    capture = identity.IdentityCapture(
+        chain=(descendant, selected),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
+        uid=501,
+        login="van",
+        anchor=selected,
+        kind="agent",
+        rule="test",
+    )
+    member = _member_row(
+        anchor_pid=descendant.pid,
+        anchor_start_time=descendant.start_time,
+    )
+
+    assert identity.match_anchor(capture, [member]) is None
+
+
+def test_match_anchor_does_not_bind_child_agent_to_agent_ancestor() -> None:
+    selected = identity.ProcessInfo(
+        pid=200,
+        ppid=123,
+        start_time="child-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+    parent = identity.ProcessInfo(
+        pid=123,
+        ppid=1,
+        start_time="parent-start",
+        exe="/usr/bin/python3",
+        argv=("python3", "agent.py"),
+    )
+    capture = identity.IdentityCapture(
+        chain=(selected, parent),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
+        uid=501,
+        login="van",
+        anchor=selected,
+        kind="agent",
+        rule="agent anchor selected at codex",
+    )
+    parent_member = _member_row(
+        anchor_pid=parent.pid,
+        anchor_start_time=parent.start_time,
+    )
+
+    assert identity.match_anchor(capture, [parent_member]) is None
+
+
+def test_match_anchor_rejects_unanchorable_ancestor() -> None:
+    selected = identity.ProcessInfo(
+        pid=200,
+        start_time="child-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+    ancestor = identity.ProcessInfo(
+        pid=123,
+        start_time=None,
+        exe="/usr/bin/python3",
+        argv=("python3", "agent.py"),
+    )
+    capture = identity.IdentityCapture(
+        chain=(selected, ancestor),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
+        uid=501,
+        login="van",
+        anchor=selected,
+        kind="agent",
+        rule="agent anchor selected at codex",
+    )
+    member = _member_row(anchor_pid=ancestor.pid, anchor_start_time=None)
+
+    assert identity.match_anchor(capture, [member]) is None
 
 
 def test_member_presence_distinguishes_human_remote_here_and_gone(
@@ -1325,6 +1700,234 @@ def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     assert created == _expected_name_from_anchor(anchor_argv0)
 
 
+_NESTED_AGENT_HARNESS = '''
+import json
+import os
+import subprocess
+import sys
+
+db = sys.argv[1]
+cli_python = sys.argv[2]
+force_new = sys.argv[3] == "new"
+env = os.environ.copy()
+env["TAUT_DB"] = db
+
+
+def taut(*args):
+    completed = subprocess.run(
+        [cli_python, "-m", "taut", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    return {
+        "rc": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+join_args = ("--json", "join", "general", "--new") if force_new else (
+    "--json", "join", "general"
+)
+print(json.dumps({"join": taut(*join_args),
+                  "whoami": taut("--json", "whoami", "--explain")}))
+'''
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="symlinked executable ancestry is a POSIX process contract",
+)
+@pytest.mark.usefixtures("clean_env")
+@pytest.mark.parametrize("force_new", [False, True], ids=["join", "join-new"])
+def test_nested_agent_first_contact_does_not_bind_parent_member(
+    tmp_path: Path,
+    force_new: bool,
+) -> None:
+    shell = shutil.which("bash") or "/bin/sh"
+    _init_db(tmp_path)
+    parent_name = _join_and_capture_name(shell, tmp_path)
+    observer = TautClient(db_path=tmp_path / ".taut.db")
+    state = cast(SqlSidecarTautState, observer._state)
+    parent = state.get_member_by_route_key(parent_name.casefold())
+    assert parent is not None
+    parent_claims_before = [
+        record
+        for record in state.persistence_records()
+        if record["type"] == "identity_claim"
+        and record["member_id"] == parent["member_id"]
+    ]
+    observer.close()
+    harness = tmp_path / "nested_agent.py"
+    harness.write_text(_NESTED_AGENT_HARNESS, encoding="utf-8")
+    codex = tmp_path / "codex"
+    codex.symlink_to(sys.executable)
+
+    completed = subprocess.run(
+        [
+            str(codex),
+            str(harness),
+            str(tmp_path / ".taut.db"),
+            sys.executable,
+            "new" if force_new else "ordinary",
+        ],
+        cwd=tmp_path,
+        env=build_cli_env(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout.strip().splitlines()[-1])
+    joined = results["join"]
+    assert joined["rc"] == 0, joined["stderr"]
+    creation = next(obj for obj in _json_lines(joined["stdout"]) if "token" in obj)
+    assert creation["name"] != parent_name
+    resolved = results["whoami"]
+    assert resolved["rc"] == 0, resolved["stderr"]
+    whoami = _json_lines(resolved["stdout"])[-1]
+    assert whoami["member_id"] == creation["member_id"]
+    assert whoami["explain"]["rule"] == "identity claim"
+    observer = TautClient(db_path=tmp_path / ".taut.db")
+    state = cast(SqlSidecarTautState, observer._state)
+    parent_claims_after = [
+        record
+        for record in state.persistence_records()
+        if record["type"] == "identity_claim"
+        and record["member_id"] == parent["member_id"]
+    ]
+    observer.close()
+    assert parent_claims_after == parent_claims_before
+
+
+_READ_ONLY_CHILD_HARNESS = '''
+import json
+import os
+import subprocess
+import sys
+
+db = sys.argv[1]
+cli_python = sys.argv[2]
+otherdir = sys.argv[3]
+verb = sys.argv[4]
+env = os.environ.copy()
+env["TAUT_DB"] = db
+
+
+def taut(*args):
+    return subprocess.run(
+        [cli_python, "-m", "taut", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+
+
+def snapshot():
+    source = (
+        "import json,sys; "
+        "from simplebroker import Queue; "
+        "from taut import TautClient; "
+        "from taut._constants import META_QUEUE_NAME; "
+        "client=TautClient(db_path=sys.argv[1]); "
+        "meta=Queue(META_QUEUE_NAME,db_path=sys.argv[1]); "
+        "print(json.dumps([client._state.persistence_records(),"
+        "meta.refresh_last_ts()])); meta.close(); client.close()"
+    )
+    completed = subprocess.run(
+        [cli_python, "-c", source, db],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+joined = taut("--json", "join", "general")
+created = next(
+    json.loads(line)
+    for line in joined.stdout.splitlines()
+    if "token" in json.loads(line)
+)
+assert taut("--as", "other", "join", "general").returncode == 0
+assert taut("--as", "other", "say", "general", "unread").returncode == 0
+assert taut("--as", "other", "say", "@" + created["name"], "direct").returncode == 0
+
+commands = {
+    "whoami": ("--json", "whoami"),
+    "whoami-explain": ("--json", "whoami", "--explain"),
+    "who": ("--json", "who"),
+    "list": ("--json", "list"),
+    "list-all": ("--json", "list", "--all"),
+    "list-dms": ("--json", "list", "--dms"),
+}
+os.chdir(otherdir)
+before = snapshot()
+completed = taut(*commands[verb])
+after = snapshot()
+print(json.dumps({
+    "rc": completed.returncode,
+    "stdout": completed.stdout,
+    "stderr": completed.stderr,
+    "unchanged": before == after,
+}))
+'''
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="symlinked executable ancestry is a POSIX process contract",
+)
+@pytest.mark.usefixtures("clean_env")
+@pytest.mark.parametrize(
+    "verb",
+    ["whoami", "whoami-explain", "who", "list", "list-all", "list-dms"],
+)
+def test_read_verbs_are_read_only_in_fresh_child_processes(
+    tmp_path: Path,
+    verb: str,
+) -> None:
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+    otherdir = tmp_path / "moved"
+    otherdir.mkdir()
+    _init_db(workdir)
+    harness = tmp_path / "read_only_child.py"
+    harness.write_text(_READ_ONLY_CHILD_HARNESS, encoding="utf-8")
+    codex = tmp_path / "codex"
+    codex.symlink_to(sys.executable)
+
+    completed = subprocess.run(
+        [
+            str(codex),
+            str(harness),
+            str(workdir / ".taut.db"),
+            sys.executable,
+            str(otherdir),
+            verb,
+        ],
+        cwd=workdir,
+        env=build_cli_env(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["rc"] == 0, result["stderr"]
+    assert result["stdout"]
+    assert result["unchanged"] is True
+
+
 @_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
@@ -1401,7 +2004,7 @@ def test_token_acts_as_unanchored_member_despite_different_live_anchor(
 
 
 _CHDIR_HARNESS = '''
-"""Long-lived anchor harness: invokes taut, chdir()s, invokes taut twice.
+"""Long-lived anchor harness: invokes taut, chdir()s, reads, writes, reads.
 
 This process is a plain Python process (non-wrapper basename), so the
 anchor walk selects *it* as the anchor for every taut invocation below.
@@ -1439,6 +2042,7 @@ os.chdir(workdir)
 results = {"join": taut("--json", "join", "general")}
 os.chdir(otherdir)
 results["whoami_after_chdir"] = taut("--json", "whoami", "--explain")
+results["say_to_heal"] = taut("say", "general", "heal on write")
 results["whoami_after_heal"] = taut("--json", "whoami", "--explain")
 print(json.dumps(results))
 '''
@@ -1459,9 +2063,9 @@ def test_anchor_match_survives_anchor_chdir_in_real_chain(tmp_path: Path) -> Non
     the same member. A shell cannot host this proof — ``select_anchor()``
     skips shells — so the anchor is a small long-lived Python harness.
 
-    Three invocations are required: the second resolves via ``anchor match``
-    and writes the healing claim; only the third can witness that heal by
-    resolving via ``identity claim``.
+    The first read resolves via ``anchor match`` without healing. A later
+    state-changing verb records the claim, then the final read resolves via
+    ``identity claim``.
     """
     workdir = tmp_path / "proj"
     workdir.mkdir()
@@ -1504,6 +2108,9 @@ def test_anchor_match_survives_anchor_chdir_in_real_chain(tmp_path: Path) -> Non
     moved_obj = _json_lines(moved["stdout"])[-1]
     assert moved_obj["member_id"] == member_id
     assert moved_obj["explain"]["rule"] == "anchor match"
+
+    say = results["say_to_heal"]
+    assert say["rc"] == 0, say["stderr"]
 
     healed = results["whoami_after_heal"]
     assert healed["rc"] == 0, healed["stderr"]
@@ -1548,7 +2155,9 @@ process = identity.ProcessInfo(
 )
 capture = identity.IdentityCapture(
     chain=(process,),
-    host=identity.HostIdentity("host:concurrency", "concurrency-host"),
+    host=identity.HostIdentity(
+        "host:concurrency", "concurrency-host", "test host identity"
+    ),
     uid=501,
     login="tester",
     anchor=process,

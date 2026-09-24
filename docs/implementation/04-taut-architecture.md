@@ -696,15 +696,29 @@ claim hash deliberately includes mutable process facts (working directory,
 tty, process group): a live agent that calls `chdir()` invalidates its own hash
 without restarting. The stable (`host_id`, `anchor_pid`, `anchor_start_time`)
 triple recovers that continuity, but only below claim-hash precedence, never
-under `join --new`, and never across hosts. An anchor match immediately records
-the current claim hash for the member ("healing"), which keeps the fallback
-self-limiting: the next command resolves at the cheaper claim-hash step, and a
-healing race against a concurrent process is settled in favor of the
-claim-hash owner because step-3 semantics outrank the fallback.
+under `join --new`, and never across hosts. Matching starts at the selected
+anchor. An ancestor is eligible only when the shared process-role classifier
+calls it a shell/wrapper `skip` or infrastructure `stop`; an
+`agent_candidate` ancestor is excluded so a child agent cannot capture its
+parent's member. The legacy ancestor cases remain eligible so classification
+migrations can heal old shell anchors. This is an explainable continuity
+heuristic, not authentication.
+
+On a state-changing resolution, an anchor match records the current claim hash
+for the member ("healing"). A healing race against a concurrent process is
+settled in favor of the claim-hash owner because step-3 semantics outrank the
+fallback. Read verbs (`whoami`, `who`, every `list` mode, and
+`whoami --explain`) select with activity and healing disabled, so repeated
+reads remain at anchor-match step 4 until a write heals the claim.
 
 `rejoin` captures because it is the explicit command for binding the current
 process claim to a caller-chosen existing member. `whoami --explain` captures
-for diagnostics but does not persist that evidence. The resolver memoizes
+for diagnostics but does not persist that evidence. Its explanation separates
+the member-selection `rule` from `host_rule`, which names the Linux machine-id,
+macOS IOKit UUID, Windows MachineGuid, or hostname fallback source. Platform
+host lookup is independent of `PATH`. An unrecognized explanation travels on
+`UnrecognizedCallerError` and the CLI renders it without fabricating a member.
+The resolver memoizes
 capture and claim only within one synchronous operation; it does not cache a
 complete capture across commands. There is no deferred identity verification
 or association because a later claim collision could not be reported by the
@@ -990,6 +1004,11 @@ remain token errors and never fall back. The wrapper restores the exact
 pre-call `last_created_member` and `last_candidates` objects in `finally`, so
 the shared resolver's ordinary command-diagnostic reset does not leak through
 the no-touch API on either success or failure.
+
+`IdentityMixin.touch_identity_activity()` is the separate write seam for an
+embedder that has real liveness evidence. It selects with the same no-heal
+policy, updates only `last_active_ts`, and returns the refreshed member. A read
+API is never used as a covert activity write.
 
 Notification integration has three deliberately different public operations.
 `NotificationsMixin.inbox()` resolves through the ordinary activity-touching

@@ -51,6 +51,9 @@ TAUT_TOKEN=taut-7f3k9q2m taut say dev "same member from anywhere"
 - Continuity token: every member gets one at creation. Stash it in
   agent state. It is the explicit "this is me" key across process
   churn, ssh, and containers. Continuity, not authentication.
+- A subagent that needs a separate identity must run as a distinct CLI
+  invocation from its own process, or use `--as` or a continuity token.
+  In-process subagents sharing one process are the same automatic identity.
 
 ## Direct messages
 

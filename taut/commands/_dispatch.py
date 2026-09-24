@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -723,11 +724,23 @@ def _render_execution_error(
 
     # Recovery hints are separate records; everything else is one record, so
     # a newline inside dynamic error text stays visible as `\n`.
-    lines = (
-        [exc.message, *exc.hints]
-        if isinstance(exc, UnrecognizedCallerError)
-        else [_exception_message(exc)]
-    )
+    if isinstance(exc, UnrecognizedCallerError):
+        evidence = (
+            []
+            if exc.explain is None
+            else [
+                "identity evidence: "
+                + json.dumps(
+                    exc.explain,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ]
+        )
+        lines = [exc.message, *evidence, *exc.hints]
+    else:
+        lines = [_exception_message(exc)]
     if write_diagnostic_lines(context.stderr, lines):
         return 1
     return code

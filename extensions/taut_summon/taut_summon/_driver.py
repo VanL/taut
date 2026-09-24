@@ -1581,7 +1581,7 @@ class SummonDriver:
             return last_activity
         try:
             # The public activity seam updates last_active_ts ([SUM-7.1]/[IAN-3.3]).
-            mouth.whoami()
+            mouth.touch_identity_activity()
         except TautError as exc:
             logger.debug("activity resolution failed: %s", exc)
         return now

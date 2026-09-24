@@ -656,10 +656,10 @@ stable MCP identifiers; the second column names the owning CLI behavior.
 | `inbox` | `taut inbox` | notification-consuming |
 | `log` | `taut log` | read-only |
 | `search` | `taut search` | cursor/activity-neutral search that may reconcile or rebuild disposable derived index state |
-| `list` | `taut list` | read-oriented but updates existing member activity under the core identity contract |
+| `list` | `taut list` | read-only; does not update activity or heal identity claims |
 | `channel_rename` | `taut channel rename` | mutating |
-| `who` | `taut who` | read-oriented but updates existing member activity under the core identity contract |
-| `whoami` | `taut whoami` without process-explanation output | read-oriented but updates existing member activity under the core identity contract |
+| `who` | `taut who` | read-only; does not update activity or heal identity claims |
+| `whoami` | `taut whoami` without process-explanation output | read-only; does not update activity or heal identity claims |
 
 MCP identifiers for nested CLI operations use noun-first underscore form.
 `channel_show`, `channel_topic`, `channel_rename`, `message_show`,
@@ -676,10 +676,9 @@ Hosts commonly key auto-approval off `readOnlyHint` and `destructiveHint`, so
 both follow one rule. `readOnlyHint=true` marks a tool that writes no Taut
 state a caller would need to approve: `whoami`, `who`, `list`, `log`,
 `search`, `channel_show`, and `list_workspaces`. Resolving the existing member
-for `list`, `who`, and `whoami` may refresh that member's activity timestamp,
-and `search` may reconcile disposable derived index state; both are presence
-or cache bookkeeping rather than participant-visible writes, and the
-descriptions still disclose them. `message_show` and `read` advance a cursor,
+for `list`, `who`, and `whoami` is activity-neutral and never heals a claim.
+`search` may reconcile disposable derived index state; its description
+discloses that cache bookkeeping. `message_show` and `read` advance a cursor,
 so they are not read-only. `destructiveHint=true` marks only `message_delete`
 and `leave`, the two tools whose effect is removal. Every other non-read-only
 tool sets `destructiveHint=false` explicitly because MCP treats an omitted
@@ -715,10 +714,10 @@ hint.
 | `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | false | false | true |
 | `log` | Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle. | true | false | true | true |
 | `search` | Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ. | true | false | true | true |
-| `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | true | false | true | true |
+| `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Identity resolution is read-only. | true | false | true | true |
 | `channel_rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | false | false | true |
-| `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | true | false | true | true |
-| `whoami` | Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | true | false | true | true |
+| `who` | List Taut members or members of one thread through read-only identity resolution. | true | false | true | true |
+| `whoami` | Return the member bound to this workspace attachment through read-only identity resolution. | true | false | true | true |
 
 `init`, `watch`, `rejoin`, `summon`, `dismiss`, extension-discovered verbs,
 and future CLI verbs are not registered automatically. `init` and identity
@@ -841,8 +840,8 @@ Input schemas carry no `$schema` key.
 | `search` | `workspace: string`, `token: string`, `query: string`, `channels: array[string]`, `direct_messages: array[string]`, `all_direct_messages: boolean`, `from_member: string or null`, `kinds: array[message\|notice\|foreign]`, `before: string or null`, `limit: integer`, `reindex: boolean` | `workspace`, `token`, `query` | lazily ensures the workspace; freezes every selector array to a tuple; calls `TautClient.search` once with defaults `[]`, `[]`, false, null, `[]`, null, 50, false; adds no retry or post-filter |
 | `list` | `workspace: string`, `token: string`, `all: boolean`, `dms: boolean` | `workspace`, `token` | lazily ensures the workspace if needed; both booleans default false; `all && dms` is rejected before child dispatch; `dms=true` calls `TautClient.list_direct_messages()` |
 | `channel_rename` | `workspace: string`, `token: string`, `old_name: string`, `new_name: string` | all | lazily ensures the workspace if needed; channel rename only |
-| `who` | `workspace: string`, `token: string`, `thread: string or null` | `workspace`, `token` | lazily ensures the workspace if needed; retains core activity-write and computed-presence semantics |
-| `whoami` | `workspace: string`, `token: string` | both | lazily ensures the workspace if needed; fixed `explain=False` |
+| `who` | `workspace: string`, `token: string`, `thread: string or null` | `workspace`, `token` | lazily ensures the workspace if needed; retains core read-only selection and computed-presence semantics |
+| `whoami` | `workspace: string`, `token: string` | both | lazily ensures the workspace if needed; fixed `explain=False`; read-only selection does not touch activity or heal a claim |
 
 The application compiles one Draft 2020-12 validator from each exact
 advertised input schema and validates `tools/call` arguments before bucket
@@ -1552,8 +1551,8 @@ initialization and modern discovery. They require:
    notification pointers, not every unread chat message or a full activity
    feed.
 5. Use that resource for routine background notification observation. Do not
-   timer-poll `list`, `who`, or `whoami`: those tools update member activity.
-   Call them only when their thread, member, or identity result is needed.
+   timer-poll `list`, `who`, or `whoami`. Although they are read-only, call
+   them only when their thread, member, or identity result is needed.
 6. If the host already supports a callback, monitor, or timer bounded to the
    current agent run or this server process, establish one that rereads the
    resource when signalled or at a bounded interval. Do not infer such a
@@ -1926,8 +1925,8 @@ Required proof includes:
   cursors, `message_react` advances its cursor and reports the intended
   audience without claiming delivery, `message_delete` removes only its
   eligible exact row, `inbox`
-  claims pointers, and `list`/`who`/`whoami` retain their declared activity
-  effects; attach validation reads an existing member without identity,
+  claims pointers, and `list`/`who`/`whoami` retain their declared read-only
+  identity behavior; attach validation reads an existing member without identity,
   claim, activity, anchor, or fingerprint mutation
 - exact `channel_show` and `channel_topic` schema, description,
   annotation, dispatch, and result proofs. Schema probes include missing
@@ -1948,10 +1947,10 @@ Required proof includes:
 - real SQLite and PostgreSQL state probes for `list`, `who`, and `whoami`:
   start from a stable existing-member anchor, token fingerprint, computed
   presence, and activity timestamp; call each tool through its ordinary
-  existing-member path; prove its declared `last_active_ts` write occurs;
-  then prove the anchor, token fingerprint, and computed presence are byte-
-  for-byte or value-for-value unchanged. The test must fail both if the
-  activity write is skipped and if identity or presence machinery is touched
+  existing-member path; prove `last_active_ts`, anchor, token fingerprint,
+  claim rows, and computed presence are byte-for-byte or value-for-value
+  unchanged. The test must fail if any activity, identity, claim, or presence
+  machinery is touched
 - every cell of [MCP-6]'s status-by-operation routing matrix, including ready
   same/different fingerprints, ordinary access to a hidden candidate,
   identity-lost attach, second detach during `detaching`, and retry-detach for
@@ -2056,7 +2055,7 @@ Required proof includes:
   include [MCP-9]'s ensure,
   token, notification-only resource, session callback, explicit-read, and
   recovery rules, including the rule against timer/callback polling of
-  activity-writing `list`/`who`/`whoami` or channel metadata tools; tests
+  `list`/`who`/`whoami` or channel metadata tools; tests
   assert server text and behavior, never model compliance
 - every fixed [MCP-6]/[MCP-10] error snapshot contains its specified recovery
   action, including canonical-selector recovery, bounded backoff, cap

@@ -1505,11 +1505,21 @@ Summon re-summon.
 member through [IAN-3.3]'s read-only resolution. It raises the ordinary
 identity or token error when no selected member resolves. It does not create,
 heal, claim, touch activity, update anchor or fingerprint evidence, inspect
-unread state, or mutate membership or cursor state. The effect-bearing
-`whoami()` contract remains unchanged. Success or failure preserves the
+unread state, or mutate membership or cursor state. `whoami()` uses this same
+read-only selection contract. Success or failure preserves the
 client's existing `last_created_member` and `last_candidates` diagnostic
 objects exactly. The name is intentionally identity-oriented: continuity
 tokens are selectors, not credentials.
+
+`TautClient.touch_identity_activity() -> Member` resolves that same selected
+existing member through read-only identity resolution, then updates only that
+member's `last_active_ts` and returns the updated member. It does not create or
+refresh a claim, heal or change an anchor or fingerprint, create a member,
+change persona, or mutate membership or cursor state. It raises the ordinary
+identity or token error when no selected member resolves. This deliberately
+effect-bearing seam exists for long-lived embedders such as Summon whose native
+activity is not itself a Taut command; observational verbs must not be used as
+an activity side effect.
 
 `TautClient.notification_activity_queue() -> simplebroker.Queue` resolves the
 same selected member read-only and returns that member's core-derived

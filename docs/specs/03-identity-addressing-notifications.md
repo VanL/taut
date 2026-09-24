@@ -146,6 +146,27 @@ of one live process agree regardless of locale, clock adjustments, or
 capturing process lifetime. A process whose start time cannot be read
 has no token and cannot be an `agent_process` anchor.
 
+The host id is an opaque platform identity: `machine-id:<value>` from
+`/etc/machine-id` or `/var/lib/dbus/machine-id` on Linux, and
+`ioplatformuuid:<uuid>` on macOS read from the IOKit platform expert device by
+absolute tool path (`/usr/sbin/ioreg`) or an equivalent in-process query that
+does not depend on the caller's `PATH`. Windows uses
+`machine-guid:<value>` from the `MachineGuid` value under the
+`HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography` registry key through
+Python's standard-library `winreg` API. It opens the fixed 64-bit registry view
+with `KEY_READ | KEY_WOW64_64KEY`, so 32-bit and 64-bit Python select the same
+source, and accepts only a non-empty string value after surrounding whitespace
+is removed. A missing key/value, access failure, or empty or non-string value
+takes the specified hostname fallback; it never emits an invalid
+`machine-guid:` id. The Windows path does not invoke a command or consult
+`PATH`. Host capture also carries one exact source-rule value: `linux
+machine-id`, `macOS IOKit platform UUID`, `Windows machine GUID`, or `hostname
+fallback`; `whoami --explain` exposes it as the separate `host_rule` field and
+never overloads the member-resolution `rule`. When the platform source is
+unavailable, Taut falls back to `hostname:<name>` with `host_rule` equal to
+`hostname fallback`; the fallback is a distinct namespace and never silently
+produces a claim that a platform-sourced capture would not.
+
 The exact evidence may be null field-by-field when the platform cannot provide
 it. Missing optional fields must not fail identity capture.
 
@@ -160,6 +181,15 @@ basename, the argv[0] basename and the executable basename alike, so a
 daemon that rewrites its argv[0] (for example `sshd: user@pts/0` or
 `tmux: server (...)`) still classifies through its executable. A shell is not an `agent_process` anchor merely because its
 platform spelling carries an executable suffix.
+
+Process-role classification is one shared operation over both classification
+basenames with this fixed precedence: `skip` when any name is in the shell or
+wrapper families; otherwise `stop` when any name is in the infrastructure
+family; otherwise `unanchorable` when the process has no [IAN-3.2] start token;
+otherwise `agent_candidate`. `select_anchor()` and [IAN-3.3] step 4 use that
+same operation; neither duplicates the family checks. "Agent-family executable"
+in step 4 means `agent_candidate`; it does not introduce or imply a hard-coded
+list of agent product names.
 
 ### [IAN-3.3] Claim association
 
@@ -186,16 +216,24 @@ Resolution order:
    inferred identity.
 3. When neither deterministic selector is supplied, Taut captures local
    evidence. A captured claim-hash match resolves to the associated member.
-4. Agent anchor match: when no claim hash matches and the capture is an
-   agent capture, resolution may match a stored member anchor by the stable
-   triple (`host_id`, `anchor_pid`, `anchor_start_time`) against the
-   captured ancestor chain, comparing the [IAN-3.2] start token by exact
-   equality. This recovers continuity when a live anchor process changed
-   mutable claim inputs (working directory, tty, process group) without
-   restarting. On a match, the resolver records the current claim hash for
-   that member so subsequent commands resolve at step 3. Anchor match never
-   applies under `join --new`, never overrides steps 1–3, and never matches
-   across hosts.
+4. Agent anchor match: when no claim hash matches and the capture is an agent
+   capture, resolution may match a stored member anchor by the stable triple
+   (`host_id`, `anchor_pid`, `anchor_start_time`), comparing the [IAN-3.2] start
+   token by exact equality, against the selected anchor itself, or against an
+   ancestor of the selected anchor only when the shared [IAN-3.2] process-role
+   classifier returns `skip` or `stop` for that ancestor. An
+   `agent_candidate` ancestor is never eligible; an `unanchorable` ancestor
+   cannot satisfy the exact start-token comparison. This permits a shell,
+   wrapper, or infrastructure process whose earlier classification made it an
+   anchor. It recovers continuity when a live anchor process changed mutable
+   claim inputs (working directory, tty, process group) without restarting,
+   and lets a legacy shell-classified anchor heal after a classification
+   change. It never binds a child agent to a parent agent: an agent-candidate
+   ancestor is not a match, so the child resolves at step 6 and may create or
+   `rejoin` its own member. On a match, the resolver records the current claim
+   hash for that member so subsequent commands resolve at step 3. Anchor match
+   never applies under `join --new`, never overrides steps 1–3, and never
+   matches across hosts.
 5. Human fallback resolves by local host id plus uid when an existing human
    member has that claim history.
 6. Otherwise the caller is unrecognized. Read-only commands may operate as
@@ -232,6 +270,23 @@ creates a member, creates or refreshes a claim, heals an anchor match, updates
 activity, changes anchor or fingerprint evidence, or mutates membership or
 cursor state. Invalid deterministic selectors remain errors and never fall
 back. This is selection, not authentication or token verification.
+
+`whoami`, `whoami --explain`, `who`, and `list` use this read-only resolution.
+`whoami` reports the selected member; `who` and `list` use the selected member
+to drive their existing output; and `whoami --explain` also reports the rule
+that selected the member. None records a claim, heals an anchor, updates
+activity, or creates a member. `whoami --explain` renders the captured evidence
+and the rule in the unrecognized case too. An unrecognized `whoami --explain`
+retains `UnrecognizedCallerError` and exit code 2. Its diagnostic keeps
+`unrecognized caller` as the first record and the existing `or select...`
+recovery record as the last, and inserts exactly one `identity evidence:
+<canonical-json>` record immediately after the first. The canonical JSON is
+the ordinary explanation object with `rule` equal to `unrecognized` and the
+separate `host_rule` described in [IAN-3.2]. This diagnostic contract is the
+same with or without global `--json`; `--quiet` suppresses it under the existing
+error-rendering rule. The Python API raises `UnrecognizedCallerError` carrying
+that explanation as an optional `explain` mapping; it does not fabricate a
+`Member` result.
 
 `join --new` creates a fresh member and bypasses rejoin suggestions. If the
 current claim hash is unclaimed, Taut may associate it with the fresh member. If
@@ -941,8 +996,13 @@ Required proofs:
   identity
 - selector-free resolution still captures and exercises claim-hash, anchor,
   human, and allowed-creation behavior
-- `rejoin` captures and associates the current process claim, while
-  `whoami --explain` captures current evidence without silently associating it
+- `rejoin` captures and associates the current process claim, while `whoami`,
+  `whoami --explain`, `who`, and every `list` mode use read-only resolution and
+  never associate evidence; explicit-name and continuity-token precedence may
+  avoid process capture, while `whoami --explain` always captures for
+  diagnostics. Tests drive all four verbs, including every `list` mode, from a
+  fresh child process and assert the complete read-only state snapshot is
+  unchanged
 - ordinary selector resolution performs no deferred or background identity
   verification or claim association
 - `@name` direct messages route to the member id currently owning the name
@@ -1007,6 +1067,11 @@ Required proofs:
   creation or broker queue mutation
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-identity-claim-boundary-plan.md` — narrows the
+  step-4 anchor match so a parent agent cannot capture a child agent, specifies
+  PATH-independent host-id derivation and its explicit fallback, and routes the
+  observational identity verbs through read-only resolution.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — proposes the
   core-owned unregistered `taut.cache_stale` queue under [IAN-6.1]. Membership

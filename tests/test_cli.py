@@ -18,10 +18,11 @@ from typing import TextIO, cast
 import pytest
 from simplebroker import Queue
 
-from taut import addressing, cli
+from taut import addressing, cli, identity
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut.client import InitResult, Message, TautClient, _validate_sqlite_path
+from taut.commands._dispatch import dispatch
 from taut.commands._rendering import emit_init as _emit_init
 from taut.commands._rendering import format_message_time as _format_message_time
 from taut.commands._rendering import format_unread_count as _format_unread_count
@@ -2042,6 +2043,103 @@ def test_cli_set_name_unrecognized_exits_2(tmp_path: Path) -> None:
 
     assert rc == 2
     assert "unrecognized caller" in err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_unrecognized_whoami_explain_emits_structured_evidence(
+    tmp_path: Path,
+    json_output: bool,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    args = ["whoami", "--explain"]
+    if json_output:
+        args.append("--json")
+
+    rc, out, err = run_cli(*args, cwd=tmp_path)
+
+    assert rc == 2
+    assert out == ""
+    lines = err.splitlines()
+    assert lines[0] == "unrecognized caller"
+    assert lines[1].startswith("identity evidence: ")
+    assert lines[-1] == "or select a member explicitly with --as NAME or TAUT_TOKEN"
+    evidence = json.loads(lines[1].removeprefix("identity evidence: "))
+    assert set(evidence) == {
+        "anchor",
+        "chain",
+        "host_id",
+        "host_label",
+        "host_rule",
+        "rule",
+        "uid",
+    }
+    assert evidence["rule"] == "unrecognized"
+
+
+def test_cli_quiet_unrecognized_whoami_explain_suppresses_diagnostic(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("-q", "whoami", "--explain", cwd=tmp_path)
+
+    assert rc == 2
+    assert out == ""
+    assert err == ""
+
+
+def test_cli_json_whoami_explain_separates_forced_host_fallback_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "fallback-host")
+
+    def missing_ioreg(*_args: object, **_kwargs: object) -> None:
+        raise OSError("missing ioreg")
+
+    monkeypatch.setattr(identity.subprocess, "run", missing_ioreg)
+    process = identity.ProcessInfo(
+        pid=123,
+        start_time="start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+        cwd="/workspace",
+    )
+    capture = identity.IdentityCapture(
+        chain=(process,),
+        host=identity.capture_host_identity(),
+        uid=501,
+        login="tester",
+        anchor=process,
+        kind="agent",
+        rule="test capture",
+    )
+    owner = TautClient(db_path=db, identity_capture=capture)
+    owner.join("general")
+    owner.close()
+    stdout = StringIO()
+    stderr = StringIO()
+
+    rc = dispatch(
+        ["--json", "whoami", "--explain"],
+        stdout=stdout,
+        stderr=stderr,
+        client_factory=lambda **_kwargs: TautClient(
+            db_path=db,
+            identity_capture=capture,
+            persistent=True,
+        ),
+    )
+
+    assert rc == 0
+    assert stderr.getvalue() == ""
+    member = json.loads(stdout.getvalue())
+    assert member["explain"]["rule"] == "identity claim"
+    assert member["explain"]["host_rule"] == "hostname fallback"
+    assert member["explain"]["host_id"] == "hostname:fallback-host"
 
 
 _FOREIGN_ANCHOR_JOIN = """

@@ -460,7 +460,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "list",
-        "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity.",
+        "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. The operation does not update member activity or heal identity claims.",
         {
             "workspace": _WORKSPACE,
             "all": {
@@ -552,7 +552,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "who",
-        "List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
+        "List Taut members or members of one thread without updating member activity or healing identity claims.",
         {
             "workspace": _WORKSPACE,
             "thread": _nullable_string(CHAT_DESCRIPTION, pattern=CHAT_PATTERN),
@@ -567,7 +567,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "whoami",
-        "Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
+        "Return the member bound to this workspace attachment without updating member activity or healing identity claims.",
         {"workspace": _WORKSPACE},
         ("workspace",),
         _annotations(

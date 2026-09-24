@@ -120,7 +120,9 @@ def _harness_capture(provider: str) -> identity.IdentityCapture:
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity("host:taut-live-harness", "taut-live-harness"),
+        host=identity.HostIdentity(
+            "host:taut-live-harness", "taut-live-harness", "test host identity"
+        ),
         uid=process.uid or 0,
         login="taut-live-harness",
         anchor=process,

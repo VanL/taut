@@ -490,7 +490,9 @@ identity claim for the process or human session:
 - anchor pid and its start token, where available
 - executable path, argv, cwd, uid
 - process group, session id, controlling tty
-- an opaque host identity
+- an opaque host identity: Linux machine id, macOS IOKit platform UUID, or
+  Windows MachineGuid, with a named `hostname:` fallback when the platform
+  source is unavailable. Platform lookups do not depend on `PATH`.
 
 That claim maps to the member id (the exact evidence contract is
 [IAN-3] in the
@@ -507,6 +509,19 @@ note: you may be one of these:
   Claude  same executable, same cwd
 reclaim with 'taut rejoin Claude'
 ```
+
+Anchor recovery matches the selected process itself. It may also match an
+older shell, wrapper, or infrastructure ancestor for compatibility, but never
+an agent-like ancestor. This keeps a child agent from silently becoming its
+parent. Identity matching is still an inspectable heuristic, not
+authentication. `whoami`, `who`, and every `list` mode are read-only: they do
+not refresh activity or teach Taut a new claim. `whoami --explain` reports both
+the member-selection `rule` and the host-source `host_rule`, including when the
+caller is unrecognized.
+
+A subagent that needs a separate identity must run as a distinct CLI process
+so it selects its own anchor, or use `--as` or a continuity token. In-process
+subagents that share one process are indistinguishable without a selector.
 
 Automatic human and agent display names use the same small rule: taut derives a
 valid route seed from the OS login or agent process name, then capitalizes its

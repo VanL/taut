@@ -29,6 +29,21 @@
 - Rejoining an existing membership is silent and cursor-neutral. Reply ids and
   human inbox actions now use only exact 19-digit message ids.
 
+- Selector-free anchor recovery no longer matches agent-like ancestors, so a
+  child agent cannot silently capture its parent's member. Shell, wrapper, and
+  infrastructure ancestors remain eligible for legacy-anchor recovery.
+  `whoami`, `who`, and all `list` modes are now fully read-only; Summon uses a
+  dedicated activity-write seam instead.
+- Host identity lookup is independent of `PATH`: macOS uses the absolute IOKit
+  tool path and emits `ioplatformuuid:`, while Windows reads the fixed 64-bit
+  `MachineGuid` registry view and emits `machine-guid:`.
+  `whoami --explain` reports the exact source as `host_rule`, including the
+  explicit `hostname:` fallback. Existing macOS or Windows members created
+  under that fallback may need one `taut rejoin NAME` after upgrading. Claims
+  misassociated by an older release are not stolen: restart the child to get
+  fresh process evidence, then rejoin the intended member, or keep using
+  `--as` or a continuity token.
+
 - POSIX Summon PTY providers now acquire their slave as a controlling terminal
   through the shared process-domain spawn owner. A close-on-exec handshake
   keeps terminal-setup and final-exec failures synchronous and prevents partial

@@ -6,6 +6,9 @@ Spec references:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 
 class TautError(Exception):
     """Base class for all taut user-visible failures."""
@@ -45,11 +48,16 @@ class UnrecognizedCallerError(IdentityError):
     """
 
     def __init__(
-        self, message: str = "unrecognized caller", *, hints: tuple[str, ...] = ()
+        self,
+        message: str = "unrecognized caller",
+        *,
+        hints: tuple[str, ...] = (),
+        explain: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__("\n".join((message, *hints)))
         self.message = message
         self.hints = hints
+        self.explain = explain
 
 
 class MembershipError(TautError):

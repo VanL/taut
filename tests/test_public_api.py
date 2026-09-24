@@ -274,6 +274,9 @@ def test_public_identity_activity_seams_have_exact_signatures() -> None:
 
     assert list(inspect.signature(taut.TautClient.peek_identity).parameters) == ["self"]
     assert list(
+        inspect.signature(taut.TautClient.touch_identity_activity).parameters
+    ) == ["self"]
+    assert list(
         inspect.signature(taut.TautClient.notification_activity_queue).parameters
     ) == ["self"]
 

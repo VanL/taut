@@ -106,11 +106,11 @@ def _sqlite_member(
 
 @pytest.mark.pg_only
 @pytest.mark.timeout(30)
-def test_postgres_activity_tools_preserve_identity_and_presence(
+def test_postgres_identity_reads_preserve_activity_identity_and_presence(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[MCP-5]/[MCP-12] Activity-only effects match SQLite on PostgreSQL."""
+    """[MCP-5]/[MCP-12] Read-only identity effects match SQLite."""
 
     monkeypatch.chdir(taut_pg_project)
     TautClient.init()
@@ -180,7 +180,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
                 before_activity, before_identity = snapshot()
                 await reactor._execute_ready_tool(canonical, tool, arguments)
                 after_activity, after_identity = snapshot()
-                assert after_activity > before_activity
+                assert after_activity == before_activity
                 assert after_identity == before_identity
         finally:
             token_observer.close()

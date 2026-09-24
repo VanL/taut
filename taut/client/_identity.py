@@ -31,7 +31,11 @@ class IdentityMixin(_ClientBase):
         last_candidates = self.last_candidates
         try:
             try:
-                resolved = self._resolve_member(create=False, _touch_activity=False)
+                resolved = self._resolve_member(
+                    create=False,
+                    _touch_activity=False,
+                    _heal_claim=False,
+                )
             except NotFoundError as exc:
                 raise UnrecognizedCallerError("unrecognized caller") from exc
             return self._member_from_row(self._require_member(resolved))
@@ -39,9 +43,50 @@ class IdentityMixin(_ClientBase):
             self.last_created_member = last_created_member
             self.last_candidates = last_candidates
 
+    def touch_identity_activity(self) -> Member:
+        """Advance activity for the selected member without healing identity."""
+
+        last_created_member = self.last_created_member
+        last_candidates = self.last_candidates
+        try:
+            try:
+                resolved = self._resolve_member(
+                    create=False,
+                    _touch_activity=False,
+                    _heal_claim=False,
+                )
+            except NotFoundError as exc:
+                raise UnrecognizedCallerError("unrecognized caller") from exc
+            member = self._require_member(resolved)
+            self._state.update_member_activity(
+                member["member_id"],
+                self._meta_queue.generate_timestamp(),
+            )
+            updated = self._state.get_member(member["member_id"])
+            if updated is None:
+                raise UnrecognizedCallerError("unrecognized caller")
+            return self._member_from_row(updated)
+        finally:
+            self.last_created_member = last_created_member
+            self.last_candidates = last_candidates
+
     def whoami(self, *, explain: bool = False) -> Member:
-        resolved = self._resolve_member(create=False, _require_capture=explain)
-        row = self._require_member(resolved)
+        resolved = self._resolve_member(
+            create=False,
+            _touch_activity=False,
+            _heal_claim=False,
+            _require_capture=explain,
+        )
+        try:
+            row = self._require_member(resolved)
+        except UnrecognizedCallerError as exc:
+            if not explain or resolved.capture is None:
+                raise
+            raise UnrecognizedCallerError(
+                exc.message,
+                hints=exc.hints,
+                explain=identity.explain_capture(resolved.capture, "unrecognized"),
+            ) from exc
         explanation: dict[str, Any] | None = None
         if explain:
             if resolved.capture is None:
@@ -54,7 +99,12 @@ class IdentityMixin(_ClientBase):
         )
 
     def who(self, thread: str | None = None) -> list[Member]:
-        self._resolve_member(create=False, allow_guest=True)
+        self._resolve_member(
+            create=False,
+            allow_guest=True,
+            _touch_activity=False,
+            _heal_claim=False,
+        )
         if thread is not None:
             thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
             self._ensure_no_incomplete_channel_rename()

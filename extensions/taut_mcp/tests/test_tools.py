@@ -2800,12 +2800,12 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
         ("whoami", {}),
     ],
 )
-def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
+def test_identity_read_tools_do_not_change_activity_identity_or_presence(
     tmp_path: Path,
     tool: str,
     arguments: dict[str, object],
 ) -> None:
-    """[MCP-5]/[MCP-12] Activity writes do not heal MCP identity."""
+    """[MCP-5]/[MCP-12] Identity reads are fully non-mutating."""
 
     workspace, token = _workspace_with_two_members(tmp_path)
 
@@ -2837,7 +2837,7 @@ def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
             result = await reactor._execute_ready_tool(canonical, tool, arguments)
             validate(instance=result, schema=result_schema(RECORD_TYPE_BY_TOOL[tool]))
             after_activity, after_identity = snapshot()
-            assert after_activity > before_activity
+            assert after_activity == before_activity
             assert after_identity == before_identity
         finally:
             observer.close()
@@ -3374,7 +3374,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "60acbdd7972836c5442462499d1d57fdee9df00755301a0ff9bae51959bc2fc7"
+        "c08bde522a3ab0f5f499a65ca3148fd3bdc5b34878743a07f29f03b37efa7a52"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -3438,10 +3438,10 @@ EXPECTED_DESCRIPTIONS: dict[str, str] = {
     "inbox": "Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted.",
     "log": "Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle.",
     "search": "Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ.",
-    "list": "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity.",
+    "list": "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. The operation does not update member activity or heal identity claims.",
     "channel_rename": "Rename a Taut channel and its sub-threads. Replaces existing thread addresses.",
-    "who": "List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
-    "whoami": "Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
+    "who": "List Taut members or members of one thread without updating member activity or healing identity claims.",
+    "whoami": "Return the member bound to this workspace attachment without updating member activity or healing identity claims.",
 }
 
 

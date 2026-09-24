@@ -273,9 +273,48 @@ def test_peek_identity_missing_named_selector_is_identity_error(
         ).peek_identity()
 
 
+def test_touch_identity_activity_changes_only_last_active_timestamp(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    capture = _anchor_capture(cwd="/workspace/established")
+    owner = TautClient(db_path=db, identity_capture=capture)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    moved = _anchor_capture(cwd="/workspace/moved")
+    moved_claim = identity.claim_for_capture(moved)
+    actor = TautClient(db_path=db, identity_capture=moved)
+    state = cast(SqlSidecarTautState, actor._state)
+    before_member = actor._state.get_member(created.member_id)
+    before_memberships = actor._state.list_memberships(created.member_id)
+    before_claims = state.persistence_records()
+    assert before_member is not None
+    assert actor._state.get_identity_claim(moved_claim.claim_hash) is None
+
+    touched = actor.touch_identity_activity()
+
+    after_member = actor._state.get_member(created.member_id)
+    assert after_member is not None
+    assert touched.member_id == created.member_id
+    assert touched.last_active_ts > before_member["last_active_ts"]
+    assert {
+        key: value for key, value in after_member.items() if key != "last_active_ts"
+    } == {
+        key: value for key, value in before_member.items() if key != "last_active_ts"
+    }
+    assert actor._state.list_memberships(created.member_id) == before_memberships
+    assert actor._state.get_identity_claim(moved_claim.claim_hash) is None
+    after_records = state.persistence_records()
+    assert [record for record in after_records if record["type"] != "member"] == [
+        record for record in before_claims if record["type"] != "member"
+    ]
+
+
 @pytest.mark.parametrize(
     "method_name",
-    ["peek_identity", "notification_activity_queue"],
+    ["peek_identity", "touch_identity_activity", "notification_activity_queue"],
 )
 def test_public_identity_activity_seams_preserve_client_diagnostics_on_success(
     tmp_path: Path,
@@ -300,7 +339,7 @@ def test_public_identity_activity_seams_preserve_client_diagnostics_on_success(
 
 @pytest.mark.parametrize(
     "method_name",
-    ["peek_identity", "notification_activity_queue"],
+    ["peek_identity", "touch_identity_activity", "notification_activity_queue"],
 )
 def test_public_identity_activity_seams_preserve_client_diagnostics_on_failure(
     tmp_path: Path,
@@ -4651,7 +4690,7 @@ def _anchor_capture(
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity(host_id, "test-host"),
+        host=identity.HostIdentity(host_id, "test-host", "test host identity"),
         uid=501,
         login="tester",
         anchor=process,
@@ -4663,7 +4702,7 @@ def _anchor_capture(
 def _human_capture(*, login: str = "van") -> identity.IdentityCapture:
     return identity.IdentityCapture(
         chain=(),
-        host=identity.HostIdentity("host:test", "test-host"),
+        host=identity.HostIdentity("host:test", "test-host", "test host identity"),
         uid=501,
         login=login,
         anchor=None,
@@ -4745,6 +4784,22 @@ def test_unrecognized_caller_without_candidates_still_names_selectors(
     assert lines[0] == "unrecognized caller"
     assert "note: you may be one of these:" not in lines
     assert lines[-1] == "or select a member explicitly with --as NAME or TAUT_TOKEN"
+
+
+def test_unrecognized_whoami_explain_attaches_capture_evidence(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    capture = _anchor_capture(executable="stranger")
+    observer = TautClient(db_path=db, identity_capture=capture)
+    state = cast(SqlSidecarTautState, observer._state)
+    before = state.persistence_records()
+
+    with pytest.raises(UnrecognizedCallerError) as excinfo:
+        observer.whoami(explain=True)
+
+    assert str(excinfo.value).splitlines()[0] == "unrecognized caller"
+    assert excinfo.value.explain == identity.explain_capture(capture, "unrecognized")
+    assert state.persistence_records() == before
 
 
 def test_repeated_pi_agents_use_capitalized_curated_names(
@@ -4836,8 +4891,14 @@ def test_anchor_match_recovers_member_after_anchor_chdir(
     assert moved.explain is not None
     assert moved.explain["rule"] == "anchor match"
 
-    # The healing claim was recorded: a subsequent client with the same
-    # post-chdir capture resolves at step 3 (identity claim), not step 4.
+    # Repeated reads remain at step 4 and do not heal the changed claim.
+    repeated = TautClient(db_path=db, identity_capture=after).whoami(explain=True)
+    assert repeated.member_id == member.member_id
+    assert repeated.explain is not None
+    assert repeated.explain["rule"] == "anchor match"
+
+    # A state-changing verb heals the claim. Later reads resolve at step 3.
+    moved_client.say("general", "heal on write")
     healed = TautClient(db_path=db, identity_capture=after).whoami(explain=True)
     assert healed.member_id == member.member_id
     assert healed.explain is not None
@@ -4889,6 +4950,88 @@ def test_join_new_skips_anchor_match(tmp_path: Path) -> None:
     fresh.join("general", new=True)
 
     assert fresh.whoami().member_id != member.member_id
+
+
+def test_join_new_does_not_steal_an_existing_step_three_claim(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    capture = _anchor_capture(cwd="/workspace/claimed")
+    owner = TautClient(db_path=db, identity_capture=capture)
+    owner.join("general")
+    owner_member = owner.last_created_member
+    assert owner_member is not None
+    claim = identity.claim_for_capture(capture)
+    claim_before = owner._state.get_identity_claim(claim.claim_hash)
+    assert claim_before is not None
+
+    contender = TautClient(db_path=db, identity_capture=capture)
+    contender.join("general", new=True)
+    created = contender.last_created_member
+
+    assert created is not None
+    assert created.member_id != owner_member.member_id
+    assert contender._state.get_identity_claim(claim.claim_hash) == claim_before
+    assert contender.whoami().member_id == owner_member.member_id
+
+
+def test_legacy_shell_ancestor_match_heals_child_claim(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    shell = identity.ProcessInfo(
+        pid=123,
+        start_time="shell-start",
+        exe="/bin/bash",
+        argv=("bash",),
+        cwd="/workspace",
+    )
+    host = identity.HostIdentity("host:test", "test-host", "test host identity")
+    legacy_capture = identity.IdentityCapture(
+        chain=(shell,),
+        host=host,
+        uid=501,
+        login="tester",
+        anchor=shell,
+        kind="agent",
+        rule="legacy shell anchor",
+    )
+    owner = TautClient(db_path=db, identity_capture=legacy_capture)
+    owner.join("general")
+    owner_member = owner.last_created_member
+    assert owner_member is not None
+    child = identity.ProcessInfo(
+        pid=200,
+        ppid=shell.pid,
+        start_time="child-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+        cwd="/workspace",
+    )
+    child_capture = identity.IdentityCapture(
+        chain=(child, shell),
+        host=host,
+        uid=501,
+        login="tester",
+        anchor=child,
+        kind="agent",
+        rule="agent anchor selected at codex",
+    )
+    child_claim = identity.claim_for_capture(child_capture)
+    actor = TautClient(db_path=db, identity_capture=child_capture)
+    assert actor._state.get_identity_claim(child_claim.claim_hash) is None
+
+    message = actor.say("general", "heal legacy shell anchor")
+
+    assert message.from_id == owner_member.member_id
+    healed_claim = actor._state.get_identity_claim(child_claim.claim_hash)
+    assert healed_claim is not None
+    assert healed_claim["member_id"] == owner_member.member_id
+    explained = TautClient(db_path=db, identity_capture=child_capture).whoami(
+        explain=True
+    )
+    assert explained.explain is not None
+    assert explained.explain["rule"] == "identity claim"
 
 
 def test_join_new_with_occupied_explicit_name_fails_without_adopting_or_mutating(
@@ -5596,6 +5739,108 @@ def test_read_only_selector_resolution_skips_capture_and_state_writes(
     assert viewer._state.get_member(created.member_id) == before
     assert after_high_water == before_high_water
     assert viewer._state.get_identity_claim(token_claim.claim_hash) is None
+
+
+@pytest.mark.parametrize(
+    "verb",
+    ["whoami", "whoami-explain", "who", "list", "list-all", "list-dms"],
+)
+def test_identity_read_verbs_do_not_mutate_step_four_resolution(
+    tmp_path: Path,
+    verb: str,
+) -> None:
+    """[TAUT-8.3]/[IAN-3.3] Reads neither touch nor heal identity state."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    established = _anchor_capture(cwd="/workspace/established")
+    owner = TautClient(db_path=db, identity_capture=established)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    other = TautClient(db_path=db, as_name="other")
+    other.join("general")
+    other.say("@" + created.name, "direct")
+    moved = _anchor_capture(cwd="/workspace/moved")
+    moved_claim = identity.claim_for_capture(moved)
+    observer = TautClient(db_path=db, identity_capture=moved)
+    state = cast(SqlSidecarTautState, observer._state)
+    meta = Queue(META_QUEUE_NAME, db_path=str(db))
+    try:
+        before = (
+            state.persistence_records(),
+            meta.refresh_last_ts(),
+        )
+
+        if verb == "whoami":
+            observer.whoami()
+        elif verb == "whoami-explain":
+            observer.whoami(explain=True)
+        elif verb == "who":
+            observer.who()
+        elif verb == "list":
+            observer.list_threads()
+        elif verb == "list-all":
+            observer.list_threads(all_threads=True)
+        else:
+            observer.list_direct_messages()
+
+        after = (
+            state.persistence_records(),
+            meta.refresh_last_ts(),
+        )
+        claim_after = observer._state.get_identity_claim(moved_claim.claim_hash)
+    finally:
+        meta.close()
+        observer.close()
+        other.close()
+        owner.close()
+
+    assert after == before
+    assert claim_after is None
+
+
+@pytest.mark.parametrize(
+    "verb",
+    ["whoami", "whoami-explain", "who", "list", "list-all", "list-dms"],
+)
+def test_identity_read_verbs_do_not_mutate_unrecognized_resolution(
+    tmp_path: Path,
+    verb: str,
+) -> None:
+    """[IAN-3.3] Guest-capable reads stay read-only; others stay missing."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, identity_capture=_anchor_capture(pid=101))
+    owner.join("general")
+    stranger_capture = _anchor_capture(pid=202, start_time="stranger")
+    stranger = TautClient(db_path=db, identity_capture=stranger_capture)
+    state = cast(SqlSidecarTautState, stranger._state)
+    meta = Queue(META_QUEUE_NAME, db_path=str(db))
+    before = (state.persistence_records(), meta.refresh_last_ts())
+    try:
+        if verb == "who":
+            stranger.who()
+        elif verb == "list-all":
+            stranger.list_threads(all_threads=True)
+        else:
+            with pytest.raises((UnrecognizedCallerError, EmptyResultError)):
+                if verb == "whoami":
+                    stranger.whoami()
+                elif verb == "whoami-explain":
+                    stranger.whoami(explain=True)
+                elif verb == "list":
+                    stranger.list_threads()
+                else:
+                    stranger.list_direct_messages()
+        after = (state.persistence_records(), meta.refresh_last_ts())
+    finally:
+        meta.close()
+        stranger.close()
+        owner.close()
+
+    assert after == before
 
 
 def test_first_contact_join_retries_next_name_after_losing_race(

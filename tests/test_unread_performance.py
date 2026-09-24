@@ -57,7 +57,9 @@ def _fixed_capture() -> identity.IdentityCapture:
     )
     return identity.IdentityCapture(
         chain=(process,),
-        host=identity.HostIdentity("host:benchmark", "benchmark-host"),
+        host=identity.HostIdentity(
+            "host:benchmark", "benchmark-host", "test host identity"
+        ),
         uid=1000,
         login="benchmark",
         anchor=process,

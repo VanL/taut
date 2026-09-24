@@ -20,7 +20,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import psutil
 
@@ -84,6 +84,7 @@ class HostIdentity:
 
     host_id: str
     host_label: str
+    host_rule: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,11 +141,15 @@ def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1]
             except OSError:
                 continue
             if value:
-                return HostIdentity(host_id=f"machine-id:{value}", host_label=label)
+                return HostIdentity(
+                    host_id=f"machine-id:{value}",
+                    host_label=label,
+                    host_rule="linux machine-id",
+                )
     if sys.platform == "darwin":
         try:
             completed = subprocess.run(
-                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -160,9 +165,42 @@ def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1]
                 uuid = value.strip().strip('"')
                 if uuid:
                     return HostIdentity(
-                        host_id=f"ioplatformuuid:{uuid}", host_label=label
+                        host_id=f"ioplatformuuid:{uuid}",
+                        host_label=label,
+                        host_rule="macOS IOKit platform UUID",
                     )
-    return HostIdentity(host_id=f"hostname:{label}", host_label=label)
+    if sys.platform == "win32":
+        try:
+            registry = _load_windows_registry()
+            access = registry.KEY_READ | registry.KEY_WOW64_64KEY
+            with registry.OpenKey(
+                registry.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography",
+                0,
+                access,
+            ) as key:
+                raw_value, _value_type = registry.QueryValueEx(key, "MachineGuid")
+        except (ImportError, OSError):
+            raw_value = None
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            if value:
+                return HostIdentity(
+                    host_id=f"machine-guid:{value}",
+                    host_label=label,
+                    host_rule="Windows machine GUID",
+                )
+    return HostIdentity(
+        host_id=f"hostname:{label}",
+        host_label=label,
+        host_rule="hostname fallback",
+    )
+
+
+def _load_windows_registry() -> Any:
+    """Load the Windows registry API only on the owning platform."""
+
+    return importlib.import_module("winreg")
 
 
 def capture_process_chain(start_pid: int, *, limit: int = 12) -> list[ProcessInfo]:
@@ -200,19 +238,50 @@ def select_anchor(
     """Return the first non-wrapper process, or human fallback."""
 
     for proc in chain:
-        names = tuple(
-            _classification_basename(name) for name in proc.classification_basenames
-        )
-        if any(name in SHELL_BASENAMES or name in WRAPPER_BASENAMES for name in names):
+        role, matched_name = _classify_process(proc)
+        if role == "skip":
             continue
-        for name in names:
-            if name in INFRASTRUCTURE_BASENAMES:
-                return None, f"human fallback at infrastructure process {name}"
+        if role == "stop":
+            if matched_name is None:
+                raise AssertionError("stopped process requires an infrastructure name")
+            return None, f"human fallback at infrastructure process {matched_name}"
         name = proc.basename
-        if proc.start_time is None:
+        if role == "unanchorable":
             return None, f"human fallback because {name} has no start-time token"
         return proc, f"agent anchor selected at {name}"
     return None, "human fallback at top of readable process chain"
+
+
+def classify_process_role(
+    proc: ProcessInfo,
+) -> Literal["skip", "stop", "unanchorable", "agent_candidate"]:
+    """Classify one process for both anchor selection and anchor matching."""
+
+    role, _matched_name = _classify_process(proc)
+    return role
+
+
+def _classify_process(
+    proc: ProcessInfo,
+) -> tuple[
+    Literal["skip", "stop", "unanchorable", "agent_candidate"],
+    str | None,
+]:
+    """Return the shared process role and any matched family basename."""
+
+    names = tuple(
+        _classification_basename(name) for name in proc.classification_basenames
+    )
+    if any(name in SHELL_BASENAMES or name in WRAPPER_BASENAMES for name in names):
+        return "skip", None
+    infrastructure = next(
+        (name for name in names if name in INFRASTRUCTURE_BASENAMES), None
+    )
+    if infrastructure is not None:
+        return "stop", infrastructure
+    if proc.start_time is None:
+        return "unanchorable", None
+    return "agent_candidate", None
 
 
 def _classification_basename(name: str) -> str:
@@ -325,6 +394,7 @@ def explain_capture(capture: IdentityCapture, matched_rule: str) -> dict[str, An
     return {
         "host_id": capture.host.host_id,
         "host_label": capture.host.host_label,
+        "host_rule": capture.host.host_rule,
         "uid": capture.uid,
         "rule": matched_rule,
         "anchor": _process_summary(capture.anchor),
@@ -336,10 +406,21 @@ def match_anchor(
     capture: IdentityCapture,
     members: list[MemberRow],
 ) -> MemberRow | None:
-    """Return the nearest stored anchor in the captured chain."""
+    """Return an eligible stored anchor at or above the selected anchor."""
 
-    for proc in capture.chain:
+    if capture.anchor is None:
+        return None
+    try:
+        selected_index = capture.chain.index(capture.anchor)
+    except ValueError:
+        return None
+    for index, proc in enumerate(capture.chain[selected_index:], start=selected_index):
         if proc.start_time is None:
+            continue
+        if index != selected_index and classify_process_role(proc) not in {
+            "skip",
+            "stop",
+        }:
             continue
         for member in members:
             if member["host_id"] != capture.host.host_id:
