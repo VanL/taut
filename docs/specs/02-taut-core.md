@@ -3111,6 +3111,11 @@ expression behavior.
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
   existing human message-time formatter for shared CLI/TUI rendering.
 
+- `docs/plans/2026-09-24-watch-interrupt-drain-plan.md` — replaces the
+  immediate in-frame `KeyboardInterrupt` with flag-and-drain on the reactor
+  owner, declares the interrupted-watch exit code, and corrects the
+  tuning-knob name.
+
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   reactor wake ownership and safe signal handling by replacing the drifted
   scheduler with an exact pinned copy of Weft's `MultiQueueWatcher` and keeping
