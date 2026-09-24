@@ -70,7 +70,7 @@ Source specs:
 Supporting context:
 
 - `docs/program-theory.md` [THEORY-4] principle 1 (agents are first-class
-  and get native machine transport), [THEORY-5] A3 (tokens are selectors;
+  and get native machine transport), [THEORY-5.A3] (tokens are selectors;
   no auth — unchanged here).
 - `docs/agent-context/runbooks/designing-agent-facing-interfaces.md`
   (every error carries its next action).

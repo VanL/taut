@@ -18,11 +18,11 @@ human owner ([DOM-15] rules).
 ## Goal
 
 Close the gaps the 2026-09-23 review found in the process itself. The
-program theory's adopted alternatives (A1–A6) demonstrably stop
+program theory's adopted alternatives ([THEORY-5.A1]–[THEORY-5.A6]) demonstrably stop
 re-litigation inside plans, but independent reviewers never receive them:
 neither `skills/call-agent/SKILL.md` nor
 `docs/agent-context/runbooks/review-loops-and-agent-bootstrap.md` mentions
-program theory, and both documented re-litigations (A2 via reviewer
+program theory, and both documented re-litigations ([THEORY-5.A2] via reviewer
 finding F1; the 2026-08-24 R2 "tokens are secrets") came from reviewers.
 Three gates have verified blind spots: `CITATION_RE` accepts only one- or
 two-level codes, so `[DOM-10.2.1]` on 210 `noqa` lines is unchecked; the
@@ -77,7 +77,7 @@ Source specs:
 
 - `docs/specs/01-development-documentation-operating-model.md` [DOM-5],
   [DOM-10], [DOM-10.1], [DOM-11], [DOM-14], [DOM-15]
-- `docs/program-theory.md` [THEORY-5] (A1–A6), [THEORY-8]
+- `docs/program-theory.md` [THEORY-5] ([THEORY-5.A1]–[THEORY-5.A6]), [THEORY-8]
 
 Supporting context:
 
@@ -324,8 +324,14 @@ rejecting any current citation, ledger row, or fixture?"
    the instruction that a reviewer who believes circumstances have changed
    raises the rejected path for evaluation by the human. Blind review is
    not the intended mode.
-3. **Owner:** the theory revision's citation form `[THEORY-5.A<n>]` — or
-   keep bare ids and accept the collision risk?
+3. **Resolved 2026-09-24 (owner): rename adopted and landed** as
+   `[REV-THEORY-003]`: coded headings `[THEORY-5.A1]`–`[THEORY-5.A6]` in
+   numeric order, the count corrected, the program theory registered as a
+   citation family, and the grammar widened (red-first) to letter-digit
+   record ids and any-depth codes. Surviving bare-id citations in README,
+   [PIO-7.4], and the 2026-09-24 draft plans now cite the code. The active
+   2026-08-24 command-runtime plan's finding register still says
+   "alternative A3"; it is an owner-owned active plan and was left as is.
 
 ## Deviation Log
 
@@ -343,6 +349,12 @@ rejecting any current citation, ledger row, or fixture?"
 - 2026-09-24 — Owner decision: reviewers receive the [THEORY-5] records
   in every brief; a changed-circumstances case is raised to the human
   owner for evaluation, never re-argued as a finding and never dropped.
+- 2026-09-24 — Tasks 3 and 10 executed on owner direction ("Fix the
+  rename"): `CITATION_RE` widened with failing-first grammar and resolver
+  tests; `THEORY` registered in `LOCAL_SPEC_FILES`; program theory
+  records converted to coded headings in numeric order with
+  `[REV-THEORY-003]`; citations updated. The [DOM-10.1] any-depth sentence
+  (task 7) remains for the spec-authoring slice.
 - 2026-09-24 — Owner question: why is coalescing not retiring plans when
   it works in SimpleBroker? Diagnosis from both run logs: taut sweeps
   throttle to four oldest per run (unwritten norm from the first batch)

@@ -58,7 +58,7 @@ Source specs:
 Supporting context:
 
 - `docs/program-theory.md` [THEORY-2] (identity claim is deterministic and
-  inspectable, never authenticated), [THEORY-5] A3 (no authentication;
+  inspectable, never authenticated), [THEORY-5.A3] (no authentication;
   storage access is membership — this plan adds no verification).
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` SC-4 and
   its "Hidden Couplings" paragraph: "A live legacy shell anchor may heal
@@ -201,7 +201,7 @@ Comprehension gate (answers in the Execution Log before editing):
 
 ## Invariants and Constraints
 
-- A3: no authentication is added. Narrowing the match makes a claim less
+- [THEORY-5.A3]: no authentication is added. Narrowing the match makes a claim less
   likely to be *wrong*, not harder to *spoof*.
 - Steps 1–3 and 5–6 of [IAN-3.3] are unchanged. `--as`, `TAUT_AS`, and
   tokens keep precedence and never teach a claim.

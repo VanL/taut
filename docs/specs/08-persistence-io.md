@@ -641,7 +641,7 @@ deletion of the named input dump after validation begins. Component digests
 assume the source bytes remain stable for the operation; load is not required
 to retain one descriptor, rehash component spans during replay, or copy the
 dump into a private snapshot. A future requirement to apply exactly the bytes
-observed during validation despite concurrent source mutation changes the A6
+observed during validation despite concurrent source mutation changes the [THEORY-5.A6]
 destructive-operation contract and requires a separate specification and
 temp-artifact lifecycle design.
 

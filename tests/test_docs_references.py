@@ -63,7 +63,9 @@ LINK_PATH_RE = re.compile(rf"\]\(({_PATH_BODY})(?::\d+)?\)")
 # containing characters outside the charset never match.
 BACKTICK_PATH_RE = re.compile(rf"`({_PATH_BODY})(?::\d+|::[A-Za-z0-9_.]+)?`")
 
-CITATION_RE = re.compile(r"\[([A-Z][A-Z0-9]*)-(\d+(?:\.\d+)?)\]")
+# A code is FAMILY-N with any number of dotted sub-levels; a sub-level is
+# digits or a letter-digit record id (`[DOM-10.2.1]`, `[THEORY-5.A3]`).
+CITATION_RE = re.compile(r"\[([A-Z][A-Z0-9]*)-(\d+(?:\.[A-Z]?\d+)*)\]")
 INLINE_CODE_RE = re.compile(r"(`+)(.*?)\1")
 
 LOCAL_SPEC_FILES = {
@@ -79,6 +81,9 @@ LOCAL_SPEC_FILES = {
     "PIO": REPO_ROOT / "docs" / "specs" / "08-persistence-io.md",
     "DOCT": REPO_ROOT / "docs" / "specs" / "09-system-doctor.md",
     "TUI": REPO_ROOT / "docs" / "specs" / "10-taut-tui.md",
+    # Program theory: [THEORY-N] sections and the [THEORY-5.A<n>] adopted
+    # alternatives are stable, gated citation targets (REV-THEORY-003).
+    "THEORY": REPO_ROOT / "docs" / "program-theory.md",
 }
 
 # These cite contracts copied from upstream projects. They are provenance,
@@ -236,6 +241,8 @@ def test_cited_spec_codes_resolve_to_spec_headings() -> None:
     ("line", "expected"),
     [
         ("See [TAUT-3.4].", ["[TAUT-3.4]"]),
+        ("Three-level code [DOM-10.2.1].", ["[DOM-10.2.1]"]),
+        ("Theory record [THEORY-5.A3].", ["[THEORY-5.A3]"]),
         ("Unknown concrete claim [XYZ-1].", ["[XYZ-1]"]),
         ("Placeholder [DOM-*].", []),
         ("Inline sample `[API-4]`.", []),
@@ -275,6 +282,15 @@ def test_unclosed_fence_hides_the_rest_of_the_document(tmp_path: Path) -> None:
     )
 
     assert list(_prose_lines(sample)) == [(1, "Before [TAUT-1]")]
+
+
+def test_theory_records_resolve_and_unknown_records_fail() -> None:
+    valid = _valid_local_codes()
+    assert "THEORY" in valid, "program theory must be a registered citation family"
+    src = Path("README.md")
+    assert _citation_failure("[THEORY-5.A3]", src, valid) is None
+    assert _citation_failure("[THEORY-5]", src, valid) is None
+    assert _citation_failure("[THEORY-5.A9]", src, valid) == "unknown local code"
 
 
 def test_external_and_unknown_citation_classification() -> None:

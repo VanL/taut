@@ -73,9 +73,9 @@ Supporting context:
 - `docs/plans/artifacts/2026-09-23-deep-dive-review.md` — reproduction
   commands and evidence for every finding here.
 - `docs/program-theory.md` [THEORY-2] (the queue is the history; readers
-  peek; "read" means "move my bookmark"), [THEORY-5] A1 (notification
+  peek; "read" means "move my bookmark"), [THEORY-5.A1] (notification
   pointers stay consumable — this plan changes no claim semantics; it only
-  refuses the silent `inbox -q` form), A5 (cursor advancement last and
+  refuses the silent `inbox -q` form), [THEORY-5.A5] (cursor advancement last and
   best-effort).
 - `docs/agent-context/runbooks/testing-patterns.md` Pattern 7 (the harness
   forces `PYTHONIOENCODING=utf-8` on every CLI subprocess test).
@@ -304,10 +304,10 @@ Comprehension gate (answers go in the Execution Log before the first edit):
 
 - [THEORY-2]: readers peek. Nothing in this plan consumes chat history. The
   cursor is the only state `read` changes, and it changes it monotonically.
-- A1 is untouched: `inbox` keeps claim-on-read. Do not add render-before-claim
-  to `inbox` in this plan; if the owner wants that, it is a separate A1
+- [THEORY-5.A1] is untouched: `inbox` keeps claim-on-read. Do not add render-before-claim
+  to `inbox` in this plan; if the owner wants that, it is a separate [THEORY-5.A1]
   reconsideration.
-- A5 ordering (registry → insert → cursor last, best-effort) is unchanged for
+- [THEORY-5.A5] ordering (registry → insert → cursor last, best-effort) is unchanged for
   writers. This plan changes only the reader's commit point.
 - The Python API contract of `read()`/`read_unread()` does not change:
   same page semantics, same `limit` validation, same atomic commit.

@@ -5,8 +5,9 @@ semantic review (ADOPT-WITH-EDITS; all ten edits applied).
 Crystallized 2026-08-07 from the README (the declared product
 contract), the [TAUT-*]/[IAN-*]/[SUM-*]/[SRCH-*] specs, plans,
 lessons, and owner dialogue. Owner answers of 2026-08-07 resolved the
-simplicity metric, founding account, contract mechanism, and the five
-adopted durable alternatives in [THEORY-5]. Later revisions gate on
+simplicity metric, founding account, contract mechanism, and the adopted
+durable alternatives in [THEORY-5] (five then; six since
+[REV-THEORY-001], cited by code since [REV-THEORY-003]). Later revisions gate on
 the human owner.
 Owner: Taut product owner
 Boundary: Conceptual identity and design judgment, not exact current
@@ -151,15 +152,20 @@ messages mean.
 
 ### Adopted durable alternatives (owner-ratified 2026-08-07)
 
-Five records, admitted selectively (likely recurrence, material
+Six records, admitted selectively (likely recurrence, material
 investigation cost, hidden constraint exposed, or harm from blind
-retry). Format stays prose-with-fields until this repository adopts a
-formal record grammar. Architecture- and contract-scope records
+retry), each a stable citation target `[THEORY-5.A1]` through
+`[THEORY-5.A6]` that the documentation citation gate resolves; cite the
+code, never the bare `A<n>`, which collides with plan-local finding ids
+(`[REV-THEORY-003]`). Format stays prose-with-fields until this
+repository adopts a formal record grammar. Architecture- and contract-scope records
 (per-call read limit, vendor-whole vs contract-copy, extension
 packaging, process-evidence mechanics, the `taut-chat` naming) are
 routed to their owning specs and implementation docs, not here.
 
-**A1 — Notification inboxes stay consumable pointers.** Rejected:
+#### [THEORY-5.A1] Notification inboxes stay consumable pointers
+
+Rejected:
 treating claim-on-read as delivery loss and adding per-device state or
 cascade-repair. An external review filed it as a code defect; the
 rebuttal (pointer loss ≠ delivery loss) was scored 10/10 and the
@@ -170,8 +176,9 @@ pointer loss ever costs a *message* (chat history also gone), or
 multi-session-per-member (MCP + CLI + summon concurrently) becomes
 the normal deployment shape rather than the exception.
 
-**A2 — Cross-backend search uses native analyzers, not hashed ASCII
-token carriers.** Rejected after adoption: exact cross-backend result
+#### [THEORY-5.A2] Cross-backend search uses native analyzers, not hashed ASCII token carriers
+
+Rejected after adoption: exact cross-backend result
 parity via SHA-256 ASCII carriers (accepted from review finding F1,
 promoted to spec, then owner-reversed the same day — "exact result
 equality made search an authoritative computation, hid useful
@@ -182,7 +189,8 @@ re-derived; this record preempts it. Reconsider when: a user-visible
 workflow depends on identical hit sets across backends, or search
 output is treated as authoritative state rather than a retrieval aid.
 
-**A3 — No authentication layer; storage access is membership.**
+#### [THEORY-5.A3] No authentication layer; storage access is membership
+
 Rejected repeatedly: authorization layers, control-evidence-as-auth,
 and the continuity-token-as-secret classification (each re-defended
 rather than patched; the token-as-secret drift produced its own
@@ -193,7 +201,9 @@ when: a shared-Postgres deployment needs per-principal write policing
 that the database's own grants cannot express — at which point revise
 this account rather than bolting on signing.
 
-**A4 — No daemon *required* for typical use.** The durable invariant
+#### [THEORY-5.A4] No daemon *required* for typical use
+
+The durable invariant
 is out-of-the-box operation without a user-managed service lifecycle,
 not today's literal zero-process realization. Today, `taut watch` and
 Summon are foreground processes, and Taut has no process when neither
@@ -210,8 +220,24 @@ operation (the `weft manager serve` shape — systemd/launchd
 ownership, forced no-idle-exit). "We could build this" does not
 qualify. (Owner-refined 2026-08-07.)
 
-**A6 — A destructive operation's precondition is its contract, not
-its adversary.** Rejected (2026-08-07, dump/load design): connection
+#### [THEORY-5.A5] Cursor advancement follows the committed message, last and best-effort
+
+Rejected after adoption: treating cursor advancement
+as part of the authoritative-sidecar-first phase. The valid order
+remains authoritative registry/membership state → message insert →
+writer cursor advance. Foundation round 1 established the first
+phase; round 3 C7 removed the cursor from it because
+cursor-before-insert could skip concurrent messages after a crash;
+re-litigated once more as that review's finding A2 (pre-write probe
+replaced with a bounded post-write probe, [TAUT-7.4]). The queue-is-history inversion
+survives only with this ordering. Reconsider when: a storage backend
+offers a transaction that makes message-insert and cursor-advance
+atomic across both tables with no crash window — and even then, the
+probe discipline is re-derived, not assumed.
+
+#### [THEORY-5.A6] A destructive operation's precondition is its contract, not its adversary
+
+Rejected (2026-08-07, dump/load design): connection
 census, exclusive-lock quiescence probes, and child-process handle
 scoping for SQLite load. When an operation is contractually
 destructive under an operator-supplied precondition (quiescence on a
@@ -237,20 +263,6 @@ a product requirement emerges to preserve concurrent work during load
 or restore — at which point the operation stops being
 destructive-by-contract and needs its own design, never hardening
 bolted onto this one.
-
-**A5 — Cursor advancement follows the committed message, last and
-best-effort.** Rejected after adoption: treating cursor advancement
-as part of the authoritative-sidecar-first phase. The valid order
-remains authoritative registry/membership state → message insert →
-writer cursor advance. Foundation round 1 established the first
-phase; round 3 C7 removed the cursor from it because
-cursor-before-insert could skip concurrent messages after a crash;
-re-litigated once more as finding A2 (pre-write probe replaced with a
-bounded post-write probe, [TAUT-7.4]). The queue-is-history inversion
-survives only with this ordering. Reconsider when: a storage backend
-offers a transaction that makes message-insert and cursor-advance
-atomic across both tables with no crash window — and even then, the
-probe discipline is re-derived, not assumed.
 
 ## Tensions and falsifiers [THEORY-6]
 
@@ -349,3 +361,23 @@ Evidence:
 - [TAUT-8.5] and [TAUT-12.1] in `docs/specs/02-taut-core.md`
 - SimpleBroker `PollingStrategy` and simplebroker-pg's shared
   `LISTEN` connection
+
+### [REV-THEORY-003] Adopted alternatives are cited by stable code (2026-09-24)
+
+Current account: the adopted durable alternatives in [THEORY-5] are six,
+listed in numeric order A1 through A6, each a coded heading
+`[THEORY-5.A<n>]` that the documentation citation gate resolves like any
+spec code. Prose cites the code, never the bare `A<n>`.
+Supersedes: "Five records" and the A1, A2, A3, A4, A6, A5 order in which
+the records had accumulated; bare-id citation in prose.
+Pressure: the 2026-09-23 review found the miscount, the order, a
+collision between the theory's A6 and a TUI plan's own finding A6, and
+that bare ids were outside the citation gate, so a drifted or renumbered
+record would never be noticed by the tooling that guards every other
+enumerable contract (engineering principle §12). Owner ratified the
+rename on 2026-09-24.
+Evidence:
+- `tests/test_docs_references.py`: the citation grammar accepts
+  letter-digit record ids, the program theory is a registered citation
+  family, and `[THEORY-5.A9]` is rejected as an unknown local code
+- the 2026-09-23 review artifact, Theory facet, findings 6 and 11

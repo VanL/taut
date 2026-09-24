@@ -222,9 +222,9 @@ sufficient for the v0.5.2 rule?"
 
 ## Assumptions and Open Questions
 
-1. **Owner:** should `main` be branch-protected now that CI is red on
-   roughly half of pushes and fixed forward? Not machinery; recorded for
-   the owner.
+1. **Resolved 2026-09-24 (owner): no branch protection on `main`.** It
+   gets in the way of the solo fix-forward workflow; release safety comes
+   from the exact-SHA gates, not from protection.
 2. **Assumption:** the finalizer workflow's job timeout is above five
    minutes; task 3 confirms.
 

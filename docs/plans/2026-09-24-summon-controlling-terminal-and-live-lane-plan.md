@@ -222,7 +222,7 @@ Comprehension gate:
   PTY through stdin, not `/dev/tty`, so acquiring a controlling terminal
   must not change their input path.
 - No new dependency. No watchdog, census, or "is the provider still alive"
-  poll (A6-adjacent: the precondition is the OS contract, not an
+  poll ([THEORY-5.A6]-adjacent: the precondition is the OS contract, not an
   adversary).
 - The live lane's strict mode keeps its current meaning.
 

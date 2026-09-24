@@ -887,7 +887,7 @@ and a quiet poll otherwise. On SQLite, that quiet path wakes from the
 database change counter and does not check each queue while the counter is
 unchanged. When no one is watching, taut is no processes at all. The
 no-daemon account — including what could ever change it — is adopted
-alternative A4 in the
+alternative [THEORY-5.A4] in the
 [program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md);
 watcher behavior is [TAUT-8.4] and [TAUT-8.5] in the
 [core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
@@ -929,7 +929,7 @@ Because it would be theater at this layer. Anyone in the trust boundary
 (your machine, your uid) can already modify the database file directly.
 Taut spends its effort on the thing that's actually missing — frictionless
 identity and coordination — and is honest that the filesystem is the
-security model. The refusal is durable: adopted alternative A3 in the
+security model. The refusal is durable: adopted alternative [THEORY-5.A3] in the
 [program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md),
 with the boundary itself specified by [TAUT-9] in the
 [core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
