@@ -1073,6 +1073,12 @@ Required proofs:
   PATH-independent host-id derivation and its explicit fallback, and routes the
   observational identity verbs through read-only resolution.
 
+- `docs/plans/2026-09-24-cli-read-delivery-and-agent-recipes-plan.md` —
+  makes CLI `read` advance cursors only through delivered records, changes the
+  documented polling idiom to `list -q`, makes repeated `join` silent,
+  corrects the malformed-suffix exit class, and makes unusable-storage
+  diagnostics truthful.
+
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — proposes the
   core-owned unregistered `taut.cache_stale` queue under [IAN-6.1]. Membership
   topology mutations and normal notification claims emit a bounded advisory hint

@@ -15,30 +15,15 @@
   the core local `HH:MM` formatter instead of raw ids, DM search hits use public
   actor-scoped labels, rapid-resize coverage drives the real watcher and app,
   and fatal Textual exits now return the application's nonzero code.
-
 - Plain transcript drags now select the policy-filtered displayed text. `y`
   copies the current selection through OSC 52, and a completed selection that
   remains unchanged for 500 ms copies automatically without changing row,
   cursor, target, or viewport ownership.
-
 - `taut watch` now drains the current SimpleBroker operation before handling
   Ctrl-C, closes its owned resources, prints `taut: interrupted`, and exits
   130. A second Ctrl-C remains an immediate escape for blocked delivery I/O.
 - The documented SQLite watcher knob is `TAUT_MAX_INTERVAL`, not the ignored
   `BROKER_MAX_INTERVAL`; the idle follower budget is at most 2.5% of one core.
-
-- MCP non-private misses, including mutating tools and channel metadata
-  lookups, now return tool errors instead of reporting empty success.
-  Privacy-bearing DM and message misses remain content-free, and
-  `reply.msg_id` now requires exactly 19 digits.
-- MCP now uses only standard legacy and modern resource-update notifications.
-  The research-preview `--claude-channel` flag and capability were removed.
-
-- CLI reads now advance bookmarks only after each record is written and
-  flushed, so closed pipes and encoding failures leave undelivered records
-  unread. `read -q` and `inbox -q` are usage errors; use `list -q` to poll.
-- Rejoining an existing membership is silent and cursor-neutral. Reply ids and
-  human inbox actions now use only exact 19-digit message ids.
 
 - Selector-free anchor recovery no longer matches agent-like ancestors, so a
   child agent cannot silently capture its parent's member. Shell, wrapper, and
@@ -54,6 +39,19 @@
   misassociated by an older release are not stolen: restart the child to get
   fresh process evidence, then rejoin the intended member, or keep using
   `--as` or a continuity token.
+
+- MCP non-private misses, including mutating tools and channel metadata
+  lookups, now return tool errors instead of reporting empty success.
+  Privacy-bearing DM and message misses remain content-free, and
+  `reply.msg_id` now requires exactly 19 digits.
+- MCP now uses only standard legacy and modern resource-update notifications.
+  The research-preview `--claude-channel` flag and capability were removed.
+
+- CLI reads now advance bookmarks only after each record is written and
+  flushed, so closed pipes and encoding failures leave undelivered records
+  unread. `read -q` and `inbox -q` are usage errors; use `list -q` to poll.
+- Rejoining an existing membership is silent and cursor-neutral. Reply ids and
+  human inbox actions now use only exact 19-digit message ids.
 
 - POSIX Summon PTY providers now acquire their slave as a controlling terminal
   through the shared process-domain spawn owner. A close-on-exec handshake

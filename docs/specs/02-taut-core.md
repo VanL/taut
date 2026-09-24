@@ -3126,6 +3126,12 @@ expression behavior.
   owner, declares the interrupted-watch exit code, and corrects the
   tuning-knob name.
 
+- `docs/plans/2026-09-24-cli-read-delivery-and-agent-recipes-plan.md` —
+  makes CLI `read` advance cursors only through delivered records, changes the
+  documented polling idiom to `list -q`, makes repeated `join` silent,
+  corrects the malformed-suffix exit class, and makes unusable-storage
+  diagnostics truthful.
+
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   reactor wake ownership and safe signal handling by replacing the drifted
   scheduler with an exact pinned copy of Weft's `MultiQueueWatcher` and keeping

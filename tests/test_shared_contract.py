@@ -1390,7 +1390,7 @@ def test_project_notification_peek_is_observational_contract(
     assert observer._state.get_identity_claim(token_claim.claim_hash) is None
     assert observer.peek_inbox() == []
     assert observer._state.get_identity_claim(token_claim.claim_hash) is None
-    observer.join("general")
+    assert observer.join("general") is None
     established_claim = observer._state.get_identity_claim(token_claim.claim_hash)
     assert established_claim is not None
     speaker = TautClient(as_name="speaker")
