@@ -1,7 +1,7 @@
 # Release Gate Corrections Plan
 
-Status: draft — findings verified against the 0.9.8 and 0.9.0 release runs
-and the local test; awaiting independent plan review.
+Status: completed — implementation and independent completed-work review are
+complete; the targeted completion commit contains only this release-gate unit.
 
 Class: 4 (risky) under [DOM-5]: the change touches the publication path
 (`.github/scripts/release_publication.py` post-upload verification) and a
@@ -17,8 +17,8 @@ Owner: implementing engineer.
 
 ## Goal
 
-Remove three false failures from the release path without weakening any
-guarantee. First,
+Remove three false failures and one misleading help gap from the release path
+without weakening any guarantee. First,
 `tests/test_release_script.py::test_pg_lockfile_is_not_retained_and_is_ignored`
 asserts that a git-ignored file is absent from disk; any `uv run` inside
 `extensions/taut_pg` creates it, so the root precheck lane (run under `-x`
@@ -96,8 +96,13 @@ Files to modify:
   `skip-checks`); the dry-run CHANGELOG heading check (grep `has no
   heading`).
 - `tests/test_release_script.py` — dry-run CHANGELOG test(s).
-- `.github/workflows/test.yml` lines ~222–233 (external-live lane gating)
-  — read only, to word the help text truthfully.
+- `.github/workflows/test.yml` lines ~222–233 (the root lane's
+  `not requires_live_harness` marker exclusion) — read only, to word the help
+  text truthfully.
+- `.github/workflows/release-gate{,-pg,-summon,-mcp,-tui}.yml` and
+  `.github/workflows/release-finalize.yml` — the six step-level timeout owners
+  for the shared PyPI verifier.
+- `tests/test_github_workflows.py` — firing proof for those timeout owners.
 
 Read first: [TAUT-12.5] publication paragraphs; hardening §15;
 `verify_pypi` and `plan_pypi`; the finalizer plan's rationale for the
@@ -127,18 +132,21 @@ Comprehension gate:
   unchanged; `tests/test_release_script.py` command-sequence pins stay
   green except the one oracle this plan corrects.
 - No workflow YAML restructuring in this plan (the five-gate duplication
-  is out of scope; see below).
+  is out of scope; see below). The six verifier step timeouts rise from five
+  to ten minutes so the new budget can finish.
 - No change to `--skip-checks` behavior, only its help text.
 
 Hidden couplings:
 
-- `PYPI_RETRY_DELAYS` is asserted by name in
-  `tests/test_release_publication.py`; update the pin with the new tuple,
-  and keep a test that the total budget is at least 300 s (behavioral
-  pin) rather than only the literal tuple (lesson 2026-07-13: do not make
-  a consistency test a second source for a literal).
-- The finalizer runs in a separate least-privilege workflow with its own
-  timeout; confirm the job timeout exceeds the new budget.
+- `PYPI_RETRY_DELAYS` is passed through by name in orchestration tests, but no
+  literal tuple pin exists. Add only the behavioral proof that its total sleep
+  budget stays between 300 and 360 s (lesson 2026-07-13: do not make a
+  consistency test a second source for a literal).
+- The shared verifier runs in five post-upload steps and inside the separate
+  least-privilege finalizer. Each calling step currently has a five-minute
+  timeout. Raise all six to ten minutes: the explicit worst case is 300 s of
+  sleep plus nine HTTP calls capped at 30 s each (570 s), while the finalizer's
+  15-minute job timeout remains above the step cap.
 
 Failure policy: a PyPI check that still fails after five minutes remains a
 hard failure (the immutable GitHub step must not run); the rerun path is
@@ -165,18 +173,24 @@ the existing resumable one.
    it in a scratch clone). Implement with `git ls-files --error-unmatch`
    via `subprocess` from `PROJECT_ROOT`, keep the `.gitignore` assertion.
    Stop if the test needs network or a non-git checkout.
-3. **PyPI budget.** Red: a test that `sum(PYPI_RETRY_DELAYS) >= 300`.
+3. **PyPI budget and caller timeouts.** Red: a test that
+   `300 <= sum(PYPI_RETRY_DELAYS) <= 360`, plus workflow tests proving all five
+   post-upload steps and the finalizer step allow ten minutes.
    Change the tuple to a geometric series totaling about 300 s (for
-   example `(5, 10, 15, 30, 60, 60, 60, 60)`); update the literal pin;
-   confirm the finalizer workflow's job timeout. Record the 0.9.8 run id
-   and the "last state was absent" text in this plan's Execution Log and
-   append a dated note to the finalizer plan's Execution Log.
+   example `(5, 10, 15, 30, 60, 60, 60, 60)`); raise the six calling
+   step-level timeouts from five to ten minutes without changing topology;
+   confirm the finalizer workflow's 15-minute job timeout. Record the 0.9.8
+   run id and the "last state was absent" text in this plan's Execution Log.
+   The retired finalizer plan is immutable in the current tree, so cite its
+   source and prior 0.9.0 record here rather than resurrecting it for an
+   append-only edit.
 4. **Help text.** Red: a test that the `--skip-checks` help mentions the
    external live harness. Implement.
 5. **Dry-run CHANGELOG.** Red: `all --version 0.9.99 --dry-run` in a
    scratch clone prints the plan and a warning line when the heading is
-   absent. Implement as warn-in-dry-run, fail-in-real-run. Stop if the
-   real-run gate order changes.
+   absent. Add a focused single-target dry-run case for the second call site.
+   Implement as warn-in-dry-run, fail-in-real-run. Stop if the real-run gate
+   order changes.
 6. **Docs, CHANGELOG, completed-work review, index flip.** Update
    `docs/implementation/02-repository-map.md` row text if the publication
    script's budget is described there.
@@ -187,15 +201,16 @@ the existing resumable one.
   `test_release_publication.py` harnesses (fake API payloads, scratch git
   clones). What stays real: git (`ls-files`), the argparse help, the
   dry-run plan printer.
-- Do not mock `subprocess` for the `git ls-files` call; use a scratch
-  repository.
+- Do not mock `subprocess` for the `git ls-files` call. The retained assertion
+  runs against `PROJECT_ROOT`; use a scratch repository only for the red or
+  mutation proof that a tracked path fails the oracle.
 - Mutation check: revert the tuple to the old total and confirm the
   budget test fails.
 
 ## Verification and Gates
 
 ```bash
-uv run --extra dev pytest tests/test_release_script.py tests/test_release_publication.py -n 0
+uv run --extra dev pytest tests/test_release_script.py tests/test_release_publication.py tests/test_github_workflows.py -n 0
 uv run --extra dev pytest -n auto --dist loadgroup
 uv run --extra dev ruff check bin tests .github/scripts && uv run --extra dev mypy bin tests
 python bin/release.py all --version 0.9.99 --dry-run   # in a scratch clone
@@ -225,8 +240,9 @@ sufficient for the v0.5.2 rule?"
 1. **Resolved 2026-09-24 (owner): no branch protection on `main`.** It
    gets in the way of the solo fix-forward workflow; release safety comes
    from the exact-SHA gates, not from protection.
-2. **Assumption:** the finalizer workflow's job timeout is above five
-   minutes; task 3 confirms.
+2. **Resolved by inspection:** the finalizer job timeout is 15 minutes, but
+   each of the six verifier-calling steps is only five minutes. Task 3 raises
+   those step caps to ten minutes so the 570-second explicit worst case fits.
 
 ## Deviation Log
 
@@ -235,11 +251,57 @@ sufficient for the v0.5.2 rule?"
 
 ## Review Log
 
-(append-only)
+- 2026-09-24, independent Claude plan review at baseline `39179c1`, terminal
+  state `success` / `end_turn` / `completed`: **BLOCKED on R1** because all six
+  verifier-calling steps had five-minute timeouts around a proposed 300-second
+  sleep budget. R1 accepted with ten-minute step caps rather than the suggested
+  seven or eight: nine HTTP calls each carry a 30-second explicit ceiling, so
+  the plan budgets the 570-second worst case. R2 accepted: no literal retry
+  tuple pin exists or should be added; the sum is the behavioral contract.
+  R3 accepted: the goal now distinguishes three false failures from the help
+  gap. R4 accepted: both the five post-upload callers and finalizer are named.
+  R5 accepted: both batch and single-target dry-run call sites receive firing
+  coverage. R6 accepted: the retained git assertion runs against the real
+  repository; scratch state is only mutation evidence. R7 accepted: the help
+  source is described as the root lane's marker exclusion, not a separate
+  workflow section. With those dispositions, the blocker is removed and the
+  plan is active.
 
 ## Execution Log
 
-(append-only)
+- 2026-09-24: RED proof ran the new budget, help, dry-run, git-tracking, and
+  workflow-timeout tests. The ignored on-disk PG lock passed the new oracle;
+  the other ten cases failed against the old 80-second budget, absent warning
+  mode/help text, and five-minute step caps. GREEN passed all 11 focused cases,
+  then all 238 release-script, publication, and workflow tests.
+- 2026-09-24: `PYPI_RETRY_DELAYS` is now `(5, 10, 15, 30, 60, 60, 60, 60)`
+  for 300 seconds of bounded sleep across nine exact observations. All five
+  post-upload steps and the finalizer step now allow ten minutes; exact file
+  names/digests, fatal mismatch classes, and the hard failure after exhaustion
+  are unchanged.
+- 2026-09-24: recorded the recurrence: taut-mcp release-gate run `35166744182`
+  attempt 1 uploaded both 0.9.8 files, then the post-upload verifier failed
+  with `last state was absent`. The prior 0.9.0 incident and recovery remain in
+  retired finalizer plan source `73b56a0` (run `31831944421`).
+- 2026-09-24: the PG lockfile proof now asks real git whether
+  `extensions/taut_pg/uv.lock` is tracked and separately retains the ignore
+  assertion. Dry-run warning mode fires from both batch and single-target call
+  sites; real runs still fail on the same missing heading before mutation.
+- 2026-09-24: focused Ruff, format, and mypy checks passed for the five changed
+  Python files. `docs/implementation/02-repository-map.md` required no edit:
+  its publication row describes the independently bounded exact convergence
+  owner without pinning a duration.
+- 2026-09-24: independent completed-work review returned **no blocker**. F1
+  noted that `returncode != 0` also accepts fatal git errors; disposition:
+  tightened to the expected untracked exit 1 so a broken checkout fails the
+  test. F2 called the dry-run routing helper optional; disposition: retained
+  because it keeps real-run calls on the pre-existing one-argument shape and
+  makes the warning-only branch explicit. F3 noted the one-sided minimum could
+  admit an accidental 50-minute budget; disposition: accepted with a 300–360 s
+  behavioral range, still without a literal tuple pin. F4 noted that wall time
+  can reach 570 s under nine maximum-duration HTTP calls; disposition: the
+  CHANGELOG now says five-minute retry *sleep budget*, while the plan retains
+  the explicit 570-second worst case and ten-minute caller caps.
 
 ## Fresh-Eyes Review
 

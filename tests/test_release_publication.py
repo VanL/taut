@@ -344,6 +344,10 @@ def test_verify_pypi_retries_only_matching_incomplete_state(
     assert sleeps == [1, 2]
 
 
+def test_default_pypi_retry_sleep_budget_stays_about_five_minutes() -> None:
+    assert 300 <= sum(publication.PYPI_RETRY_DELAYS) <= 360
+
+
 def test_stage_draft_replaces_only_a_draft_and_reports_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

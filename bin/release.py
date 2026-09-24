@@ -573,11 +573,23 @@ def require_changelog_heading(
     version: str,
     *,
     changelog_path: Path = CHANGELOG_PATH,
+    dry_run: bool = False,
 ) -> None:
     normalized = validate_version(version)
     heading = re.compile(rf"(?m)^## {re.escape(normalized)}(?:\s+-\s+[^\n]+)?$")
     if heading.search(changelog_path.read_text(encoding="utf-8")) is None:
-        fail(f"CHANGELOG.md has no heading for {normalized}")
+        message = f"CHANGELOG.md has no heading for {normalized}"
+        if dry_run:
+            print(f"dry-run warning: {message}; a real release would stop here")
+            return
+        fail(message)
+
+
+def _check_changelog_heading_for_release(version: str, *, dry_run: bool) -> None:
+    if dry_run:
+        require_changelog_heading(version, dry_run=True)
+    else:
+        require_changelog_heading(version)
 
 
 def _read_version(path: Path, pattern: re.Pattern[str], label: str) -> str:
@@ -2816,7 +2828,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Explicit human override: skip pytest, ruff, and mypy prechecks. "
-            "Artifact build and compatibility gates still run."
+            "This also skips the external live harness. Artifact build and "
+            "compatibility gates still run."
         ),
     )
     parser.add_argument(
@@ -3019,7 +3032,10 @@ def _run_batch_release(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-063] excep
         return 0
 
     for candidate in candidates:
-        require_changelog_heading(candidate.release_version)
+        _check_changelog_heading_for_release(
+            candidate.release_version,
+            dry_run=args.dry_run,
+        )
 
     plan = _plan_batch_preparation(args, candidates)
     _print_batch_release_plan(plan.candidates, plan.tag_actions)
@@ -3127,7 +3143,7 @@ def _run_single_release(
         args.version,
         target,
     )
-    require_changelog_heading(target_version)
+    _check_changelog_heading_for_release(target_version, dry_run=args.dry_run)
     version_changed = target_version != current_version
     preparation_branch = "<dry-run>" if args.dry_run else current_branch()
     initial_head_commit = current_head_commit()

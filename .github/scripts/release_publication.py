@@ -21,7 +21,7 @@ GITHUB_API_BASE: Final[str] = "https://api.github.com"
 GITHUB_API_VERSION: Final[str] = "2026-03-10"
 PYPI_API_BASE: Final[str] = "https://pypi.org/pypi"
 HTTP_TIMEOUT_SECONDS: Final[float] = 30.0
-PYPI_RETRY_DELAYS: Final[tuple[int, ...]] = (5, 10, 15, 20, 30)
+PYPI_RETRY_DELAYS: Final[tuple[int, ...]] = (5, 10, 15, 30, 60, 60, 60, 60)
 GITHUB_ASSET_RETRY_DELAYS: Final[tuple[int, ...]] = (2, 4, 8)
 
 

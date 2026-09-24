@@ -72,7 +72,7 @@ jobs:
             --output-dir dist
 
       - name: Verify PyPI and publish the exact immutable release
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

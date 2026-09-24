@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Release dry-runs now warn instead of stopping when the target version is not
+  in the changelog, and `--skip-checks` help names the external live harness it
+  bypasses. The release gate now has a five-minute PyPI visibility retry sleep
+  budget while retaining exact filename and digest verification; ignored
+  local `taut-pg` lockfiles no longer fail the tracking invariant.
+
 - The TUI transcript now has one generation-fenced viewport owner. Sticky tail
   follows sends, watcher delivery, navigation refresh, and resize until an
   explicit wheel, scrollbar, key, or click action settles elsewhere; search

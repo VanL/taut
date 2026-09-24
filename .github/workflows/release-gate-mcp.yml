@@ -166,7 +166,7 @@ jobs:
             --output-dir postflight-dist
 
       - name: Verify complete exact PyPI publication
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           python .github/scripts/release_publication.py verify-pypi \
             --manifest bundle/release-manifest.json \

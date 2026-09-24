@@ -1300,6 +1300,9 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     assert ".github/scripts/release_publication.py verify-pypi" in pypi
     recreate = _step_block(pypi, "Recreate clean verified distributions for postflight")
     postflight_step = _step_block(pypi, "Verify complete exact PyPI publication")
+    postflight_data = _named_steps(jobs["publish-to-pypi"])[
+        "Verify complete exact PyPI publication"
+    ]
     assert f"--package-dir {package_dir} \\" in recreate
     assert "--bundle-dir bundle \\" in recreate
     assert '--commit "${{ needs.release-evidence.outputs.tag_commit }}" \\' in recreate
@@ -1309,6 +1312,7 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     assert pypi.count(".github/scripts/release_publication.py verify-pypi") == 1
     assert "--dist-dir postflight-dist" in postflight_step
     assert "--dist-dir dist" not in postflight_step
+    assert postflight_data["timeout-minutes"] == 10
     upload = pypi.index("pypa/gh-action-pypi-publish@")
     clean_postflight = pypi.index(
         "Recreate clean verified distributions for postflight"
@@ -1384,8 +1388,12 @@ def test_release_workflow_consumes_pinned_verified_artifact_without_rebuild() ->
 
 def test_release_finalizer_is_least_privilege_and_never_publishes_to_pypi() -> None:
     workflow = _workflow("release-finalize.yml")
+    document = _workflow_data("release-finalize.yml")
     lower_workflow = workflow.lower()
     finalizer = _job_block(workflow, "github-release")
+    verification = _named_steps(document["jobs"]["github-release"])[
+        "Verify PyPI and publish the exact immutable release"
+    ]
 
     assert "workflow_call:" in workflow
     assert "actions: read" in finalizer
@@ -1396,3 +1404,4 @@ def test_release_finalizer_is_least_privilege_and_never_publishes_to_pypi() -> N
     assert "pypa/gh-action-pypi-publish" not in workflow
     assert "uv publish" not in lower_workflow
     assert "python -m build" not in workflow
+    assert verification["timeout-minutes"] == 10

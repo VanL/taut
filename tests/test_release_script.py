@@ -860,7 +860,10 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     assert release.is_dirty_worktree() is False
 
 
-def test_require_changelog_heading_rejects_missing_target(tmp_path: Path) -> None:
+def test_require_changelog_heading_rejects_real_run_and_warns_for_dry_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     release = _load_release_module()
     changelog = tmp_path / "CHANGELOG.md"
     changelog.write_text(
@@ -871,6 +874,16 @@ def test_require_changelog_heading_rejects_missing_target(tmp_path: Path) -> Non
     release.require_changelog_heading("0.5.2", changelog_path=changelog)
     with pytest.raises(SystemExit, match="CHANGELOG.md has no heading for 0.5.3"):
         release.require_changelog_heading("0.5.3", changelog_path=changelog)
+
+    release.require_changelog_heading(
+        "0.5.3",
+        changelog_path=changelog,
+        dry_run=True,
+    )
+    assert (
+        "dry-run warning: CHANGELOG.md has no heading for 0.5.3; "
+        "a real release would stop here"
+    ) in capsys.readouterr().out
 
 
 def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> None:
@@ -3896,7 +3909,9 @@ def test_skip_checks_help_labels_the_human_override(
         release.parse_args(["--help"])
 
     assert raised.value.code == 0
-    assert "explicit human override" in capsys.readouterr().out.lower()
+    help_text = capsys.readouterr().out.lower()
+    assert "explicit human override" in help_text
+    assert "external live harness" in help_text
 
 
 def test_discover_unpublished_releases_filters_published_targets(
@@ -3984,17 +3999,96 @@ def test_summon_release_tracks_root_dev_floor() -> None:
     assert release.PYPROJECT_PATH in paths
 
 
-def test_pg_lockfile_is_not_retained_and_is_ignored() -> None:
+def test_pg_lockfile_is_untracked_and_ignored() -> None:
     release = _load_release_module()
     pg_lock_path = release.PG_EXTENSION_DIR / "uv.lock"
 
-    assert not pg_lock_path.exists()
+    tracked = subprocess.run(
+        (
+            "git",
+            "ls-files",
+            "--error-unmatch",
+            pg_lock_path.relative_to(release.PROJECT_ROOT).as_posix(),
+        ),
+        cwd=release.PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tracked.returncode == 1, tracked.stderr
     assert (
         "extensions/taut_pg/uv.lock"
         in (release.PROJECT_ROOT / ".gitignore")
         .read_text(encoding="utf-8")
         .splitlines()
     )
+
+
+def test_batch_and_single_dry_runs_make_changelog_check_warning_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    observed: list[tuple[str, bool]] = []
+
+    def record_check(version: str, *, dry_run: bool = False, **_kwargs: object) -> None:
+        observed.append((version, dry_run))
+        raise RuntimeError("stop after changelog check")
+
+    monkeypatch.setattr(release, "require_changelog_heading", record_check)
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
+    monkeypatch.setattr(
+        release,
+        "discover_unpublished_releases",
+        lambda **_kwargs: (
+            release.ReleaseCandidate(
+                target=release.ROOT_TARGET,
+                current_version="0.9.8",
+                release_version="0.9.99",
+                state=release.ReleaseState(
+                    target=release.ROOT_TARGET,
+                    version="0.9.99",
+                    tag_name="v0.9.99",
+                    github_release_exists=False,
+                    pypi_release_exists=False,
+                    local_tag_commit=None,
+                    remote_tag_commit=None,
+                ),
+            ),
+        ),
+    )
+
+    batch_args = release.parse_args(["all", "--version", "0.9.99", "--dry-run"])
+    with pytest.raises(RuntimeError, match="stop after changelog check"):
+        release._run_batch_release(batch_args)
+
+    monkeypatch.setattr(
+        release,
+        "require_synchronized_manifest_versions",
+        lambda: "0.9.99",
+    )
+    monkeypatch.setattr(
+        release,
+        "resolve_target_version",
+        lambda _version, target: (
+            "0.9.99",
+            "0.9.99",
+            release.ReleaseState(
+                target=target,
+                version="0.9.99",
+                tag_name="v0.9.99",
+                github_release_exists=False,
+                pypi_release_exists=False,
+                local_tag_commit=None,
+                remote_tag_commit=None,
+            ),
+        ),
+    )
+    single_args = release.parse_args(["core", "--dry-run"])
+    with pytest.raises(RuntimeError, match="stop after changelog check"):
+        release._run_single_release(single_args, release.ROOT_TARGET)
+
+    assert observed == [("0.9.99", True), ("0.9.99", True)]
 
 
 def test_dry_run_publish_explains_tag_workflow_publication(
