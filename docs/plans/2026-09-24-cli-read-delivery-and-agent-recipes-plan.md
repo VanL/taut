@@ -1,7 +1,7 @@
 # CLI Read Delivery and Agent Recipe Corrections Plan
 
-Status: draft — findings verified by reproduction; awaiting independent plan
-review and owner decisions in the open-questions section.
+Status: draft — findings verified by reproduction; all owner decisions
+recorded (2026-09-24); awaiting independent plan review.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the
 normative cursor-advance wording in [TAUT-7.2], the [TAUT-8.1] `join` row and
@@ -12,8 +12,8 @@ process-changing.
 
 Plan type: implementation with spec revision.
 
-Owner: implementing engineer. The repository owner decides the three open
-questions before the spec-promotion slice.
+Owner: implementing engineer. The repository owner decided the three open
+questions on 2026-09-24 (see the Execution Log).
 
 ## Goal
 
@@ -36,7 +36,7 @@ assumes an id layout SimpleBroker does not produce, and an unusable
   `list -q`): read's output is its effect, so a silent read would only
   advance the bookmark. The kernel, README, and core spec recommend
   `taut list -q` as the polling idiom. `taut inbox -q` is rejected the same
-  way (owner confirmation pending), because a silent inbox claims and
+  way (owner decision 2026-09-24), because a silent inbox claims and
   discards pointers.
 - [ ] Joining a channel the member already belongs to succeeds without
   writing a notice or moving the cursor.
@@ -498,8 +498,8 @@ second renderer?" Dispositions are recorded in the Review Log.
 
 1. **Resolved 2026-09-24 (owner):** `read -q` is an oxymoron; read is
    defined as providing stdout, so `-q` on `read` is a usage error.
-   **Owner to confirm:** apply the same rule to `inbox -q`, whose silent
-   form claims and discards pointers (recommended yes).
+   **Resolved 2026-09-24 (owner):** the same rule applies to `inbox -q`,
+   whose silent form would claim and discard pointers.
 2. **Resolved 2026-09-24 (owner): remove the short-form message id
    altogether.** A human clicks in the TUI; an agent or CLI user uses the
    whole id. The git-like alternative is recorded under the [IAN-7.4] delta
@@ -523,7 +523,7 @@ second renderer?" Dispositions are recorded in the Review Log.
 
 - 2026-09-24 — Owner decision: `taut read -q` becomes a usage error. "Read
   is defined as providing stdout. Don't want output? Don't call it."
-  Extension to `inbox -q` proposed, awaiting confirmation.
+  Extension to `inbox -q` confirmed by the owner the same day.
 - 2026-09-24 — Owner decision: remove the short-form message id
   altogether. Rationale: a human clicks (TUI); an agent or CLI user uses
   the whole id. The current form lacks all three properties that make
