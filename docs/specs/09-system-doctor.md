@@ -442,7 +442,5 @@ seams in `taut/persistence/`, public values in `taut/client/_models.py`, and the
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — shares
   passive stored-version interpretation with ordinary startup while retaining
   doctor-specific nullable failure projection and no-repair behavior.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` adds the seventh fixed
-  passive check and separates operational debug state from extension ownership.
-- `docs/plans/2026-08-10-system-doctor-plan.md` defines promotion,
-  implementation slices, no-repair proof, and independent review.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-system-doctor-plan — source `6ef344f`; see the ledger in `docs/plans/README.md`.

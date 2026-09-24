@@ -164,6 +164,7 @@ concept → dialogue → provisional theory → specification → implementation
 
 ## Related Plans
 
-- Adopted here by "2026-08-07-agent-theory-delta-wave-plan" (this
-  repo) from the agent-theory hub @ `0423923`; the hub's authoring plan
+- retired: 2026-08-07-agent-theory-delta-wave-plan — adopted here by that plan
+  (this repo; source `4e3f12f`; see the ledger in `docs/plans/README.md`) from
+  the agent-theory hub @ `0423923`; the hub's authoring plan
   is "2026-07-30-program-theory-and-module-theory" (agent-theory repo)

@@ -189,6 +189,13 @@ and suppresses capture in descendants. Parse, spawn, timeout, signal, and
 nonzero-exit failure lose that event without local fallback. `TAUT_DEBUG`
 remains the separate SimpleBroker debug setting.
 
+Rollback order for debug capture is one-way in a specific sense: older
+Taut versions' doctor and dump reject the unknown `debug_capture` metadata
+key. Before installing an older Taut, run `taut system debug disable` for
+every workspace where capture is enabled while the newer version is still
+installed; a workspace downgraded first must reinstall the newer version to
+disable it. (Recorded from the 2026-08-14 debug failure-capture plan.)
+
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
 Postgres support intentionally reuses the same core path. `.taut.toml` selects
@@ -274,7 +281,10 @@ GitHub Actions mirrors those process boundaries without duplicating work.
 `.github/workflows/test.yml` owns normal push/PR gates and remains reusable.
 Its representative Ubuntu root/unit and deterministic-process cells collect
 coverage while running their existing selectors; the prepared local-LLM job
-owns the live shard. A separate same-workflow MCP producer installs editable
+owns the live shard. Direct root and Summon unit coverage cells run serially
+(`-n 0`): under xdist only one worker's raw coverage data was retained, and
+0.7.0 lost 378 statements that way, so parallel cells are not coverage
+evidence (recorded from the 2026-07-15 0.7.1 portability plan). A separate same-workflow MCP producer installs editable
 local MCP and PG packages into the root coverage environment, then runs only
 `not pg_only`. The PG package is collection support because MCP's root
 `conftest.py` imports `taut_pg` before marker filtering; this job starts no
@@ -1029,7 +1039,12 @@ queue high-water mark.
   unadjusted kernel creation time; and public `proc.create_time()` on Windows.
   The latter two are rendered as integer microseconds. The private macOS
   dependency is confined to this helper and covered by native
-  clock-adjustment tests. Process capture never invokes `ps`, and locale-sensitive
+  clock-adjustment tests. Two alternatives were rejected when the numeric
+  token replaced `ps` (2026-09-15): appending the Linux boot id (rejected;
+  the cross-boot raw-tick collision surface is deliberately retained
+  because exact-equality matching plus host id bounds it), and a native
+  libproc `proc_pidinfo` binding to replace the private macOS psutil call
+  (rejected as a new native surface for a confined dependency). Process capture never invokes `ps`, and locale-sensitive
   text does not participate in its token. Anchor selection classifies a derived basename by
   case-folding it and removing exactly one terminal `.exe`; that admits Windows
   spellings to the existing shell, wrapper, and infrastructure families. Raw
@@ -1154,19 +1169,19 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 ## Related Plans
 
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
-- `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md`
-- `docs/plans/2026-08-10-stable-dm-send-plan.md`
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-11-ci-factor-and-release-order-plan — source `058d45f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
-- `docs/plans/2026-07-14-blank-message-no-op-plan.md`
-- `docs/plans/2026-07-14-smaller-quality-followups-plan.md`
-- `docs/plans/2026-07-14-universal-release-gates-plan.md`
-- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
-- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
-- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
-- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-blank-message-no-op-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-smaller-quality-followups-plan — source `db67b94`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-universal-release-gates-plan — source `ce2bbb1`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-ci-speed-determinism-release-evidence-plan — source `530ce77`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-automatic-display-name-capitalization-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-dynamic-native-waiter-replacement-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-06-18-member-identity-addressing-plan (source `3cae1f4`; see
   the ledger in `docs/plans/README.md`)
 - retired: 2026-06-12-taut-foundation-plan (source `f1259c0`; see the ledger
@@ -1187,6 +1202,6 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
   ledger in `docs/plans/README.md`)
 - retired: 2026-07-01-taut-state-sql-dialect-plan (source `3cae1f4`; see the
   ledger in `docs/plans/README.md`)
-- `docs/plans/2026-07-01-taut-watch-runtime-plan.md`
-- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md`
-- `docs/plans/2026-07-09-taut-reactor-safety-plan.md`
+- retired: 2026-07-01-taut-watch-runtime-plan — source `24dc2bc`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-06-evaluation-findings-remediation-plan — source `663ff86`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-09-taut-reactor-safety-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.

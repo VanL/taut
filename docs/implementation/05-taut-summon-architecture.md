@@ -545,7 +545,10 @@ same exact cancellation ownership; either form without that ownership and all
 other read or Win32 errors remain fatal. Every path joins the reader before
 closing its native handle, and cleanup preserves the first failure. The 100 ms
 wait is an event-observation cadence, never a success condition or substitute
-for line/cancel evidence.
+for line/cancel evidence. A `PeekNamedPipe` poll was rejected as the
+cancellation owner because it can itself block on synchronous handles; the
+owned reader plus `CancelSynchronousIo` is the only path (recorded from the
+2026-08-17 shell-cancel portability plan).
 
 The POSIX bridge is one bounded select loop over the human tty and PTY master.
 It checks shutdown between passes, so STOP remains observable during attach
@@ -1018,53 +1021,23 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
-- `docs/plans/2026-09-15-windows-pty-lifecycle-fixes-plan.md` — private monitor
-  handle ownership, exact-thread cancellation, graceful Windows close, and
-  cross-platform deterministic regression selection.
-- `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — promotes
-  the one-adapter target, Windows ConPTY owner boundary, structured-runtime
-  deletion, persistence version 2, and cross-platform test topology tracked by
-  the transition note above.
+- retired: 2026-09-15-windows-pty-lifecycle-fixes-plan — source `a880011`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-09-03-summon-unified-pty-cross-platform-plan — source `6f5ae88`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — authentic
   version-2 migration fixture and collision-preserving proof.
-- `docs/plans/2026-08-17-summon-shell-cancel-portability-plan.md` — Windows
-  synchronous-reader cancellation ownership without socket-only `select()`.
-- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — pre-spawn
-  host acknowledgement plus passive PTY state transfer across attach/detach.
-- `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md` — exact
-  callback/MCP ownership diagnosis and killed negative-probe coverage lifecycle.
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — bounded
-  stream-write cancellation, one-budget PTY settle, primary-error teardown,
-  C1 sanitization, Claude startup, and final confirmation polling.
+- retired: 2026-08-17-summon-shell-cancel-portability-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-summon-first-attach-handoff-plan — source `df54c08`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-windows-postrelease-ci-determinism-plan — source `f30b62c`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` — core
   distribution rename, current-wheel boundary, and exact-artifact publication.
-- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — typed core blank result
-  and terminal-mode continuation.
-- `docs/plans/2026-07-14-universal-release-gates-plan.md` — universal local
-  release verification, explicit live enablement plus strictness, and PG
-  evidence for the Summon tag.
-- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
-  strict local-LLM evidence, existing-lane coverage, and release reuse of
-  exact-SHA canonical test artifacts.
-- `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
-  superseded fixed-width policy; the 2026-09-01 release determinism plan makes
-  every fresh Summon lane an auto-width pressure proof.
-- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
-  implied-provider display casing, shared candidate selection, and normalized
-  transient name claims.
-- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` — the
-  shared-core waiter replacement follow-on; Summon's control reactor remains
-  fixed-topology.
-- `docs/plans/2026-07-06-taut-summon-plan.md` — the implementing plan
-  (spec promotion, extension package, delegation verbs, ledger, adapters,
-  driver, control plane, conformance suite)
-- `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md` — the
-  universal PTY adapter, attach/detach, `wired` schema, provider registry, and
-  live harness conformance plan
-- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` — the
-  SQLite contention hardening plan: live STATUS/readiness evidence,
-  SimpleBroker handle ownership, integrity probes, and watcher handle lifetime
-  proof
-- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — implemented shared
-  reactor lifecycle, Summon owner-turn failure propagation, native control wake, and
-  fatal control-lane supervision
+- retired: 2026-07-14-blank-message-no-op-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-universal-release-gates-plan — source `ce2bbb1`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-ci-speed-determinism-release-evidence-plan — source `530ce77`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-bounded-summon-process-test-parallelism-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-automatic-display-name-capitalization-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-dynamic-native-waiter-replacement-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-06-taut-summon-plan — source `0db6b82`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-07-taut-summon-pty-harness-adapter-plan — source `587e6e3`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-08-taut-sqlite-contention-hardening-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-09-taut-reactor-safety-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.

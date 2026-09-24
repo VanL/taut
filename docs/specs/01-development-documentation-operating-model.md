@@ -910,28 +910,15 @@ edit; escalate loudly the moment a trigger fires.
 
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: narrows duplicate Ruff snapshots and shares fenced-example exclusion.
 
-- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` — S8
-  reconciled this spec's stale snapshot and backlinks and added the
-  `tests/test_docs_references.py` reference gate.
+- retired: 2026-07-06-evaluation-findings-remediation-plan — source `663ff86`; see the ledger in `docs/plans/README.md`.
 
 The original documentation-system bootstrap predates the retained plan
 archive; plans in `docs/plans/` cite this spec's [DOM-*] codes when they
 touch the operating model.
-- `docs/plans/2026-07-14-agent-guidance-propagation-plan.md`
-- `docs/plans/2026-07-14-routine-release-classification-plan.md`: added the
-  narrow Class 2 exception for explicitly requested execution of unchanged
-  normal release machinery.
-- `docs/plans/2026-07-28-coalescing-wave-plan.md`: added bounded maintenance
-  before distillation and retirement, plus the structured plan-status gate.
-- `docs/plans/2026-07-28-channel-topics-plan.md`: adds the deterministic
-  executable CLI-claim gate alongside the channel command rehome that exposed
-  the prior prose-only gap.
-- `docs/plans/2026-08-04-ruff-complexity-and-suppression-registry-plan.md`:
-  activates repository-wide C901 visibility at 10 and the reviewed,
-  symbol-keyed suppression registry and generator.
-- `docs/plans/2026-08-05-ruff-stable-default-expansion-plan.md`: aligns both
-  Taut Ruff configurations with SimpleBroker's Ruff 0.16.1 stable-default
-  plus retained-family policy and resolves the expanded diagnostic surface.
-- `docs/plans/2026-08-11-eventually-test-helper-adoption-plan.md`: adds
-  [DOM-10.3], a repository-only sync/async eventual-evidence helper, and
-  staged adoption across core and extension tests.
+- retired: 2026-07-14-agent-guidance-propagation-plan — source `c09e95e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-routine-release-classification-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-coalescing-wave-plan — source `3706d73`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-04-ruff-complexity-and-suppression-registry-plan — source `9ec9d87`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-05-ruff-stable-default-expansion-plan — source `eabc272`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-11-eventually-test-helper-adoption-plan — source `434db87`; see the ledger in `docs/plans/README.md`.

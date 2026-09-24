@@ -1013,70 +1013,37 @@ Required proofs:
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors for the coordinated 0.9.8 release.
 
-- `docs/plans/2026-09-15-broker-session-integration-plan.md` — raises the
-  coordinated broker floor and preserves notification ownership semantics.
+- retired: 2026-09-15-broker-session-integration-plan — source `3cea185`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-09-15-numeric-start-time-token-plan.md` — one numeric
-  per-platform start-time token and removal of `ps` capture.
+- retired: 2026-09-15-numeric-start-time-token-plan — source `3037971`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans reusable rename markers and a bounded topology-race fix.
 
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — separates
   process-family classification from raw identity evidence and adds a firing
   Windows PowerShell ancestry proof.
-- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
-  broker floors while preserving notification and rename contracts across the
-  coordinated schema-6 cutover.
+- retired: 2026-08-28-simplebroker-8-reconciliation-plan — source `3c8ee51`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — defines the public read-only selected-member and notification-activity
   seams used by first-party extensions without exposing identity internals.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — reserves the
-  core-owned `taut.debug` operational queue and defines its retention and
-  visibility contract.
-- `docs/plans/2026-08-10-stable-dm-send-plan.md` — accepts an exact stable
-  existing-DM handle for `say` without widening person-addressed creation or
-  repair behavior.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — completes exact
   addressing, reserved-prefix, identity, and direct-message participant proof
   without substituting totals for named contract elements.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — separates
-  internal numeric notification bodies from exact-string public JSON output.
-- `docs/plans/2026-08-06-taut-search-plan.md` — search internal queues,
-  actor-scoped DM visibility, and cursor-neutral candidate hydration.
-- `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
-  SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
-- `docs/plans/2026-07-28-channel-topics-plan.md` — per-channel topic and
-  rename-marker serialization, metadata preservation, and cross-backend race
-  proof.
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-scoped
-  current-route and stable-handle DM navigation, durable DM directory, and
-  fail-closed registry/membership validation.
-- `docs/plans/2026-07-28-message-react-plan.md` — reaction notification
-  payloads, full-audience exact fanout, non-delivery receipts, and stale
-  pointer behavior.
-- `docs/plans/2026-07-27-message-show-delete-plan.md` — author-owned physical
-  deletion, orphaned subthreads, stable empty DMs, stale notification pointers,
-  and cursor-neutral notification rendering.
-- `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — read-only notification
-  peek plus the optional MCP resource and consuming-inbox split.
-- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — ensures filtered
-  blank attempts never become notification sources.
-- `docs/plans/2026-07-14-trusted-identity-selector-fast-path-plan.md` — trust
-  existing `as`/token selectors without process capture, preserve
-  creation-gated first-contact claims, and keep `rejoin` as explicit process
-  claim association.
-- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
-  automatic human/agent display casing, route-aware candidate selection, and
-  the Pi/Tau/Phi family.
-- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
-  identity, route concurrency, reply notification, human rendering, and trust
-  remediation program for v0.5.3.
-- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
-  active SimpleBroker floor and live native-waiter replacement follow-on.
-- `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
-  SimpleBroker floor and persona-only embedding-seam remediation.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-plan — source `136cdad`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-31-simplebroker-6-reconciliation-plan — source `40a1306`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-message-react-plan — source `788cdd3`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-27-message-show-delete-plan — source `8509dc4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-taut-mcp-extension-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-blank-message-no-op-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-trusted-identity-selector-fast-path-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-automatic-display-name-capitalization-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-11-multi-factor-review-remediation-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-dynamic-native-waiter-replacement-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-summon-quality-remediation-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-06-18-member-identity-addressing-plan — source `3cae1f4`; see
   the ledger in `docs/plans/README.md`.
-- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` —
-  implemented [IAN-3.3] anchor-match resolution, [IAN-8.3] channel-rename
-  resume, first-contact naming retry, and direct-message mention
-  participant scoping.
+- retired: 2026-07-06-evaluation-findings-remediation-plan — source `663ff86`; see the ledger in `docs/plans/README.md`.

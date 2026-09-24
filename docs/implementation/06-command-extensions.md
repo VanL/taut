@@ -520,19 +520,13 @@ product need with its own compatibility plan.
 
 ## Related Plan
 
-- `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md`
-  — object-local Summon identity, sanitized provider-child selectors, safe
-  rich-host signal defaults, and explicit command-adapter signal ownership.
+- retired: 2026-08-01-summon-rich-host-global-state-plan — source `1ad1b8d`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
-- `docs/plans/2026-07-28-channel-topics-plan.md`
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-14-terminal-output-safety-plan
   — shared packaged/project policy, renderer integration, extension guidance,
   and raw PTY exemption; source `281f04fa`; see the ledger in
   docs/plans/README.md.
-- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
-  — derived installed-wheel ownership, serial CI execution, and explicit
-  current-wheel reuse.
-- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
-  — reviewed specification, implementation sequence, rollout matrix, and
-  execution evidence for this design.
+- retired: 2026-07-13-ci-speed-determinism-release-evidence-plan — source `530ce77`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.

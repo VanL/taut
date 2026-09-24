@@ -188,7 +188,7 @@ stale-positive prevention.
 
 - `docs/plans/2026-08-24-command-runtime-findings-remediation-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
-- `docs/plans/2026-08-10-mcp-search-plan.md`
-- `docs/plans/2026-08-06-taut-search-plan.md`
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-mcp-search-plan — source `58f8524`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-plan — source `136cdad`; see the ledger in `docs/plans/README.md`.

@@ -95,6 +95,54 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-09-24: (harvested from the 2026-08-14 review-findings remediation
+  plan) A delegated implementation slice must return a clean test-first RED
+  transcript before any production edit, and the delegating brief must
+  require it. Two delegated slices in one plan implemented before observing
+  RED; a completed-work review caught it after the fact, which is the wrong
+  place. Put the RED requirement in the brief and treat a missing transcript
+  as an incomplete slice, not a style note.
+
+- 2026-09-24: (harvested from the 2026-07-28 message-react plan) Promote a
+  spec only against a published upstream primitive whose target-selection
+  semantics were runtime-probed against Taut's own state lifecycle. Two
+  promotions were made against a proposed and then an unprobed SimpleBroker
+  broadcast whose existing-queue selection contradicted Taut's
+  membership-defined audience (members exist without inbox rows; vacuum
+  removes emptied inboxes). The correct move was to block and add the
+  primitive upstream, not to compensate in Taut with delivery accounting.
+
+- 2026-09-24: (harvested from the 2026-08-10 SimpleBroker 7 id-boundary
+  plan) An upstream canonicalizer is not a validator. Public
+  `simplebroker.format_message_id` accepts whitespace and non-ASCII decimal
+  digits, so an exact-format loader must require `input == formatter(input)`
+  rather than trusting the formatter to reject wider input.
+
+- 2026-09-24: (harvested from the 2026-08-17 CLI subprocess readiness plan)
+  A test-side pipe that carries a documented UTF-8 contract must decode raw
+  bytes as UTF-8 explicitly. A fixture that decoded through the inherited
+  Windows ANSI locale failed only on Windows Python 3.14; force a non-UTF-8
+  child codec in the companion test so the default path is proven.
+
+- 2026-09-24: (harvested from the 2026-08-17 TUI search-anchor
+  synchronization plan) A searched hit that is the newest message in a
+  transcript shorter than the viewport is physically indistinguishable from
+  the tail, so a correct watcher recapture looks like a failed anchor
+  restore. Seed content after the hit before asserting anchor behavior.
+
+- 2026-09-24: (harvested from the 2026-08-18 Summon setup-gate recovery
+  plan) A scripted gate child that exits between a successful orientation
+  write and the PTY's post-write liveness check produces an immediate
+  orientation error instead of the asserted give-up. Fixture children need
+  a byte-level release handshake after the real `inject()` returns, so the
+  test controls which side of the liveness boundary the exit lands on.
+
+- 2026-09-24: (harvested from the 2026-07-17 agent-guidance propagation
+  plan) Transplant the pinned source end-state, never an intermediate hub
+  commit. One wave transplanted `cd74fcd` instead of the `b248e1c`
+  end-state it cited and had to be corrected; the source pin names the
+  state whose text lands, and the run log records that pin.
+
 - 2026-09-16: Published state is not completion evidence for the next lifecycle
   phase. A Summon session row preceded control readiness; an active writer was
   published before its kernel I/O became cancellable; a selected message did

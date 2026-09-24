@@ -1060,8 +1060,7 @@ Version 1 does not include:
 - `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md` — plans viewport
   ownership corrections and native input/navigation diagnosis under existing contracts.
 
-- `docs/plans/2026-09-15-broker-session-integration-plan.md` — separates TUI
-  client, watcher runtime, and reactor BrokerSession ownership.
+- retired: 2026-09-15-broker-session-integration-plan — source `3cea185`; see the ledger in `docs/plans/README.md`.
 
 - `docs/plans/2026-09-15-reported-issues-followup-plan.md` — canonical channel
   rename continuity and session-local recovery for displaced drafts.
@@ -1071,49 +1070,19 @@ Version 1 does not include:
 - `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — the native
   setup-recovery offer: [TUI-11.1] support declaration and offer shape,
   [TUI-11.3] decision-class scoping, [TUI-13.2] offer-handling matrix.
-- `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` —
-  declares `TuiSummonInteraction` setup-recovery non-support in version 1
-  ([TUI-11.1]) and the corresponding [TUI-13.2] firing row.
-- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — remediates
-  the 2026-08-18 deep-review findings: message-body escape decoding
-  ([TUI-5.3]), palette selection/empty-state/handoff and the vi-like
-  non-blocking command line ([TUI-7.1]), Shift-Enter compose alias
-  ([TUI-6.3], [TUI-8.1]), pending-run cancel-and-quit ([TUI-11.2]),
-  lease-exception full exit ([TUI-11.3]), and async/transcript state
-  repairs.
-- `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — keeps textual
-  command entry focus-owned, adds TUI-local `q`/`quit`, and makes Ctrl-C and
-  Ctrl-D guarded quit chords whenever Textual owns terminal input.
-- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
-  shell-first attach handoff and then adapts the pre-attach acknowledgement
-  and raw lease as distinct TUI transitions.
-- `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — promotes
-  leading known-command composer drafts into command input and makes command
-  completion selection argument-ready through keyboard and mouse routes.
-- `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — revises the
-  composer, modified-key, transcript spacing, and structural whitespace
-  contracts with exact-content and scroll-height proof.
-- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds the shared typed
-  command mirror, grouped native-action browser, textual `:` command line,
-  and TUI-owned native bindings for core and installed extensions.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — uses core dispatch for
-  exceptions raised from TUI launch and one post-run bridge for fatal callback
-  exceptions that Textual retains instead of raising, without creating
-  TUI-owned sink policy.
-- `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
-  plans the Class 5 promotion of ordered action-input context requirements into
-  the sole semantic applicability authority across TUI routes.
-- `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — moves
-  terminal escaping into owned display/toast sinks and adds structural plus
-  real-PTY coverage for [TUI-12.2]/[TUI-13.1].
-- `docs/plans/2026-08-14-taut-tui-action-route-contract-plan.md` — makes
-  action-route metadata authoritative and adds the missing exhaustive
-  real-route and concrete-handler firing gates for [TUI-2.3]/[TUI-13.2].
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
-  lifecycle, contract-proof, diagnostic, and release-gate remediation for
-  the coordinated 0.9.0 candidate.
-- `docs/plans/2026-08-12-taut-tui-implementation-plan.md`: staged
-  implementation, hardening, verification, and review plan.
+- retired: 2026-08-18-summon-setup-gate-recovery-attach-plan — source `e0caca9`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-18-tui-deep-review-remediation-plan — source `d16a278`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-text-command-alias-plan — source `423d6f6`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-summon-first-attach-handoff-plan — source `df54c08`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-entry-correction-plan — source `0219d4a`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-multiline-whitespace-plan — source `5ed9292`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-mirror-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-action-applicability-authority-plan — source `45592f0`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-display-sink-coverage-plan — source `73a3fa9`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-action-route-contract-plan — source `4ca45f2`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-taut-tui-implementation-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
 
 ## Implementation
 

@@ -841,22 +841,13 @@ Operational acceptance records, without turning host timing into CI truth:
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — makes
   search schema checks version-first and semantic, and filters eligible
   first-party provider ownership before ambiguity.
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
-  makes the accepted SQLite generation-switch omission and cross-segment query
-  boundary explicit.
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens
   backend known-answer conformance and dynamically proves the no-raw-body
   invariant across every search-owned ordinary table.
-- `docs/plans/2026-08-10-mcp-search-plan.md` — exposes this operation through
-  one explicit MCP tool while preserving core-owned semantics and backend-
-  native lexical quality.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — formats
-  public search hit ids while preserving numeric internal work items.
-- `docs/plans/2026-08-10-system-doctor-plan.md` defines the passive fixed
-  search-work observation and its non-repair boundary.
-- `docs/plans/2026-08-07-taut-dump-load-plan.md` defines search exclusion and
-  post-load rebuild behavior.
-- `docs/plans/2026-08-06-taut-search-plan.md` defines the reviewed promotion,
-  implementation slices, hardening gates, and independent review.
-- `docs/plans/2026-08-06-taut-search-spec-draft.md` preserves the reviewed
-  pre-promotion contract and exact companion deltas.
+- retired: 2026-08-10-mcp-search-plan — source `58f8524`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-system-doctor-plan — source `6ef344f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-taut-dump-load-plan — source `9410b6b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-plan — source `136cdad`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-spec-draft — source `136cdad`; see the ledger in `docs/plans/README.md`.

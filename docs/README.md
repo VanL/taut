@@ -37,6 +37,16 @@ Three rules keep the layers honest:
   the spec text, flipping its registry row, and binding the README
   section to the spec — never by silent drift.
 
+### Known documentation gaps
+
+Recorded at the 2026-08-07 information-architecture cutover and carried
+here so they outlive that plan: there is no tutorial or learning path beyond
+the README Quick Start (a two-agent first-workspace walkthrough is the
+natural piece); a configuration how-to is deliberately not written
+(default no, per that plan's review); and presence and liveness remain the
+thinnest explanation in the corpus. Each is a candidate for its own plan
+when a reader asks for it, not a promise.
+
 ## Structure
 
 - `agent-context/`: shared context loaded by agents at session start

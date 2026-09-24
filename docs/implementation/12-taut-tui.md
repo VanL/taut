@@ -506,45 +506,20 @@ unchanged.
 
 ## Related Plans
 
-- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — display
-  escape decoding, the vi-like non-blocking command line and action-browser
-  input contract, promotion source discrimination, Summon lease/quit
-  lifecycle hardening, teardown-safe worker marshalling, and transcript
-  state integrity.
-- `docs/plans/2026-08-17-tui-ci-bounded-parallelism-plan.md` — fixed-width,
-  file-scoped retained-lock CI execution without timeout or coverage changes.
-- `docs/plans/2026-08-17-tui-search-anchor-test-synchronization-plan.md` —
-  exact-intent completion proof for deferred search-result anchor restoration.
-- `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — passive textual
-  completions, TUI-local guarded `q`/`quit`, and any-mode Ctrl-C/Ctrl-D quit
-  while Textual owns terminal input.
-- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — separates the
-  native pre-attach confirmation from the later raw terminal lease for both
-  Summon entry routes.
-- `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — leading
-  known-command composer promotion, exact originating-draft ownership, and
-  argument-ready keyboard/mouse completion activation.
-- `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — multiline
-  composer ownership, exact structural whitespace, and scroll-safe transcript
-  spacing.
-- `docs/plans/2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` —
-  event-based completion proof for the nested viewport-anchor restore refresh.
-- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — implements the shared
-  command syntax contract, grouped browser, textual `:` mirror, native core
-  bindings, and typed `taut-summon` provider/binding boundary.
-- `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
-  plans one ordered applicability authority in the action-input contracts with
-  thin palette, control, and central-dispatch consumers.
-- `docs/plans/2026-08-14-taut-tui-action-route-contract-plan.md` — authoritative
-  route composition plus exhaustive 54-pair producer and 32-action handler
-  firing gates.
-- `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — structural
-  display/toast ownership and enumerable terminal-escape sink proof.
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — watcher,
-  inspector, intent, teardown, pointer, Summon-control, and framework-floor
-  remediation after the coordinated 0.9.0 review.
-- `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — original TUI
-  implementation, contract promotion, and retained visual acceptance record.
+- retired: 2026-08-18-tui-deep-review-remediation-plan — source `d16a278`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-ci-bounded-parallelism-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-search-anchor-test-synchronization-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-text-command-alias-plan — source `423d6f6`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-summon-first-attach-handoff-plan — source `df54c08`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-entry-correction-plan — source `0219d4a`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-multiline-whitespace-plan — source `5ed9292`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-scroll-anchor-test-synchronization-plan — source `2b2fa49`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-mirror-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-action-applicability-authority-plan — source `45592f0`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-action-route-contract-plan — source `4ca45f2`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-taut-tui-display-sink-coverage-plan — source `73a3fa9`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-taut-tui-implementation-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
 
 
 ### Reactor restoration audit (2026-09-22)

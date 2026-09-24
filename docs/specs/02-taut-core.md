@@ -3084,11 +3084,9 @@ expression behavior.
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors and synchronized release guidance for 0.9.8.
 
-- `docs/plans/2026-09-15-broker-session-integration-plan.md` — adopts public
-  BrokerSession ownership for persistent clients, reactors, and watch runtimes.
+- retired: 2026-09-15-broker-session-integration-plan — source `3cea185`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-09-15-reactor-worker-cache-compatibility-plan.md`: restores
-  worker cache retirement with already-admitted SimpleBroker 8.3 under [TAUT-8.5].
+- retired: 2026-09-15-reactor-worker-cache-compatibility-plan — source `b9eaada`; see the ledger in `docs/plans/README.md`.
 
 - `docs/plans/2026-09-15-reported-issues-followup-plan.md` — extends packaged
   terminal-policy fallback across known CLI diagnostic paths.
@@ -3099,95 +3097,44 @@ expression behavior.
   strict semantic configuration compatibility, predecessor-produced schema
   proof, and named subset conformance without freezing dependency inventory or
   physical layout.
-- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
-  broker floors to SimpleBroker 8.0.0 and SimpleBroker-PG 4.0.0, adopts public
-  message-id ordering, and defines the coordinated schema-6 cutover.
+- retired: 2026-08-28-simplebroker-8-reconciliation-plan — source `3c8ee51`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — adds the public activity-neutral identity and notification-queue seams,
   and migrates MCP to them.
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
-  defines the future ordered core migration ladder and the explicit unsupported
-  schema-1 cutoff without adding a speculative rung.
-- `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [TAUT-6.4]'s
-  field-before-structure boundary for human member rows and audits the adjacent
-  CLI/TUI surfaces for the same layering defect.
-- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — promotes the shared
-  typed command syntax contract for the TUI textual mirror and installed
-  extension syntax providers without changing the version-1 command manifest.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` defines the opt-in
-  operational setting, local and action sinks, containment points, persistence
-  exclusions, sensitive-data lifecycle, and cross-surface proof.
-- `docs/plans/2026-08-20-debug-payload-redaction-plan.md` revises
-  [TAUT-13.3] through [TAUT-13.6] with final-text, value-only credential
-  redaction shared by both debug sinks.
-- `docs/plans/2026-08-14-command-context-continuity-token-plan.md` — aligns
-  the public command-context identity-selector name with the continuity-token
-  identity model and documents the active registry/TUI transport boundaries.
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — restores the
-  self-contained MCP PostgreSQL release precheck alongside lifecycle and
-  contract-proof remediation for the coordinated 0.9.0 candidate.
-- `docs/plans/2026-08-13-simplebroker-config-isolation-plan.md` — complete
-  Taut-prefixed broker mapping, nominal ambient-free lower-layer config, and
-  symmetric Taut/SimpleBroker namespace isolation.
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-20-human-tabular-output-plan — source `46ee6bd`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-mirror-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-20-debug-payload-redaction-plan — source `175cee5`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-command-context-continuity-token-plan — source `c88c138`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-13-simplebroker-config-isolation-plan — source `4369731`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — requires
-  every command-bearing extension to support the main `taut` path, adds the
-  protocol-stdio command declaration, and introduces the complete first-party
-  `all` extra.
+- retired: 2026-08-12-extension-main-path-and-all-extra-plan — source `15d54e1`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-08-10-system-doctor-plan.md` — defines the actor-free
-  bounded diagnostic report and spec 09 promotion.
-- `docs/plans/2026-08-10-stable-dm-send-plan.md` — promotes an exact stable
-  existing-DM `say` target while keeping `@route` as the sole creator and
-  proving uniform no-repair misses across Python, CLI, MCP, and both backends.
+- retired: 2026-08-10-system-doctor-plan — source `6ef344f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens core
   behavioral oracles, removes redundant implementation pins, and preserves
   aggregate, per-package, required-path, and line-level coverage evidence.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — raises the
-  supported broker floor and makes external JSON timestamp fields exact
-  strings while preserving integer Python and storage domains.
-- `docs/plans/2026-08-07-taut-dump-load-plan.md` — composite persistence I/O,
-  logical sidecar records, extension state, and cross-backend recovery.
-- `docs/plans/2026-08-06-taut-search-plan.md` — reviewed search spec promotion,
-  core/SQLite implementation, PostgreSQL provider, deferred indexing, and
-  cross-backend verification.
-- `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
-  SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
-- `docs/plans/2026-07-28-channel-topics-plan.md` — top-level channel topics,
-  atomic metadata merge, reserved `channel` CLI namespace, and coordinated
-  Python/MCP contracts; close/reopen remains possible future work.
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
-  durable DM addressing, directory discovery, explicit watch canonicalization,
-  notification recovery actions, and coordinated Python/CLI/MCP proof.
-- `docs/plans/2026-07-28-message-react-plan.md` — configured exact-message
-  reactions, full-audience exact-name broadcast, non-delivery receipts, cursor
-  effects, and coordinated Python/CLI/MCP proof.
-- `docs/plans/2026-07-27-message-show-delete-plan.md` — exact-message show,
-  high-water cursor semantics, author-only physical deletion, no-cascade
-  lifecycle, and coordinated CLI/Python/MCP proof.
-- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` — fourth MCP
-  release target, exact-SHA release gates, root-owned immutable bundle, and
-  same-run MCP coverage aggregation.
-- `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — optional stdio MCP
-  extension, read-only notification peek, workspace-scoped identity, reactor
-  hierarchy, explicit tool/resource contracts, and cross-backend conformance.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-taut-dump-load-plan — source `9410b6b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-plan — source `136cdad`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-31-simplebroker-6-reconciliation-plan — source `40a1306`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-message-react-plan — source `788cdd3`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-27-message-show-delete-plan — source `8509dc4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-15-taut-mcp-release-integration-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-taut-mcp-extension-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-15-per-call-read-limit-plan — bounded per-call
   unread pages, exact cursor advancement, shared SQLite/PostgreSQL proof, and
   a smaller MCP surface default without post-read slicing; source
   `4a129e94`; see the ledger in docs/plans/README.md.
-- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — built-in Unicode
-  blank-input guard, typed empty result, silent CLI exit 2, and Summon
-  terminal-mode adaptation.
-- `docs/plans/2026-07-14-taut-tui-cross-reference-correction-plan.md` —
-  corrects the stale [TAUT-1] TUI citation from watcher section [TAUT-8.4]
-  to the rich-TUI roadmap contract in [TAUT-12.4].
-- `docs/plans/2026-07-14-trusted-identity-selector-fast-path-plan.md` —
-  conditional identity capture for trusted `as`/token selectors while
-  preserving selector-free inference, creation gates, and explicit `rejoin`
-  association.
-- `docs/plans/2026-07-14-smaller-quality-followups-plan.md` — real
-  PostgreSQL polling-fallback coverage, bounded client state-machine coverage,
-  and a measured caught-up unread-list fast path that preserves [TAUT-7.3].
+- retired: 2026-07-14-blank-message-no-op-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-taut-tui-cross-reference-correction-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-trusted-identity-selector-fast-path-plan — source `b2da819`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-smaller-quality-followups-plan — source `db67b94`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-14-single-project-config-source-spec-plan — makes
   `.taut.toml` the explicit sole project file for Taut settings and rejects
   alternate-manifest scanning or cross-file settings merging; source
@@ -3196,42 +3143,20 @@ expression behavior.
   terminal-text defaults, one public core/extension escape utility, exact
   storage and JSON preservation, and explicit raw-PTY/trust-model boundaries;
   source `281f04fa`; see the ledger in docs/plans/README.md.
-- `docs/plans/2026-07-14-universal-release-gates-plan.md` — one universal
-  default local release boundary, explicit human override, and root-plus-PG
-  exact-SHA evidence for every package tag.
-- `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md` — disjoint
-  Windows source-factor coverage and producer-first exact-SHA release ordering
-  that prevents hosted observers from starving their evidence producers.
-- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
-  coverage ownership, installed-wheel and signal isolation, strict local-LLM
-  evidence, and exact-SHA release artifact reuse.
-- `docs/plans/2026-07-13-release-metadata-preparation-plan.md` — manifest-owned
-  metadata reconciliation, exact-path local preparation commits, and remote
-  release fences.
-- `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
-  superseded fixed-width policy; the 2026-09-01 release determinism plan makes
-  every fresh Summon lane an auto-width pressure proof.
-- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
-  — command modules, installed extension discovery, lazy subsystem imports,
-  Summon embedding, and future rich-TUI composition boundaries.
-- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
-  SimpleBroker write-result, cursor, watcher, trust, Postgres, CLI, and
-  documentation remediation program for v0.5.3.
-- `docs/plans/2026-07-11-v0.5.2-coordinated-release-plan.md` — coordinated
-  0.5.2 version sync, batch release execution, GitHub Actions monitoring, and
-  artifact evidence for core, PG, and Summon.
+- retired: 2026-07-14-universal-release-gates-plan — source `ce2bbb1`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-11-ci-factor-and-release-order-plan — source `058d45f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-ci-speed-determinism-release-evidence-plan — source `530ce77`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-release-metadata-preparation-plan — source `e325ef6`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-bounded-summon-process-test-parallelism-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-11-multi-factor-review-remediation-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-11-v0.5.2-coordinated-release-plan — source `06bfc93`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-10-ci-failure-remediation-plan — removes wall-clock
   throughput assumptions from the [TAUT-8.5] callback-topology rebind proof;
   source `b03709452`; see the ledger in docs/plans/README.md.
-- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
-  active owner-thread live waiter replacement implementation and PostgreSQL
-  native-wake proof.
-- `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
-  state, lifecycle, control, artifact-release, and documentation remediation
-  for the paired core/Summon surface.
-- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned reactor drive
-  ownership, shutdown ordering, fixed lifecycle templates, and
-  reference-reactor test ports.
+- retired: 2026-07-10-taut-dynamic-native-waiter-replacement-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-summon-quality-remediation-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-09-taut-reactor-safety-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-06-30-client-module-split-plan — source `3cae1f4`; see the
   ledger in `docs/plans/README.md`.
 - retired: 2026-06-18-member-identity-addressing-plan — source `3cae1f4`; see
@@ -3244,9 +3169,7 @@ expression behavior.
   ledger in `docs/plans/README.md`.
 - retired: 2026-06-17-github-actions-release-workflows-plan — source
   `33e13ee`; see the ledger in `docs/plans/README.md`.
-- `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` —
-  release-helper port to SimpleBroker-style targets, batch planning, summon
-  release gating, and GitHub-only release machinery documentation.
+- retired: 2026-07-08-release-helper-simplebroker-port-plan — source `04170eb`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-06-17-taut-pg-extension-plan — source `24dc2bc`; see the
   ledger in `docs/plans/README.md`.
 - retired: 2026-06-17-implementation-review-followups-plan — source
@@ -3255,14 +3178,6 @@ expression behavior.
   see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-01-taut-state-sql-dialect-plan — source `3cae1f4`; see
   the ledger in `docs/plans/README.md`.
-- `docs/plans/2026-07-01-taut-watch-runtime-plan.md` — implemented
-  [TAUT-8.4] follow-up: replace `TautWatcher` access to `TautClient` private
-  state and decoder methods with an internal `TautWatchRuntime` seam.
-- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` —
-  implemented evaluation-findings remediation: [TAUT-8.1] usage-error exit
-  codes and `--` end-of-options, channel-rename resume, error-path
-  hardening, and CLI-surface test-gap closure.
-- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` —
-  planned [TAUT-3.4]/[TAUT-8.4]/[TAUT-12.3] hardening for SQLite
-  contention: live control evidence, SimpleBroker-owned retry, integrity
-  probes, and watcher handle-lifetime proof.
+- retired: 2026-07-01-taut-watch-runtime-plan — source `24dc2bc`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-06-evaluation-findings-remediation-plan — source `663ff86`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-08-taut-sqlite-contention-hardening-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.

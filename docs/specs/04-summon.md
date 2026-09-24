@@ -1679,111 +1679,57 @@ tail plus the `--attach` instruction.
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors for the coordinated 0.9.8 release.
 
-- `docs/plans/2026-09-15-broker-session-integration-plan.md` — gives control
-  reactors and clients independent broker scopes while keeping auxiliary queues
-  bounded by live topology.
+- retired: 2026-09-15-broker-session-integration-plan — source `3cea185`; see the ledger in `docs/plans/README.md`.
 
 - `docs/plans/2026-09-15-reported-issues-followup-plan.md` — distinguishes
   reusable write cancellation from generation failure and preserves watcher
   replay over a surviving handle.
 
-- `docs/plans/2026-09-15-windows-pty-lifecycle-fixes-plan.md` — gives the
-  Windows exit monitor a private process handle, closes cancellation races,
-  restores the graceful interval, and makes deterministic Windows PTY
-  regressions run in every platform lane.
-- `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — removes
-  the vendor-specific structured adapter and terminal-output speech path,
-  promotes one PTY adapter for every provider, and adds the Windows ConPTY
-  backend and cross-platform verification contract.
+- retired: 2026-09-15-windows-pty-lifecycle-fixes-plan — source `a880011`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-09-03-summon-unified-pty-cross-platform-plan — source `6f5ae88`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — replaces
   target-shaped downgrade setup with a provenance-pinned Summon v2 migration
   fixture shared across real SQLite and PostgreSQL sidecars.
-- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
-  shared broker floors while preserving Summon's control and cleanup contract.
+- retired: 2026-08-28-simplebroker-8-reconciliation-plan — source `3c8ee51`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — defines cross-platform Summon process-domain ownership and bounded
   descendant finalization without treating lifecycle containment as a
   sandbox.
-- `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [SUM-3]'s
-  field-before-structure boundary for standalone live and named status rows,
-  including extensible detail fields.
+- retired: 2026-08-20-human-tabular-output-plan — source `46ee6bd`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — sequence-
   stripped give-up tail (Slice 0), the [SUM-13] notice screen-excerpt
   field, and driver excerpt capture for the setup-recovery offer.
-- `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` — adds
-  [SUM-7.4] setup-gate detection (input-prompt confirmation via bracketed
-  paste), the single acknowledged setup-recovery attach, the bounded
-  output-tail diagnostic, and the enriched [SUM-11] give-up error.
-- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — adds the
-  [SUM-10] multiline-sends briefing bullet so summoned members stop typing
-  literal `\n` into quoted `taut say` arguments.
-- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
-  shell-first attach handoff, then adapts and proves the same public
-  interaction through the TUI host.
-- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds typed Summon
-  syntax discovery and a separate TUI-native binding over the public
-  controller without reusing the CLI adapter or terminal owner.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — assigns one debug
-  containment owner to each Summon console path without changing driver
-  supervision or cleanup priority.
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
-  lifecycle, contract-proof, diagnostic, and release-gate remediation for
-  the coordinated 0.9.0 candidate.
-- `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — adds the
-  human-first TUI rich-host lifecycle and this exact-run readiness handle.
+- retired: 2026-08-18-summon-setup-gate-recovery-attach-plan — source `e0caca9`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-18-tui-deep-review-remediation-plan — source `d16a278`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-summon-first-attach-handoff-plan — source `df54c08`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-tui-command-mirror-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-taut-tui-implementation-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
   scheduler-sensitive and fail-open Summon tests with deterministic lifecycle,
   process, PTY, observation, and coverage-preserving proof.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — aligns the
-  Summon v1 persistence timestamp boundary with SimpleBroker 7.
-- `docs/plans/2026-08-07-taut-dump-load-plan.md` — durable Summon session
-  export/import through the core persistence component seam.
-- `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md` — makes
-  driver identity object-local, prevents inherited host identity in provider
-  children, and separates safe rich-host signal defaults from explicit
-  temporary CLI signal ownership.
-- `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
-  SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-taut-dump-load-plan — source `9410b6b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-01-summon-rich-host-global-state-plan — source `1ad1b8d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-31-simplebroker-6-reconciliation-plan — source `40a1306`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-14-terminal-output-safety-plan — shared terminal-text
   safety defaults for Summon command/diagnostic output, coordinated core floor,
   and an explicit byte-transparent PTY exemption; source `281f04fa`; see the
   ledger in docs/plans/README.md.
-- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
-  strict prepared local-LLM proof, complete failure evidence, and shared
-  exact-SHA release artifacts without duplicate test workflow calls.
-- `docs/plans/2026-07-13-release-metadata-preparation-plan.md` — synchronized
-  SimpleBroker floor ownership and release preparation before verification.
-- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
-  — installed command adapters, lazy loading, public Summon embedding, and
-  future rich-host terminal composition.
-- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
-  capitalized implied-provider names and cased automatic collision fallbacks.
-- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
-  direct-name bootstrap, trust framing, dynamic audit, PTY bound, and
-  documentation remediation program for v0.5.3.
+- retired: 2026-07-13-ci-speed-determinism-release-evidence-plan — source `530ce77`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-13-release-metadata-preparation-plan — source `e325ef6`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan — source `cdf6546`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-12-automatic-display-name-capitalization-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-11-multi-factor-review-remediation-plan — source `b8d145e`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-07-10-ci-failure-remediation-plan — v0.5.1 CI
   remediation for PTY write leases, watcher pre-publication stop, artifact
   fixture portability, and deterministic waiter-rebind proof; source
   `b03709452`; see the ledger in docs/plans/README.md.
-- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
-  active shared-core waiter replacement and paired dependency-floor follow-on;
-  Summon's control topology remains fixed.
-- `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
-  state, lifecycle, control, artifact-release, and documentation remediation.
-- `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` — separates
-  reusable adapter interruption from one-signal terminal retirement and makes
-  invalid raw coverage shards fatal.
-- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned control-reactor
-  ownership, historical inter-turn recovery, activity wake, and control-thread
-  supervision hardening.
-- `docs/plans/2026-07-06-taut-summon-plan.md` — implementing plan: spec
-  promotion and reference-gate extension, the `taut-summon` extension
-  package, core delegation verbs, session ledger, adapters, driver,
-  control plane, and conformance suite.
-- `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md` —
-  implementation plan for the universal PTY adapter, attach/detach, the
-  `wired` ledger flag, and live harness conformance.
-- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` —
-  hardening plan for SQLite contention robustness: live STATUS/readiness
-  evidence, SimpleBroker handle ownership, integrity probes, and watcher
-  handle-lifetime proof.
+- retired: 2026-07-10-taut-dynamic-native-waiter-replacement-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-10-taut-summon-quality-remediation-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-summon-terminal-retirement-plan — source `cf72638`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-09-taut-reactor-safety-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-06-taut-summon-plan — source `0db6b82`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-07-taut-summon-pty-harness-adapter-plan — source `587e6e3`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-08-taut-sqlite-contention-hardening-plan — source `7ba4def`; see the ledger in `docs/plans/README.md`.

@@ -2339,47 +2339,26 @@ wheel to register its `mcp` manifest.
   until an explicit refresh trigger. Atomic claim still prevents duplicate delivery. `_wake_master()`
   remains immediate child-to-parent event notification; parent retirement reuses executor completion; there is no maintenance timer.
 
-- `docs/plans/2026-09-15-broker-session-integration-plan.md` — binds resident
-  workspace BrokerSession cleanup to each workspace owner.
+- retired: 2026-09-15-broker-session-integration-plan — source `3cea185`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-09-15-mcp-result-simplification-plan.md` — replaces the
-  six-field result envelope with the CLI-shaped `records` object, moves
-  guidance into descriptions, cuts parameter prose to CLI-help terseness,
-  and caps manifest size.
+- retired: 2026-09-15-mcp-result-simplification-plan — source `3037971`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — moves attachment validation to the public core identity and notification-
   activity seams.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — captures eligible
-  resident workspace reactor failures through the core seam while preserving
-  content-free MCP crash events and process-level isolation.
-- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — adds the
-  protocol-clean main `taut mcp` launch path while retaining the standalone
-  script and one shared process runner.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-extension-main-path-and-all-extra-plan — source `15d54e1`; see the ledger in `docs/plans/README.md`.
 
-- `docs/plans/2026-08-10-stable-dm-send-plan.md` — teaches and proves stable
-  existing-DM send through the fixed `say` tool without adding a second MCP
-  operation or widening DM creation.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — consolidates MCP
   inventory ownership under exact mappings and strengthens page, resource,
   cancellation, and backend-conformance oracles.
-- `docs/plans/2026-08-10-mcp-search-plan.md` — adds one explicit search tool,
-  immutable selector transport, exact search-hit results, and backend-real
-  conformance without changing core search semantics.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — canonical
-  MCP timestamp strings and the JavaScript-safe `log.since` integer guard.
+- retired: 2026-08-10-mcp-search-plan — source `58f8524`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
-- `docs/plans/2026-07-28-channel-topics-plan.md` — fixed channel metadata
-  read/mutation tools, closed channel and thread records, uncertain-outcome
-  recovery, and coordinated SQLite/PostgreSQL proof.
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
-  durable DM selection and discovery through the fixed read, log, and list
-  tools, with aligned recovery guidance and backend proof.
-- `docs/plans/2026-07-28-message-react-plan.md` — fixed reaction tool,
-  attachment-time vocabulary, full-audience non-delivery receipts, and
-  resource behavior.
-- `docs/plans/2026-07-27-message-show-delete-plan.md` — fixed 17-tool
-  exact-message surface, cursor-mutating show, author-only physical deletion,
-  closed deletion records, and uncertain-outcome proof.
-- `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
-- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
-- `docs/plans/2026-07-14-taut-mcp-extension-plan.md`
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-message-react-plan — source `788cdd3`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-27-message-show-delete-plan — source `8509dc4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-15-taut-0.7.1-portability-and-coverage-plan — source `48298ee`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-15-taut-mcp-release-integration-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-taut-mcp-extension-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.

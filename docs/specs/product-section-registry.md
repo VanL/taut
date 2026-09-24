@@ -74,8 +74,9 @@ human entry material, not source-of-truth rows; installation mechanics
 ## README-owned promises inside registered families
 
 Recorded at cutover (2026-08-08) per the conflict rule; each remains
-README-owned until a spec absorbs it. The full audit is in the creating
-plan's equivalence ledger:
+README-owned until a spec absorbs it. The full audit is the creating plan's
+equivalence ledger at source `6d19465` (see the ledger in
+`docs/plans/README.md`):
 
 - the no-daemon / no-server / zero-resident-process property as a core
   product statement (natural future home: [TAUT-2])
@@ -93,13 +94,8 @@ plan's equivalence ledger:
 
 ## Related Plans
 
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — adds the canonical
-  opt-in debug failure-capture concern and its cross-surface ownership.
-- `docs/plans/2026-08-12-taut-tui-implementation-plan.md`: proposes the TUI
-  contract, promotion, staged implementation, hardening, and verification.
-- `docs/plans/2026-08-10-system-doctor-plan.md` — adds the actor-free bounded
-  system-doctor concern and its canonical specification.
-- `docs/plans/2026-08-10-stable-dm-send-plan.md` — moves the sole-DM-creator
-  promise into [IAN-5.1] while adding existing-only stable-handle send.
-- `docs/plans/2026-08-07-information-architecture-plan.md` — creates
-  this registry and records the cutover equivalence ledger.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-taut-tui-implementation-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-system-doctor-plan — source `6ef344f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-information-architecture-plan — source `6d19465`; see the ledger in `docs/plans/README.md`.

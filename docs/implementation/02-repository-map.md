@@ -16,6 +16,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
 | `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
 | `bin/markdown_fences.py` | Shared prose-line iterator for path/citation, plan-status, and DOM-15 checkers; excludes backtick and tilde fenced examples while preserving original line numbers |
+| `bin/check-dom15-fixtures` | Structural gate over the [DOM-15] classification fixture table |
 | `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
@@ -49,6 +50,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/agent-context/decision-hierarchy.md` | Conflict-resolution order |
 | `docs/agent-context/principles.md` | Shared execution principles |
 | `docs/agent-context/engineering-principles.md` | Engineering rules and warning signs |
+| `docs/coalescing.md` | [DOM-14] coalescing state: fold units, thresholds, deferral state, and the run log |
 
 ## Runbooks
 
@@ -62,6 +64,9 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/agent-context/runbooks/testing-patterns.md` | Testing and verification guidance |
 | `docs/agent-context/runbooks/maintaining-traceability.md` | Documentation-maintenance gate |
 | `docs/agent-context/runbooks/skills-lifecycle.md` | Skill promotion and maintenance guidance |
+| `docs/agent-context/runbooks/external-skill-suites.md` | Precedence and crosswalk for external skill suites |
+| `docs/agent-context/runbooks/adversarial-acceptance-probes.md` | Black-box probe kit and invariant floors for agent-built tools |
+| `docs/agent-context/runbooks/designing-agent-facing-interfaces.md` | Agent-facing interface design rules |
 
 ## Core Documentation Corpus
 
@@ -86,31 +91,31 @@ Quick pointers to the key guidance documents in this repository.
 | retired: 2026-06-17-github-release-helper-plan (source `dadd324`; see the ledger in docs/plans/README.md) | Initial GitHub-only release-helper plan; current publication ownership is in [TAUT-12.5] |
 | retired: 2026-06-17-github-actions-release-workflows-plan (source `33e13ee`; see the ledger in docs/plans/README.md) | Initial GitHub Actions test and release-workflow plan; current publication ownership is in [TAUT-12.5] |
 | retired: 2026-06-17-taut-pg-extension-plan (source `24dc2bc`; see the ledger in docs/plans/README.md) | Initial Postgres extension, PG test harness, and extension release target |
-| `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` | SimpleBroker-style release helper target, batch, and summon release gate port plan |
+| retired: 2026-07-08-release-helper-simplebroker-port-plan (source `04170eb`; see the ledger in docs/plans/README.md) | SimpleBroker-style release helper target, batch, and summon release gate port plan |
 | retired: 2026-06-17-implementation-review-followups-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
 | retired: 2026-06-18-simplebroker-latest-timestamp-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Indexed `list` metadata via SimpleBroker's latest pending timestamp API |
 | retired: 2026-06-30-assets-reference-cleanup-plan (source `33e13ee`; see the ledger in docs/plans/README.md) | One-time cleanup of stale `assets/` and `generate_knot.py` lint references |
 | retired: 2026-06-30-client-module-split-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | Split of `taut.client` into a package facade and concern-specific mixins |
 | retired: 2026-07-01-schema-shim-retirement-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | Retirement of the historical schema compatibility shim in favor of `taut/state/` |
 | retired: 2026-07-01-taut-state-sql-dialect-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | `TautState` interface and SQL dialect seam refactor |
-| `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
-| `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
-| `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
-| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation |
-| `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
-| `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
-| `docs/plans/2026-07-14-universal-release-gates-plan.md` | Reviewed implementation and release plan for one default all-extension local gate, explicit human override, and both exact-SHA workflow requirements for every tag |
-| `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` | Reviewed implementation plan for the fourth release target, root-owned MCP bundle, three-workflow exact-SHA gates, and same-run MCP coverage shard |
-| `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | Reviewed patch-release plan for macOS/Windows MCP proof, complete direct coverage ownership, publication-record correction, and coordinated 0.7.1 release |
-| `docs/plans/2026-07-27-message-show-delete-plan.md` | Reviewed implementation plan for exact message show/delete across the Python, CLI, and MCP surfaces |
-| `docs/plans/2026-07-28-message-react-plan.md` | Reviewed implementation plan for configured best-effort message reactions across Python, CLI, notification, and MCP surfaces |
-| `docs/plans/2026-07-28-direct-message-navigation-plan.md` | Completed implementation plan for actor-scoped DM route/stable-handle navigation, directory, rendering, watcher, and MCP behavior |
+| retired: 2026-07-01-taut-watch-runtime-plan (source `24dc2bc`; see the ledger in docs/plans/README.md) | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
+| retired: 2026-07-06-taut-summon-plan (source `0db6b82`; see the ledger in docs/plans/README.md) | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
+| retired: 2026-07-10-taut-summon-quality-remediation-plan (source `7ba4def`; see the ledger in docs/plans/README.md) | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
+| retired: 2026-07-11-multi-factor-review-remediation-plan (source `b8d145e`; see the ledger in docs/plans/README.md) | Implemented and independently reviewed external multi-factor remediation |
+| retired: 2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan (source `cdf6546`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
+| retired: 2026-07-13-ci-speed-determinism-release-evidence-plan (source `530ce77`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
+| retired: 2026-07-14-universal-release-gates-plan (source `ce2bbb1`; see the ledger in docs/plans/README.md) | Reviewed implementation and release plan for one default all-extension local gate, explicit human override, and both exact-SHA workflow requirements for every tag |
+| retired: 2026-07-15-taut-mcp-release-integration-plan (source `dd699e4`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for the fourth release target, root-owned MCP bundle, three-workflow exact-SHA gates, and same-run MCP coverage shard |
+| retired: 2026-07-15-taut-0.7.1-portability-and-coverage-plan (source `48298ee`; see the ledger in docs/plans/README.md) | Reviewed patch-release plan for macOS/Windows MCP proof, complete direct coverage ownership, publication-record correction, and coordinated 0.7.1 release |
+| retired: 2026-07-27-message-show-delete-plan (source `8509dc4`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for exact message show/delete across the Python, CLI, and MCP surfaces |
+| retired: 2026-07-28-message-react-plan (source `788cdd3`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for configured best-effort message reactions across Python, CLI, notification, and MCP surfaces |
+| retired: 2026-07-28-direct-message-navigation-plan (source `061476d`; see the ledger in docs/plans/README.md) | Completed implementation plan for actor-scoped DM route/stable-handle navigation, directory, rendering, watcher, and MCP behavior |
 | `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | Reviewed implementation plan for one SDK v2 server serving both MCP wire eras through explicit workspace-and-token continuity, shared ensure, and independent notification adapters |
-| `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
+| retired: 2026-07-28-summon-terminal-retirement-plan (source `cf72638`; see the ledger in docs/plans/README.md) | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
 | `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` | Reviewed implementation plan for the `taut-chat` core distribution rename, exact-artifact Trusted Publishing, draft-first immutable GitHub finalization, and explicit migration boundary |
-| `docs/plans/2026-08-14-pypi-finalizer-consistency-plan.md` | Completed Class 5 correction for independent-runner PyPI visibility before immutable GitHub finalization |
+| retired: 2026-08-14-pypi-finalizer-consistency-plan (source `73b56a0`; see the ledger in docs/plans/README.md) | Completed Class 5 correction for independent-runner PyPI visibility before immutable GitHub finalization |
 | retired: 2026-07-14-terminal-output-safety-plan (source `281f04fa`; see the ledger in docs/plans/README.md) | Retired reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
-| `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
+| retired: 2026-07-14-blank-message-no-op-plan (source `b2da819`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
@@ -165,6 +170,12 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `skills/README.md` | Skill directory purpose and conventions |
 | `skills/_template/SKILL.md` | Starter template for new reusable skills |
+| `skills/coalescing/SKILL.md` | [DOM-14] sweep procedure: derive counts, repair in-boundary defects, fold, soft-retire, close the run |
+| `skills/call-agent/SKILL.md` | Invoking another agent family for independent review with a required-shape brief |
+| `skills/brainstorming-to-plan/SKILL.md` | Turning exploration output into a spec delta and dated plan |
+| `skills/debugging/SKILL.md` | Root-cause-first debugging discipline |
+| `skills/crystallize-program-theory/SKILL.md` | One-shot crystallization of the program theory from contract, specs, and owner dialogue |
+| `skills/interface-review/SKILL.md` | Agent-facing interface review lens |
 
 ## Update Guidance
 

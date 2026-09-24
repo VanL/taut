@@ -242,6 +242,13 @@ For each tripped or requested fold:
 
 ### 4. Plans tier: harvest gate, then soft-retire
 
+Audit **every** completed or superseded candidate in the sweep — never a
+fixed batch of the oldest. Run independent per-plan audits in parallel when
+the backlog is large; soft-retire each candidate that passes, and defer a
+candidate only with a per-plan reason recorded in the run log (owner
+direction 2026-09-24; see the plans bullet under Fold Unit and Progress
+Model in `docs/coalescing.md`).
+
 For each completed or superseded plan:
 
 0. Skip plans marked `exemplar` in the status index — they are exempt

@@ -185,8 +185,8 @@ relabeling the H-bounded logical projection.
 
 ## Related Plans
 
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
-- `docs/plans/2026-08-07-taut-dump-load-plan.md`
-- `docs/plans/2026-08-12-live-point-in-time-dump-plan.md`
-- `docs/plans/2026-08-06-taut-search-plan.md`
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-taut-dump-load-plan — source `9410b6b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-live-point-in-time-dump-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-06-taut-search-plan — source `136cdad`; see the ledger in `docs/plans/README.md`.

@@ -847,20 +847,12 @@ run through a guard blocks release.
 
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans contributor validation before dump publication and retained-marker semantics.
 
-- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
-  clarifies multi-statement live projections and the destructive load's stable
-  input precondition without adding snapshot machinery.
-- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — defines the
-  operational setting/event exclusions, destination-preservation asymmetry,
-  and retained-debug-message freshness rule.
-- `docs/plans/2026-08-12-live-point-in-time-dump-plan.md` — replaces dump
-  quiescence and movement-abort with the live H-bounded logical projection.
+- retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-debug-failure-capture-plan — source `58c286b`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-live-point-in-time-dump-plan — source `74e1455`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
   batch-size and positional assertions with report-contract, partial-batch,
   component-identity, and coverage-preserving proof.
-- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — defines
-  canonical timestamp writers, tolerant v1 readers, and integer restore state.
-- `docs/plans/2026-08-10-system-doctor-plan.md` defines the bounded passive
-  diagnostic surface and its reuse of persistence inspection seams.
-- `docs/plans/2026-08-07-taut-dump-load-plan.md` defines promotion,
-  implementation slices, hardening gates, and independent review.
+- retired: 2026-08-10-simplebroker-7-json-id-boundary-plan — source `50a67eb`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-system-doctor-plan — source `6ef344f`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-07-taut-dump-load-plan — source `9410b6b`; see the ledger in `docs/plans/README.md`.

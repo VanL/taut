@@ -512,22 +512,22 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
-- `docs/plans/2026-08-18-mcp-windows-resource-timeout-budget-plan.md`
-- `docs/plans/2026-08-17-mcp-resource-seed-lifecycle-plan.md`
-- `docs/plans/2026-08-17-mcp-tools-seed-lifecycle-plan.md`
-- `docs/plans/2026-08-18-mcp-resource-helper-seed-lifecycle-plan.md`
-- `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md`
-- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
-- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`
-- `docs/plans/2026-08-10-stable-dm-send-plan.md`
-- `docs/plans/2026-08-10-mcp-search-plan.md`
+- retired: 2026-08-18-mcp-windows-resource-timeout-budget-plan — source `7930b25`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-mcp-resource-seed-lifecycle-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-17-mcp-tools-seed-lifecycle-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-18-mcp-resource-helper-seed-lifecycle-plan — source `d16a278`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-windows-postrelease-ci-determinism-plan — source `f30b62c`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-12-extension-main-path-and-all-extra-plan — source `15d54e1`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-stable-dm-send-plan — source `c0a4616`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-08-10-mcp-search-plan — source `58f8524`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
-- `docs/plans/2026-07-28-channel-topics-plan.md`
-- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
-- `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
-- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
-- `docs/plans/2026-07-14-taut-mcp-extension-plan.md`
+- retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-28-direct-message-navigation-plan — source `061476d`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-15-taut-0.7.1-portability-and-coverage-plan — source `48298ee`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-15-taut-mcp-release-integration-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-07-14-taut-mcp-extension-plan — source `dd699e4`; see the ledger in `docs/plans/README.md`.
 
 
 ### Reactor restoration verification (2026-09-22)
