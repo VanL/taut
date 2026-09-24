@@ -266,6 +266,34 @@ intent-tokened conversation snapshot and the selected hit's delegated anchor
 restore plus following refresh. Snapshot completion alone is not presentation
 completion because message rendering defers scroll restoration.
 
+## Transcript Selection and Clipboard
+
+`TautTranscript` is the only `OptionList` variant that opts into Textual's
+framework text selection. Navigation remains an ordinary `TautOptionList`.
+The transcript attaches virtual line offsets to its rendered strips and
+extracts selection text from those same policy-filtered lines, including
+wrapped message bodies. Selection therefore copies the display form produced
+by [TUI-12.2] and [TAUT-6.4], never `Message.text`; an ESC or BEL suppressed by
+the display policy cannot reappear as a live control after paste.
+
+Textual owns mouse selection. `TautTranscript.selection_updated()` only tells
+the app that the selected region changed, which cancels stale pending work.
+The bubbling `TextSelected` event on mouse-up arms the owner-selected trigger
+(a): one 500 ms timer for the completed non-empty selection. The timer carries
+both a generation and the expected text, and copies only if both still match.
+Transcript rebuilds cancel it before replacing rows. This keeps selection
+session-only and leaves row selection, cursors, active target, and
+`TranscriptViewport` ownership unchanged.
+
+Both `y` and the stable-selection timer call Textual's
+`App.copy_to_clipboard()`. That is the sole clipboard boundary: Textual caches
+the plain text and writes a base64 OSC 52 payload through its driver. Taut does
+not call a platform clipboard program and cannot know whether the terminal
+accepted the fire-and-forget sequence. The status line reports the attempted
+character count; non-idle operation and error state take priority over that
+transient note. macOS Terminal.app and tmux without `set-clipboard on` are
+documented as known non-consumers.
+
 ## Responsive Presentation
 
 `models.py` stores session-only visual intent: logical focus, selected ids,
@@ -528,6 +556,10 @@ OS/Python rows, every collected test, and the existing timeout caps remain
 unchanged.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-tui-text-selection-and-clipboard-plan.md` — framework
+  transcript selection, explicit and timed OSC 52 copy, and display-form
+  clipboard safety.
 
 - retired: 2026-08-18-tui-deep-review-remediation-plan — source `d16a278`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-08-17-tui-ci-bounded-parallelism-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.

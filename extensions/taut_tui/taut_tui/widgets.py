@@ -14,6 +14,8 @@ from textual.binding import Binding, BindingType
 from textual.content import Content, ContentText
 from textual.message import Message
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.visual import RichVisual, Visual, VisualType
 from textual.widgets import (
     Button,
@@ -548,6 +550,65 @@ class TautOptionList(OptionList):
         self._pointer_pending = False
 
 
+class TautTranscript(TautOptionList):
+    """Transcript list with framework-owned text selection ([TUI-8.2])."""
+
+    ALLOW_SELECT = True
+
+    def __init__(self, *content: Any, **kwargs: Any) -> None:
+        super().__init__(*content, **kwargs)
+        self.selection_changed: Callable[[Selection | None], None] | None = None
+
+    def render_line(self, y: int) -> Strip:
+        """Attach virtual coordinates used by Textual's selection compositor."""
+
+        virtual_y = int(self.scroll_offset.y) + y
+        return super().render_line(y).apply_offsets(0, virtual_y)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str]:
+        """Extract the same policy-filtered lines rendered by this transcript."""
+
+        self._update_lines()
+        lines = [self._selection_line(y) for y in range(self.virtual_size.height)]
+        rendered = "\n".join(lines)
+        if lines and not lines[-1]:
+            # Selection.extract() uses splitlines(), which otherwise drops the
+            # final blank display row and may index past the remaining lines.
+            rendered += "\n"
+        return selection.extract(rendered), "\n"
+
+    def _selection_line(self, y: int) -> str:
+        """Render one virtual line without OptionList's pane-fill padding."""
+
+        option_index, line_offset = self._lines[y]
+        option = self.get_option_at_index(option_index)
+        padding = self.get_component_styles("option-list--option").padding
+        width = (
+            self.scrollable_content_region.width
+            - self._get_left_gutter_width()
+            - padding.width
+        )
+        visual = self._get_visual(option)
+        strips = Visual.to_strips(
+            self,
+            visual,
+            max(1, width),
+            None,
+            self.get_visual_style("option-list--option"),
+            apply_selection=False,
+        )
+        try:
+            return strips[line_offset].text
+        except IndexError:
+            return ""
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        super().selection_updated(selection)
+        callback = self.selection_changed
+        if callback is not None:
+            callback(selection)
+
+
 __all__ = [
     "DisplayText",
     "EscapedDisplayText",
@@ -559,6 +620,7 @@ __all__ = [
     "TautOptionList",
     "TautSelect",
     "TautStatic",
+    "TautTranscript",
     "decode_message_escapes",
     "display_text",
     "escape_display_text",

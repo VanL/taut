@@ -34,6 +34,13 @@ quit from any mode or modal while Textual owns the terminal; PageDown remains
 the page-down key.
 Workspace load remains a CLI-only maintenance action.
 
+A plain drag in the transcript selects the policy-filtered text exactly as it
+is displayed. Press `y` to copy the current selection, or leave a completed
+selection unchanged for 500 ms to copy it automatically through Textual's OSC
+52 path. macOS Terminal.app and tmux without `set-clipboard on` ignore OSC 52;
+the selection stays visible. The terminal's modified drag (commonly
+Shift-drag) remains available as the native fallback.
+
 When a first `:summon grok` or native Summon form will actually attach to a
 provider, the TUI shows a native confirmation before the provider starts. It
 explains that the next screen is provider setup rather than Taut chat and names

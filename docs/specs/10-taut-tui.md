@@ -569,6 +569,7 @@ In `NORMAL` mode the following pairs dispatch the same semantic actions:
 | Leave transient mode | Escape | Escape |
 | Open command mode | `:` | Ctrl-P or clickable command affordance |
 | Search history | `/` | Ctrl-F or clickable search affordance |
+| Copy current text selection | `y` | none |
 | Open help | `?` | F1 or clickable help affordance |
 | Quit in `NORMAL` | `q` | Ctrl-Q or palette `Quit` |
 | Guarded quit while the TUI owns input | none | Ctrl-C / Ctrl-D |
@@ -616,10 +617,19 @@ The scroll wheel scrolls the surface under the pointer. Clicking the composer
 focuses it and positions the editing cursor when the terminal and framework
 expose a position.
 
-There is no hover-only information or action. Help documents the terminal's
-modified-drag escape for native text selection (commonly Shift-drag), and the
-TUI must not deliberately disable that terminal escape. Mouse and keyboard
-parity tests exercise the same action ids and resulting model changes.
+There is no hover-only information or action. A plain drag in the transcript
+selects text across one or more rows using the framework's text selection; a
+single click without drag still selects the row. The selection is presentation
+state ([TUI-4.2]) and never moves a cursor, claims a pointer, or changes the
+selected message. `y` copies the current selection to the clipboard; a
+selection that is complete and unchanged for 500 ms is copied automatically.
+Copying writes the host clipboard through the terminal's OSC 52 sequence and
+reports the copied length in the status line; terminals that do not honor OSC
+52 (macOS Terminal.app; tmux without `set-clipboard on`) receive the sequence
+and ignore it, and help names them. Help still documents the terminal's
+modified-drag escape (commonly Shift-drag), and the TUI must not deliberately
+disable it. Mouse and keyboard parity tests exercise the same action ids and
+resulting model changes.
 
 ## 9. Reflow and Terminal Resize [TUI-9]
 
@@ -941,6 +951,12 @@ exceptions do not decode printable escape notation and do not change stored
 content. Every other selected terminal control still passes through the
 configured public escape policy.
 
+Copied text is the rendered, policy-filtered display text of the selected
+region, exactly as the escape policy ([TAUT-6.4]) presented it, never the stored
+message bytes. A paste therefore cannot relay a control sequence the display
+suppressed. The OSC 52 payload is base64 and carries no terminal-interpreted
+bytes from message content.
+
 ### [TUI-12.3] Cleanup order
 
 Normal shutdown stops accepting new actions, resolves active dump and owned
@@ -1032,7 +1048,15 @@ The following enumerable matrices have firing tests:
   excerpt rendering, suspension and restoration equivalence with the
   bootstrap lease, and the Summon-level proof that a non-supporting
   host receives no mid-run request); and
-- terminal-control payloads in every user/extension text-bearing widget.
+- terminal-control payloads in every user/extension text-bearing widget; and
+- mouse drag across three transcript rows and across a wrapped visual line,
+  with one message containing an escaped control sequence; `y`; and a 500 ms
+  stable completed selection: `get_selected_text()` equals the rendered rows;
+  the driver receives exactly one OSC 52 write per copy whose payload decodes
+  to that text; the escaped sequence appears as its display form; row
+  selection, cursors, and active target remain unchanged; a rebuild cancels
+  pending auto-copy. This uses real `TautApp` under `run_test`, real SQLite,
+  and a driver write recorder at the headless driver seam.
 
 Representative wide, medium, compact, and too-small screens receive a manual
 visual review against [TUI-5] in addition to structural tests. Any committed
@@ -1072,6 +1096,10 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-tui-text-selection-and-clipboard-plan.md` — enables
+  framework text selection in the transcript, adds `y` and timed auto-copy
+  through OSC 52, and pins copied text to the policy-filtered display form.
 
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — makes tail
   pinning sticky under a named viewport owner, shows times instead of ids,

@@ -16,6 +16,11 @@
   actor-scoped labels, rapid-resize coverage drives the real watcher and app,
   and fatal Textual exits now return the application's nonzero code.
 
+- Plain transcript drags now select the policy-filtered displayed text. `y`
+  copies the current selection through OSC 52, and a completed selection that
+  remains unchanged for 500 ms copies automatically without changing row,
+  cursor, target, or viewport ownership.
+
 - `taut watch` now drains the current SimpleBroker operation before handling
   Ctrl-C, closes its owned resources, prints `taut: interrupted`, and exits
   130. A second Ctrl-C remains an immediate escape for blocked delivery I/O.

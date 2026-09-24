@@ -219,7 +219,11 @@ Ctrl-U/Ctrl-D pair with PageUp/PageDown. Use `i` or click the composer to type,
 `:` or Ctrl-P for commands, `/` or Ctrl-F for search, `?` or F1 for help, and
 `q` or Ctrl-Q to quit. Tab, Shift-Tab, ordinary clicks, and the scroll wheel
 work throughout. Native terminal text selection remains available through the
-terminal's modified drag (commonly Shift-drag).
+terminal's modified drag (commonly Shift-drag). In the transcript, a plain
+drag selects the policy-filtered text as displayed. Press `y` to copy that
+selection, or leave a completed selection unchanged for 500 ms to copy it
+automatically through OSC 52. macOS Terminal.app and tmux without
+`set-clipboard on` ignore OSC 52; the selection remains visible.
 
 Only the active conversation and an explicitly open reply surface are watched,
 so inactive conversations retain their unread state. Notification pointers are

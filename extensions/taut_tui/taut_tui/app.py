@@ -20,6 +20,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Grid, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.timer import Timer
 
 from taut import (
     IdentityError,
@@ -133,6 +134,7 @@ from taut_tui.widgets import (
     TautComposer,
     TautOptionList,
     TautStatic,
+    TautTranscript,
     display_text,
     escape_display_text,
     escape_inline_text,
@@ -306,6 +308,7 @@ class TautApp(App[None]):
         Binding("i", "enter_compose", "Compose", show=False),
         Binding("colon", "open_command_line", "Command line", show=False),
         Binding("slash", "open_search", "Search", show=False),
+        Binding("y", "copy_selection", "Copy selection", show=False),
         Binding("question_mark", "open_help", "Help", show=False),
         Binding("q", "quit_tui", "Quit", show=False),
         Binding("escape", "leave_mode", "Normal mode", show=False),
@@ -394,6 +397,11 @@ class TautApp(App[None]):
         self._selected_search_hit: SearchHit | None = None
         self._pending_g = False
         self._operation_state = "idle"
+        self._copy_status_note: str | None = None
+        self._copy_status_clear_timer: Timer | None = None
+        self._selection_copy_timer: Timer | None = None
+        self._selection_copy_generation = 0
+        self._selection_copy_text: str | None = None
         self._conversation_intent = 0
         self._next_send_token = 0
         self._pending_sends: dict[int, tuple[str, int]] = {}
@@ -417,7 +425,7 @@ class TautApp(App[None]):
                 yield TautStatic(
                     "Conversation", id="target-header", classes="surface-title"
                 )
-                yield TautOptionList(id="transcript")
+                yield TautTranscript(id="transcript")
                 with Horizontal(id="composer-controls"):
                     yield TautComposer(
                         placeholder="Message selected target", id="composer"
@@ -455,9 +463,9 @@ class TautApp(App[None]):
         self._set_mode(InteractionMode.NORMAL)
         transcript = self._query_base("#transcript", TautOptionList)
         transcript.user_viewport_intent = self._on_transcript_user_viewport_intent
-        transcript.user_viewport_settled = (
-            self._on_transcript_user_viewport_settled
-        )
+        transcript.user_viewport_settled = self._on_transcript_user_viewport_settled
+        assert isinstance(transcript, TautTranscript)
+        transcript.selection_changed = self._on_transcript_selection_changed
         self._query_base("#navigation-list", TautOptionList).focus()
         self._update_status()
         self._session = TuiSession(
@@ -1008,15 +1016,80 @@ class TautApp(App[None]):
             "inserts a newline, and Ctrl-Tab inserts a tab; "
             ": opens the command line; Ctrl-P or Actions opens the action "
             "browser; / / Ctrl-F search; ? / F1 help; "
+            "y copies the current transcript selection; a completed plain-drag "
+            "selection copies automatically after 500 ms through OSC 52 "
+            "(unsupported by macOS Terminal.app and tmux without "
+            "set-clipboard on); "
             "g i opens notifications; q / Ctrl-Q quits in normal mode; "
             "Ctrl-C / Ctrl-D quits whenever the TUI owns the terminal. "
             "Notification pointers are consumable and shared by sessions; "
             "chat history remains durable. "
             "Use Pane to cycle compact surfaces and Replies to open or close a "
             "selected reply thread. "
-            "Use your terminal's modified drag (commonly Shift-drag) for text selection.",
+            "Modified drag (commonly Shift-drag) remains the terminal-native "
+            "selection fallback.",
             kind=InspectorKind.SYSTEM,
         )
+
+    def action_copy_selection(self) -> None:
+        """Copy the current framework selection through Textual's OSC 52 path."""
+
+        if self.visual_state.mode is not InteractionMode.NORMAL:
+            return
+        selected = self.screen.get_selected_text()
+        if not selected:
+            return
+        self._cancel_pending_selection_copy()
+        self._copy_selection_text(selected)
+
+    def _copy_selection_text(self, selected: str) -> None:
+        previous_clipboard = self._clipboard
+        try:
+            self.copy_to_clipboard(selected)
+        except Exception as exc:  # noqa: BLE001 approved [TUI-12.1] presentation boundary
+            self._clipboard = previous_clipboard
+            self.notify(f"Unable to copy selection: {exc}", severity="error")
+            return
+        self._set_copy_status_note(f"copied {len(selected)} characters")
+
+    def _on_transcript_selection_changed(self, _selection: object) -> None:
+        self._cancel_pending_selection_copy()
+
+    def on_text_selected(self, _event: events.TextSelected) -> None:
+        """Arm trigger (a) only after Textual reports selection completion."""
+
+        self._cancel_pending_selection_copy()
+        transcript = self._query_base("#transcript", TautTranscript)
+        if transcript not in self.screen.selections:
+            return
+        selected = self.screen.get_selected_text()
+        if not selected:
+            return
+        generation = self._selection_copy_generation
+        self._selection_copy_text = selected
+        self._selection_copy_timer = self.set_timer(
+            0.5,
+            lambda: self._copy_stable_selection(generation, selected),
+        )
+
+    def _cancel_pending_selection_copy(self) -> None:
+        self._selection_copy_generation += 1
+        timer = self._selection_copy_timer
+        if timer is not None:
+            timer.stop()
+        self._selection_copy_timer = None
+        self._selection_copy_text = None
+
+    def _copy_stable_selection(self, generation: int, expected: str) -> None:
+        if generation != self._selection_copy_generation:
+            return
+        if self._selection_copy_text != expected:
+            return
+        if self.screen.get_selected_text() != expected:
+            return
+        self._selection_copy_timer = None
+        self._selection_copy_text = None
+        self._copy_selection_text(expected)
 
     def action_quit_tui(self) -> None:
         reason = self._system.quit_block_reason() if self._system is not None else None
@@ -2426,9 +2499,30 @@ class TautApp(App[None]):
             if raw_target is None
             else self._target_labels.get(raw_target, raw_target)
         )
+        operation = self._operation_state
+        if operation == "idle" and self._copy_status_note is not None:
+            operation = self._copy_status_note
         self._query_base("#status-line", TautStatic).update(
-            f"{self.visual_state.mode.value}  {target}  {self._operation_state}"
+            f"{self.visual_state.mode.value}  {target}  {operation}"
         )
+
+    def _set_copy_status_note(self, note: str) -> None:
+        timer = self._copy_status_clear_timer
+        if timer is not None:
+            timer.stop()
+        self._copy_status_note = note
+        self._update_status()
+        self._copy_status_clear_timer = self.set_timer(
+            2.0,
+            lambda: self._clear_copy_status_note(note),
+        )
+
+    def _clear_copy_status_note(self, expected: str) -> None:
+        if self._copy_status_note != expected:
+            return
+        self._copy_status_note = None
+        self._copy_status_clear_timer = None
+        self._update_status()
 
     def _watch_future(
         self,
@@ -3279,6 +3373,7 @@ class TautApp(App[None]):
         *,
         restore_owner_intent: int | None = None,
     ) -> None:
+        self._cancel_pending_selection_copy()
         transcript = self._query_base("#transcript", TautOptionList)
         transcript.clear_options()
         self._message_rows = messages
@@ -3459,7 +3554,11 @@ class TautApp(App[None]):
         """Apply the same fenced pin after OptionList finishes remeasuring rows."""
 
         viewport = self.visual_state.viewport
-        if self._shutting_down or not viewport.accepts(effect) or not viewport.tail_pinned:
+        if (
+            self._shutting_down
+            or not viewport.accepts(effect)
+            or not viewport.tail_pinned
+        ):
             return
         self._query_base("#transcript", TautOptionList).scroll_end(
             animate=False,

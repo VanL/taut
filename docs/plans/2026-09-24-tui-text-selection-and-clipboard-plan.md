@@ -1,8 +1,8 @@
 # TUI Text Selection and Clipboard Plan
 
-Status: draft — owner-requested enhancement (2026-09-24); mechanism verified
-against Textual 8.2.8; owner chose copy trigger (a) on 2026-09-24; awaiting
-independent plan review.
+Status: completed — implementation, automated verification, and independent
+review passed on 2026-09-24. The owner closed the plan with the two-terminal
+OSC 52 observation recorded as an accepted residual.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the
 normative mouse contract in [TUI-8.2], adds a key to [TUI-8.1], and writes to
@@ -32,17 +32,17 @@ across widgets that allow it, `Screen.get_selected_text()`, and
 
 ## Requested Outcomes
 
-- [ ] A plain mouse drag in the transcript selects text across rows; a
+- [x] A plain mouse drag in the transcript selects text across rows; a
   single click still focuses and selects the row ([TUI-8.2] preserved).
-- [ ] The selected text is what the user sees: the display-policy-filtered
+- [x] The selected text is what the user sees: the display-policy-filtered
   rendering under [TUI-12.2]/[TAUT-6.4], never raw message bytes, so a
   paste cannot relay control sequences the display suppressed.
-- [ ] Copy: an explicit `y` (yank) key copies the current selection; and,
+- [x] Copy: an explicit `y` (yank) key copies the current selection; and,
   per owner direction, a selection that is complete and unchanged for 500
   ms is copied automatically (trigger (a), owner decision 2026-09-24). A transient status line reports what was copied.
-- [ ] The clipboard write uses Textual's OSC 52 path; unsupported
+- [x] The clipboard write uses Textual's OSC 52 path; unsupported
   terminals are documented (Terminal.app; tmux without `set-clipboard on`).
-- [ ] [TUI-8.1], [TUI-8.2], [TUI-12.2], the TUI README, and the root README
+- [x] [TUI-8.1], [TUI-8.2], [TUI-12.2], the TUI README, and the root README
   sentence about modified-drag are updated; help text names `y` and the
   auto-copy behavior.
 
@@ -65,7 +65,8 @@ Supporting context:
 - Textual 8.2.8 in the retained lock: `App.ALLOW_SELECT` (`app.py:403`),
   `Widget.ALLOW_SELECT` (`widget.py:328`), `Widget.get_selection`
   (`widget.py:4213`), `Screen.get_selected_text` (`screen.py:963`),
-  `Screen.text_selection_started_signal` (`screen.py:321`),
+  `Widget.selection_updated` (`widget.py:4234`), `events.TextSelected`
+  (posted on mouse-up by `screen.py:1883`),
   `App.copy_to_clipboard` (`app.py:1770`, OSC 52, documented as not working
   on macOS Terminal.app), `OptionList.ALLOW_SELECT = False`
   (`widgets/_option_list.py:111`), `OptionList._on_click` (`:721`) and
@@ -80,7 +81,9 @@ Supporting context:
 
 - `c894059` (0.9.9 release SHA) — `docs/specs/10-taut-tui.md` and
   `docs/specs/02-taut-core.md` at plan authoring time.
-- Promotion baseline identifier: recorded after the spec-promotion slice.
+- Promotion baseline identifier: worktree base `39179c1f` plus the
+  `docs/specs/10-taut-tui.md` diff with SHA-256
+  `f05019c045907902ef99ba79003cd526bbbcce601db36437d8287078548ea5c1`.
 
 ## Proposed Spec Delta
 
@@ -118,7 +121,7 @@ Proposed text:
 
 ### [TUI-8.1] — add to the key table
 
-> | `y` | copy the current text selection to the clipboard | transcript |
+> | Copy current text selection | `y` | none |
 
 ### [TUI-12.2] — append one rule
 
@@ -128,9 +131,16 @@ Proposed text:
 > the display suppressed. The OSC 52 payload is base64 and carries no
 > terminal-interpreted bytes from message content.
 
-### [TUI-13.2] — add a matrix row
+### [TUI-13.2] — add a required-matrix bullet
 
-> | Mouse drag across three transcript rows, one containing an escaped control sequence; `y`; then a 500 ms stable selection | `get_selected_text()` equals the rendered rows; the driver receives exactly one OSC 52 write per copy whose payload decodes to that text; the escaped sequence appears as its display form; row selection unchanged | real `TautApp` under `run_test`, real SQLite, driver write captured at the driver seam |
+> - mouse drag across three transcript rows and across a wrapped visual line,
+>   with one message containing an escaped control sequence; `y`; and a 500 ms
+>   stable completed selection: `get_selected_text()` equals the rendered rows;
+>   the driver receives exactly one OSC 52 write per copy whose payload decodes
+>   to that text; the escaped sequence appears as its display form; row
+>   selection, cursors, and active target remain unchanged; a rebuild cancels
+>   pending auto-copy. This uses real `TautApp` under `run_test`, real SQLite,
+>   and a driver write recorder at the headless driver seam.
 
 ### `## Related Plans` — add
 
@@ -144,11 +154,13 @@ Proposed text:
 Files to modify:
 
 - `extensions/taut_tui/taut_tui/widgets.py` — `TautOptionList(OptionList)`
-  (line ~367): inherits `ALLOW_SELECT = False`; override to `True` for the
-  transcript instance only (the navigation list keeps row semantics) and
-  implement `get_selection(selection)` if the inherited `Widget` default
-  does not produce text for `OptionList` strips — verify in task 3 before
-  assuming either way.
+  (line ~367): inherits `ALLOW_SELECT = False`; add a transcript-only subclass
+  with `ALLOW_SELECT = True` (the navigation list keeps row semantics), attach
+  virtual `(x, y)` offsets to each returned strip in `render_line()`, and
+  implement `get_selection(selection)` over those same rendered strips. The
+  task-3 probe showed that inherited `Widget.get_selection()` rejects the
+  `RichVisual` and unmodified `OptionList` strips collapse every row to offset
+  `(0, 0)`.
 - `extensions/taut_tui/taut_tui/app.py` — the transcript is composed at
   line ~421 (`TautOptionList(id="transcript")`); bindings at ~310–330 (`y`
   is unbound; `ctrl+c` is quit with priority and stays so); the status line
@@ -158,9 +170,9 @@ Files to modify:
   free.
 - `extensions/taut_tui/tests/test_tui_app.py`, a new
   `tests/test_tui_selection.py`, `tests/test_tui_textual_contract.py` (add
-  the OptionList `ALLOW_SELECT` default and the OSC 52 write shape to the
-  Textual-boundary contract so a Textual upgrade that changes either is
-  caught).
+  the OptionList `ALLOW_SELECT` default, selection-update/mouse-up completion
+  seams, dispatch order, and OSC 52 write shape to the Textual-boundary
+  contract so a Textual upgrade that changes them is caught).
 - `extensions/taut_tui/README.md`, `README.md` (~221), help text.
 
 Read first: [TUI-8.2], [TUI-12.2], [TUI-4.2]; Textual's `Screen`
@@ -204,10 +216,11 @@ Comprehension gate (answers in the Execution Log before editing):
 
 Hidden couplings:
 
-- `OptionList._on_mouse_move` (`:740`) may change the highlighted row on
-  hover-drag; with selection enabled the screen captures the mouse first
-  (`screen.py:~1895` gate), so verify the row highlight does not follow
-  the drag.
+- `OptionList._on_mouse_move` (`:740`) tracks hover during a drag. The screen
+  initializes selection before forwarding mouse-down to the widget, whose
+  public handler then captures the mouse; subsequent screen-level mouse moves
+  still update the active selection. Verify the row highlight does not follow
+  the drag and contract-test this dispatch order against Textual upgrades.
 - The transcript is rebuilt on delivery (`_render_messages`); a rebuild
   during an active selection clears it. Acceptable (selection is
   ephemeral), but the auto-copy timer must be cancelled on rebuild so a
@@ -239,25 +252,32 @@ selection, change nothing else.
 4. **Spec-promotion slice**; record the promotion baseline.
 5. **Red tests** (`tests/test_tui_selection.py`): (a) drag across three
    rows yields the rendered text and leaves the selected message and
-   cursors unchanged; (b) `y` produces exactly one driver write matching
+   cursors unchanged, including a selection that crosses a wrapped visual
+   line within one option; (b) `y` produces exactly one driver write matching
    `\x1b]52;c;<base64>\a` whose payload decodes to the selection; (c) with
    the timed trigger enabled, a selection held unchanged for 500 ms
-   produces one write and a changed selection resets the timer (use a
-   controlled clock or the app's timer seam, not sleeps); (d) a row with an
+   produces one write and a changed selection resets the timer (capture the
+   app timer seam, assert the exact 0.5-second interval, and invoke captured
+   callbacks deterministically rather than sleeping); (d) a row with an
    escaped control sequence copies its display form; (e) a transcript
    rebuild during selection cancels the pending copy. All must fail at
    baseline because no text is selectable.
-6. **Implement.** Enable selection on the transcript instance, add the
-   `get_selection` override if task 3 showed it is needed, bind `y`,
-   implement the timed copy as a Textual timer started on
-   `text_selection_started_signal` and reset on selection change, cancelled
-   on rebuild; route the write through `App.copy_to_clipboard`; add the
-   status note. Stop if the implementation needs to intercept raw mouse
-   events in the widget; the screen's selection machinery must own the
-   drag.
-7. **Contract tests.** Add the `OptionList.ALLOW_SELECT` default and the
-   OSC 52 shape to `test_tui_textual_contract.py` so a Textual bump that
-   changes either fails loudly.
+6. **Implement.** Enable selection on a transcript-only subclass, attach
+   virtual line offsets and implement the `get_selection` override shown by
+   task 3, then bind `y`. The transcript's `selection_updated()` cancels any
+   pending completed-selection timer whenever the region changes or clears.
+   The bubbling `events.TextSelected` on mouse-up arms a 0.5-second Textual
+   timer only when `screen.get_selected_text()` is non-empty. A generation
+   and text-equality check at firing rejects stale callbacks; rebuild cancels
+   the timer. Route the write through `App.copy_to_clipboard`; add the status
+   note. Stop if implementation needs to intercept raw mouse events in the
+   widget; the screen's selection machinery must own the drag.
+7. **Contract tests.** Add the `OptionList.ALLOW_SELECT` default,
+   `Widget.selection_updated` delivery, `TextSelected` mouse-up completion,
+   screen-selection-before-widget-forward dispatch order, and OSC 52 shape to
+   `test_tui_textual_contract.py` so a Textual bump that changes any of these
+   fails loudly. Do not rely on `text_selection_started_signal`; Textual 8.2.8
+   declares it but never publishes it.
 8. **Docs.** README (root and extension), help text, [TUI-13.2] row,
    `docs/implementation/12-taut-tui.md` (why copied text is the display
    form; why OSC 52 and not a clipboard tool); CHANGELOG.
@@ -268,10 +288,12 @@ selection, change nothing else.
 ## Testing Plan
 
 - Layer: real `TautApp` under Textual `run_test` with pilot mouse events;
-  the driver write captured at Textual's driver seam (the same seam the
-  handoff tests use), not by mocking `copy_to_clipboard`.
+  after startup replace only the headless driver's no-op `write` method with a
+  recorder, assert `app._clipboard` for plain-text content, and assert the
+  recorded driver bytes for the OSC 52 envelope. Do not mock
+  `copy_to_clipboard`.
 - Do not mock the screen's selection machinery or the transcript widget.
-- Timer proof uses a controlled clock; no `sleep`.
+- Timer proof captures the app's timer seam and invokes callbacks; no `sleep`.
 - Mutation check: revert `ALLOW_SELECT` and confirm test (a) fails; remove
   the rebuild cancellation and confirm (e) fails.
 
@@ -316,10 +338,43 @@ widget? Is copying the display form the right answer to [TUI-12.2]?"
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TUI-8.1], [TUI-13.2] | Proposed snippets used generic row shapes | Promoted the same behavior in the owning section's existing three-column key table and bullet-list matrix grammar | The reviewed behavior was unchanged; matching the live spec structure avoids a malformed parallel table | None |
 
 ## Review Log
 
 (append-only)
+
+- 2026-09-24 — Claude Opus 4.6 read-only plan review at worktree baseline
+  `39179c1f` completed in 690 seconds (`success`, `end_turn`, terminal reason
+  `completed`, no write permissions) with verdict **BLOCKED**. P1 reproduced:
+  Textual 8.2.8 declares `text_selection_started_signal` but never publishes
+  it, so the planned timer source could not fire. Accepted: use
+  `selection_updated()` to cancel stale work and bubbling `TextSelected` on
+  mouse-up to arm the completed-selection timer. P2-a accepted: the headless
+  driver discards writes, so tests replace only its `write` method after
+  startup and separately assert `app._clipboard`. P2-b accepted: add a
+  wrapped-visual-line selection case. P2-c accepted: corrected the mouse
+  dispatch description and added the ordering to the Textual contract. Nits
+  retained as implementation checks: ignore empty `TextSelected`, preserve
+  existing click activation, and accept the click's transient selection.
+- 2026-09-24 — Claude Opus 4.6 scoped round-2 review completed in 339
+  seconds with `PASS`; it verified the four accepted corrections and found no
+  new defect. Two non-blocking notations were rejected after direct source
+  reproduction: repository `TautOptionList.on_mouse_down()` does call
+  `capture_mouse()` (`widgets.py:508-511`), and the retained Textual 8.2.8
+  `Screen` does declare `text_selection_started_signal` (`screen.py:321`) but
+  never publishes it. Neither rebuttal changes the accepted design.
+- 2026-09-24 — Claude Opus 4.6 completed-work review finished in 688 seconds
+  with `PASS`. Accepted P3: added `TautTranscript` to `widgets.__all__`.
+  Accepted nit/observation: selection coordinates assume Textual's
+  `option-list--option` component padding is zero, so the real selection test
+  now asserts that invariant and will fail loudly on a framework/CSS change.
+  Performance over very long transcripts and the outstanding physical-terminal
+  observation remain recorded residuals, not correctness blockers.
+- 2026-09-24 — Scoped round-2 completed-work verification passed in 37
+  seconds: `TautTranscript` is exported, the live zero-padding assertion
+  precedes coordinate-dependent mouse input, and neither fix introduced a new
+  defect.
 
 ## Execution Log
 
@@ -330,6 +385,46 @@ widget? Is copying the display form the right answer to [TUI-12.2]?"
   transcript widget; `copy_to_clipboard` emits OSC 52.
 - 2026-09-24 — Owner decision: auto-copy trigger (a), "we will try the
   suggested auto-selection criteria now".
+- 2026-09-24 — Task-3 seam check under Textual 8.2.8: the baseline
+  `OptionList.ALLOW_SELECT = False` produced no framework selection. Setting
+  it to `True` let the screen own the drag and left the highlighted row
+  unchanged, but inherited selection returned an empty string because every
+  rendered option strip advertised content offset `(0, 0)` and the inherited
+  `Widget.get_selection()` rejected the `RichVisual`. A scratch subclass that
+  applied virtual line offsets in `render_line()` and extracted the same
+  rendered strips in `get_selection()` produced
+  `rst row alpha\nsecond row beta\nthird row` for a three-row drag while the
+  highlight stayed on row 2. The framework path is viable without raw mouse
+  interception; implementation must include both small overrides, not only
+  `ALLOW_SELECT = True`.
+- 2026-09-24 — Spec promotion applied to [TUI-8.1], [TUI-8.2], [TUI-12.2],
+  [TUI-13.2], and `## Related Plans`. The in-file table/list grammar was
+  corrected without changing reviewed behavior; promotion baseline recorded
+  above and `git diff --check` passed.
+- 2026-09-24 — Vertical RED/GREEN slices: missing `TautTranscript`; real app
+  still composing non-selectable `TautOptionList`; unbound `y`; no completed-
+  selection timer; displayed trailing spaces dropped; final blank display row
+  indexing crash; and driver-failure clipboard rollback. Each RED was observed
+  before its production correction. Targeted selection/Textual contract suite:
+  26 passed.
+- 2026-09-24 — Mutation proof: changing `TautTranscript.ALLOW_SELECT` back to
+  `False` failed the wrapped three-row selection test with `None`; removing
+  rebuild cancellation failed the pending-timer stop assertion. Both mutations
+  were restored and the targeted suite reran green.
+- 2026-09-24 — Verification: selection + Textual contract + neighboring real
+  app suite passed; complete TUI suite `510 passed in 194.02s`; `ruff check`
+  passed and the four touched Python files passed `ruff format --check`.
+  `mypy taut_tui tests` remains red on four pre-existing errors in
+  `domain.py:131` and untyped `tests.helpers.terminal_probe` imports; none is in
+  the new selection module or changed widget/app lines. Project-environment
+  doc path, CLI claim, plan index, and coalescing gates passed.
+- 2026-09-24 — Manual two-terminal observation remains outstanding: this
+  headless task cannot prove that a real OSC 52-capable terminal updates the
+  host clipboard or that Terminal.app/tmux ignores it. Source/test evidence is
+  complete; the plan stays active rather than claiming the manual gate.
+- 2026-09-24 — Owner directed "Close and commit." Plan closed with the
+  physical-terminal observation above accepted as a residual; no claim is made
+  that the host clipboard behavior was observed in this headless task.
 
 ## Fresh-Eyes Review
 
