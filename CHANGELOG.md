@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- POSIX Summon PTY providers now acquire their slave as a controlling terminal
+  through the shared process-domain spawn owner. A close-on-exec handshake
+  keeps terminal-setup and final-exec failures synchronous and prevents partial
+  handle publication. Driver death therefore reaches the provider foreground
+  group through the kernel PTY hangup path. The live provider lane also stops
+  converting enabled readiness failures into skips.
+
 ## 0.9.9 - 2026-09-23
 
 - TUI search-result jumps now retain ownership of the selected message while

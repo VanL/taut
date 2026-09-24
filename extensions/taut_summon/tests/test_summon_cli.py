@@ -546,7 +546,10 @@ def test_installed_summon_failure_is_captured_only_by_core_dispatch(
 
     from taut.commands._dispatch import dispatch
     from taut.commands._registry import CommandRegistry
-    from tests.test_command_registry import _Distribution, _EntryPoint
+    from tests.test_command_registry import (  # type: ignore[import-untyped]
+        _Distribution,
+        _EntryPoint,
+    )
 
     db_path = tmp_path / "workspace.db"
     TautClient.init(db_path=db_path)

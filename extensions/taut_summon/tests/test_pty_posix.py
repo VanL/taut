@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -16,9 +17,12 @@ from typing import Any, cast
 
 import pytest
 import taut_summon._process_domain_posix as process_domain_module
+import taut_summon._pty_posix as pty_posix_module
 from taut_summon._adapter import AdapterError, ExitEvent
 from taut_summon._process_domain_posix import PosixProcessDomain, spawn_process
 from taut_summon._pty import PtyAdapter, PtySpec
+
+from taut.identity import capture_process
 
 pytestmark = [
     pytest.mark.posix_only,
@@ -71,6 +75,43 @@ def _fixture_entries(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _open_fds() -> set[int]:
+    fd_dir = Path("/dev/fd")
+    if not fd_dir.is_dir():
+        fd_dir = Path("/proc/self/fd")
+    return {int(entry.name) for entry in fd_dir.iterdir() if entry.name.isdigit()}
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for_pids_to_exit(pids: set[int], *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        live = {
+            pid
+            for pid in pids
+            if (
+                status := subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip()
+            )
+            and not status.startswith("Z")
+        }
+        if not live:
+            return
+        assert time.monotonic() < deadline, f"processes survived PTY hangup: {live}"
+        time.sleep(0.01)
 
 
 def test_posix_wait_until_quiet_holds_unknown_query_through_stall_threshold(
@@ -151,6 +192,294 @@ def test_spawn_process_starts_new_session_and_publishes_io() -> None:
         assert domain.finalize(graceful_timeout=0.0) == 0
     finally:
         domain.finalize(graceful_timeout=0.0)
+
+
+def test_stream_spawn_does_not_acquire_a_controlling_terminal() -> None:
+    spawned = spawn_process(
+        (
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "\ntry: os.open('/dev/tty', os.O_RDWR)"
+                "\nexcept OSError: print('no-tty', flush=True)"
+                "\nelse: print('unexpected-tty', flush=True)"
+            ),
+        ),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    domain = cast(PosixProcessDomain, spawned.domain)
+    try:
+        assert spawned.process.stdout is not None
+        assert spawned.process.stdout.readline().strip() == "no-tty"
+        assert domain.wait_for_leader_exit(5.0) == 0
+    finally:
+        domain.finalize(graceful_timeout=0.0)
+
+
+def test_spawn_process_can_acquire_borrowed_tty_as_controlling_terminal() -> None:
+    master_fd, slave_fd = os.openpty()
+    spawned = None
+    try:
+        spawned = spawn_process(
+            (
+                sys.executable,
+                "-c",
+                (
+                    "import json, os; tty_fd = os.open('/dev/tty', os.O_RDWR); "
+                    "os.close(tty_fd); print(json.dumps({'sid': os.getsid(0), "
+                    "'pgrp': os.getpgrp(), 'foreground_pgrp': os.tcgetpgrp(0), "
+                    "'opened_dev_tty': True}), flush=True)"
+                ),
+            ),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            controlling_terminal=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        ready, _, _ = select.select([master_fd], [], [], 5.0)
+        assert ready, "provider did not report its terminal ownership"
+        report = json.loads(os.read(master_fd, 4096).decode().strip())
+        assert report == {
+            "sid": spawned.process.pid,
+            "pgrp": spawned.process.pid,
+            "foreground_pgrp": spawned.process.pid,
+            "opened_dev_tty": True,
+        }
+        assert spawned.domain.wait_for_leader_exit(5.0) == 0
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if spawned is not None:
+            cast(PosixProcessDomain, spawned.domain).finalize(graceful_timeout=0.0)
+
+
+def test_controlling_terminal_setup_failure_is_atomic_and_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[subprocess.Popen[Any]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        proc = real_popen(*args, **kwargs)
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(process_domain_module.subprocess, "Popen", recording_popen)
+    before_fds = _open_fds()
+
+    with pytest.raises(AdapterError, match="terminal setup failed"):
+        spawn_process(
+            (sys.executable, "-c", "raise SystemExit('must not exec')"),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            controlling_terminal=True,
+        )
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
+    assert not _pid_exists(created[0].pid)
+    assert _open_fds() == before_fds
+
+
+def test_exec_trampoline_must_report_ready_before_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        process_domain_module,
+        "_CONTROLLING_TERMINAL_TRAMPOLINE",
+        "raise SystemExit(91)",
+    )
+    master_fd, slave_fd = os.openpty()
+    try:
+        with pytest.raises(AdapterError, match="trampoline exited before readiness"):
+            spawn_process(
+                (sys.executable, "-c", "raise AssertionError('must not exec')"),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                controlling_terminal=True,
+            )
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
+
+
+def test_pty_spawn_closes_both_fds_when_status_wait_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_calls: list[int] = []
+    monkeypatch.setattr(pty_posix_module.pty, "openpty", lambda: (40, 41))
+    monkeypatch.setattr(pty_posix_module, "_set_winsize", lambda *_args: None)
+    monkeypatch.setattr(pty_posix_module, "_set_nonblocking", lambda _fd: None)
+    monkeypatch.setattr(
+        pty_posix_module,
+        "spawn_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(pty_posix_module.os, "close", close_calls.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        PtyAdapter(PtySpec(name="interrupted", argv=("provider",))).spawn(
+            system_prompt="unused",
+            env={},
+        )
+
+    assert close_calls == [40, 41]
+
+
+def test_final_provider_exec_failure_is_atomic_and_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[subprocess.Popen[Any]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        proc = real_popen(*args, **kwargs)
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(process_domain_module.subprocess, "Popen", recording_popen)
+    before_fds = _open_fds()
+    master_fd, slave_fd = os.openpty()
+    try:
+        with pytest.raises(AdapterError, match="provider exec failed"):
+            spawn_process(
+                ("/taut/definitely-not-a-provider",),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                controlling_terminal=True,
+            )
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
+    assert not _pid_exists(created[0].pid)
+    assert _open_fds() == before_fds
+
+
+def test_master_holder_death_hangs_up_foreground_provider_tree(tmp_path: Path) -> None:
+    fixtures = Path(__file__).with_name("fixtures")
+    pid_log = tmp_path / "terminal-tree-pids.jsonl"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            str(fixtures / "controlling_terminal_holder.py"),
+            str(fixtures / "controlling_terminal_tree.py"),
+            str(pid_log),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    provider_pids: set[int] = set()
+    provider_identities: dict[int, tuple[str, int]] = {}
+    try:
+        assert holder.stdout is not None
+        ready, _, _ = select.select([holder.stdout], [], [], 5.0)
+        assert ready, "master holder did not publish the provider pid"
+        provider_leader = int(holder.stdout.readline())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            provider_pids = {int(entry["pid"]) for entry in _fixture_entries(pid_log)}
+            if len(provider_pids) == 2:
+                break
+            time.sleep(0.01)
+        assert len(provider_pids) == 2
+        assert provider_leader in provider_pids
+        for pid in provider_pids:
+            identity = capture_process(pid)
+            assert identity is not None
+            assert identity.start_time is not None
+            assert identity.pgid is not None
+            provider_identities[pid] = (identity.start_time, identity.pgid)
+
+        holder.kill()
+        holder.wait(timeout=5.0)
+        _wait_for_pids_to_exit(provider_pids)
+        provider_identities.clear()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5.0)
+        for pid, (start_time, pgid) in provider_identities.items():
+            identity = capture_process(pid)
+            if (
+                identity is None
+                or identity.start_time != start_time
+                or identity.pgid != pgid
+            ):
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_escape_domain_descendant_has_no_controlling_terminal(tmp_path: Path) -> None:
+    result = tmp_path / "escape-terminal.json"
+    probe = Path(__file__).with_name("fixtures") / "escape_terminal_probe.py"
+    handle = PtyAdapter(
+        PtySpec(name="escape-terminal", argv=(sys.executable, str(probe), str(result)))
+    ).spawn(system_prompt="unused", env={})
+    observed: list[object] = []
+    pump = threading.Thread(
+        target=lambda: observed.extend(handle.events()), daemon=True
+    )
+    pump.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not result.exists():
+            assert time.monotonic() < deadline, "escape-domain probe did not finish"
+            time.sleep(0.01)
+        pump.join(timeout=5.0)
+        assert not pump.is_alive()
+        assert json.loads(result.read_text(encoding="utf-8")) == {
+            "opened_dev_tty": False
+        }
+    finally:
+        handle.close()
+        pump.join(timeout=5.0)
+
+
+def test_canonical_terminal_interrupt_delivers_exactly_one_sigint(
+    tmp_path: Path,
+) -> None:
+    interrupt_log = tmp_path / "interrupts.jsonl"
+    fixture = Path(__file__).with_name("fixtures") / "terminal_signal_counter.py"
+    handle = PtyAdapter(
+        PtySpec(
+            name="terminal-signal-counter",
+            argv=(sys.executable, str(fixture), str(interrupt_log)),
+            quiet_ms=20,
+            max_settle_s=1.0,
+        )
+    ).spawn(system_prompt="unused", env={})
+    observed: list[object] = []
+    pump = threading.Thread(
+        target=lambda: observed.extend(handle.events()), daemon=True
+    )
+    pump.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while "ready" not in handle.output_tail():
+            assert time.monotonic() < deadline, "signal fixture did not become ready"
+            time.sleep(0.01)
+        handle.interrupt()
+        pump.join(timeout=5.0)
+        assert not pump.is_alive()
+        assert _fixture_entries(interrupt_log) == [{"signal": signal.SIGINT}]
+    finally:
+        handle.close()
+        pump.join(timeout=5.0)
 
 
 @pytest.mark.skipif(

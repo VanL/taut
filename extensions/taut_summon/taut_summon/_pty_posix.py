@@ -56,13 +56,16 @@ def spawn_posix_pty(
             stderr=slave_fd,
             env=env,
             close_fds=True,
+            controlling_terminal=True,
         )
-    except Exception as exc:
+    except BaseException as exc:
         try:
             os.close(master_fd)
         except OSError as cleanup_exc:
             exc.add_note(f"PTY master cleanup also failed: {cleanup_exc}")
-        raise AdapterError(f"failed to spawn PTY harness: {exc}") from exc
+        if isinstance(exc, Exception):
+            raise AdapterError(f"failed to spawn PTY harness: {exc}") from exc
+        raise
     finally:
         try:
             os.close(slave_fd)

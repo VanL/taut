@@ -16,7 +16,7 @@ from threading import Event, Lock, Thread
 from typing import Any, cast
 
 import pytest
-from _terminal_probe import HostTerminal
+from tests.helpers.terminal_probe import HostTerminal
 
 pytestmark = pytest.mark.sqlite_only
 

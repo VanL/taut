@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from _terminal_probe import run_terminal_child
+from tests.helpers.terminal_probe import run_terminal_child
 from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size

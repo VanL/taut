@@ -214,6 +214,46 @@ def test_live_harness_strict_mode_is_explicit(
     assert _strict_live_harness()
 
 
+def test_enabled_non_strict_live_harness_prewires_before_provider_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TAUT_SUMMON_LIVE_HARNESS", "1")
+    monkeypatch.delenv("TAUT_SUMMON_LIVE_HARNESS_STRICT", raising=False)
+    module = sys.modules[__name__]
+    db = tmp_path / ".taut.db"
+    prewired: list[tuple[Path, str]] = []
+
+    def prewire(path: Path, provider: str) -> None:
+        prewired.append((path, provider))
+
+    class FinishedProcess:
+        def poll(self) -> int:
+            return 0
+
+    def popen(*args: object, **kwargs: object) -> FinishedProcess:
+        assert prewired == [(db, "codex")]
+        return FinishedProcess()
+
+    monkeypatch.setattr(shutil, "which", lambda provider: f"/bin/{provider}")
+    monkeypatch.setattr(TautClient, "init", lambda **kwargs: None)
+    monkeypatch.setattr(module, "taut_cli", lambda *args, **kwargs: (0, "", ""))
+    monkeypatch.setattr(module, "_prewire_live_harness", prewire)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(module, "SummonController", lambda **kwargs: object())
+    monkeypatch.setattr(
+        module,
+        "_wait_for_live_ready",
+        lambda *args, **kwargs: _status_with_details(),
+    )
+    monkeypatch.setattr(module, "_wait_for_live_cursor_catch_up", lambda *args: None)
+    monkeypatch.setattr(module, "summon_cli", lambda *args, **kwargs: (0, "", ""))
+
+    test_live_pty_harness_reaches_ready_and_accepts_injection(tmp_path, "codex")
+
+    assert prewired == [(db, "codex")]
+
+
 def test_live_status_not_ready_reason_names_onboarding() -> None:
     reason = _not_ready_reason(_status_with_details(awaiting_onboarding=True))
 
@@ -237,10 +277,19 @@ def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
     assert _not_ready_reason(status) is None
 
 
+def test_enabled_live_harness_fails_when_provider_never_becomes_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TAUT_SUMMON_LIVE_HARNESS_STRICT", raising=False)
+
+    with pytest.raises(
+        pytest.fail.Exception, match="codex did not reach a ready prompt"
+    ):
+        _reject_unready_harness("codex", "detached session exited")
+
+
 def _reject_unready_harness(provider: str, reason: str) -> NoReturn:
-    if _strict_live_harness():
-        pytest.fail(f"{provider} did not reach a ready prompt: {reason}")
-    pytest.skip(f"{provider} did not reach a ready prompt: {reason}")
+    pytest.fail(f"{provider} did not reach a ready prompt: {reason}")
 
 
 def _wait_for_live_ready(
@@ -336,8 +385,7 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
     TautClient.init(db_path=db)
     rc, _out, err = taut_cli("join", "general", db=db, cwd=tmp_path, as_name="van")
     assert rc == 0, err
-    if _strict_live_harness():
-        _prewire_live_harness(db, provider)
+    _prewire_live_harness(db, provider)
 
     prompt = tmp_path / "orientation.txt"
     prompt.write_text(

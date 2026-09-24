@@ -122,7 +122,7 @@ Files to read first (current structure):
 - `extensions/taut_tui/taut_tui/session.py` — `refresh_navigation` and the
   serialized public-client worker (the S4 production path; edit only on
   causal evidence).
-- `extensions/taut_tui/tests/_terminal_probe.py` — `HostTerminal`,
+- `tests/helpers/terminal_probe.py` — `HostTerminal`,
   `run_terminal_child`; `extensions/taut_summon/tests/fixtures/gate_harness.py`.
 - `extensions/taut_tui/tests/test_tui_summon.py` — `_await_until`,
   `_wire_gate_member`, `_gate_app`, the recovery test; `tests/test_tui_app.py`
@@ -351,6 +351,12 @@ event? Which elicitation test could pass without its fix?"
 
 - 2026-09-24 — Plan opened on owner direction after the 0.9.9 Windows
   streak; evidence register E1–E10 assembled from CI runs and commits.
+- 2026-09-24 — The participation-loop implementation replaced
+  `test_tui_app.py`'s fixed-attempt `_pause_until` implementation with an
+  elapsed event-loop deadline. Existing call sites retain the helper alias
+  while the real rapid-resize test calls the deadline owner directly. This
+  removes attempt-count timing from the tests touched by that plan; it does not
+  close this plan's S4 elicitation and Windows soak gates.
 
 ## Fresh-Eyes Review
 

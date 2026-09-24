@@ -67,7 +67,7 @@ or insufficient timeout bounds. Do not modify those on this evidence.
 | `extensions/taut_tui/taut_tui/app.py`, `extensions/taut_tui/taut_tui/widgets.py` | TautApp owns search intent/generation and viewport restore; widgets provide actual user-input events. Correct ownership locally, not a package split. |
 | `extensions/taut_tui/taut_tui/session.py` | Read navigation production path for S4; edit only after causal evidence identifies this owner. |
 | `extensions/taut_tui/tests/test_tui_app.py`, `extensions/taut_tui/tests/test_tui_action_handlers.py`, `extensions/taut_tui/tests/test_tui_textual_contract.py` | Real Textual harness, exact-result observers, and shipped terminal probe. Preserve their integration boundaries. |
-| `extensions/taut_tui/tests/_terminal_probe.py` | Existing run_terminal_child owns native child transport and cleanup; S5 may correct encoding here after diagnosis. |
+| `tests/helpers/terminal_probe.py` | Shared `run_terminal_child` owns native child transport and cleanup; S5 may correct encoding here after diagnosis. |
 | `.github/workflows/test.yml`, `.github/workflows/test-tui-extension.yml` | Existing native qualification owners. Temporary focused branch diagnostics may narrow commands; final workflows retain existing selectors/matrices. |
 | `docs/implementation/05-taut-summon-architecture.md`, `docs/implementation/12-taut-tui.md`, `CHANGELOG.md`, `docs/plans/README.md` | Update rationale, release note and plan status with evidence. |
 

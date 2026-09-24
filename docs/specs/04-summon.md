@@ -394,8 +394,10 @@ any in-flight `inject()` ([SUM-9] depends on this to stop a stalled harness);
 `events()` must be **drained continuously by the driver**. The driver owns a
 dedicated broker-free event-pump thread for the life of the child. It publishes
 immutable activity, exit, failure and retirement results before notifying the
-retained reactor. The owner applies activity through rate-limited token-selected
-`whoami()` ([IAN-3.3]), logs diagnostics and applies [SUM-11] exit policy.
+retained reactor. The owner applies activity through the rate-limited,
+token-selected `TautClient.touch_identity_activity()` seam ([TAUT-8.3]), logs
+diagnostics and applies [SUM-11] exit policy. Observational `whoami()` remains
+read-only under [IAN-3.3].
 No pump owns a Taut client or writes presence, cursors or ledger state. Shutdown ordering is: stop injection →
 request terminal close → foreground close drives bounded
 wait/escalation/reap while the pump drains → checked pump join →
@@ -410,6 +412,15 @@ implementations preserve reusable interrupt, one terminal close request,
 bounded finalization, serialized writes, continuous output drain, and one
 exit event. Windows may not fall back to plain pipes or direct-child-only
 cleanup when ConPTY setup fails.
+
+On POSIX the provider is the leader of a new session/process group whose
+controlling terminal is the adapter's PTY slave, established in the child
+before the final provider `exec` (`TIOCSCTTY` or `os.login_tty` semantics) by
+the shared process-domain spawn owner. A close-on-exec status channel preserves
+spawn-time failure and atomic handle publication across that child-side setup.
+The domain owner is the only code allowed to reap the provider leader. A
+provider descendant that deliberately escapes the domain (`escape_domain`)
+acquires a new session and is not given a controlling terminal by Taut.
 
 The adapter defines `activity` as **coarse lifecycle liveness**: spawn,
 injection, or an output burst after an idle gap, never per-byte. A constantly
@@ -1278,7 +1289,13 @@ rewriting its version marker is not a v2 fixture.
 - Broker source failure ends the driver after normal cleanup; the caller
   decides whether to restart it.
 - Driver crash: cursors and ledger make restart safe (at-least-once
-  injection); the stale ledger claim is reclaimable by evidence.
+  injection); the stale ledger claim is reclaimable by evidence. Because the
+  PTY slave is the provider's controlling terminal, closing the master on
+  driver death delivers the operating system's `SIGHUP` to the provider's
+  foreground group. Taut promises nothing beyond that OS behavior: a provider
+  that ignores `SIGHUP` may survive even though ordinary dead-driver evidence
+  permits a new claim, so Taut cannot prevent duplicate providers in that
+  case. Taut adds no provider census or watchdog for this residual risk.
 - An unexpected `Exception` escaping the standalone `taut-summon` outer
   adapter is offered once to [TAUT-13] with its parsed subcommand and database
   selector, then the same exception re-raises. Expected `CommandError`, policy,
@@ -1343,18 +1360,35 @@ rewriting its version marker is not a v2 fixture.
   over the production platform PTY. It models a TUI with alternate screen,
   terminal queries, continuous redraw, delayed readiness, optional bracketed
   paste, and optional onboarding prompt.
+- A POSIX real-PTY test kills the sole master holder with `SIGKILL` while a
+  fixture provider and foreground descendant use the controlling terminal,
+  then proves the foreground group exits within the bounded interval. The
+  recorded baseline without controlling-terminal acquisition leaves the
+  provider alive. A setup-failure companion proves no child remains, no fd
+  leaks, and no `SpawnedProcess` or adapter handle is published when the
+  child-side terminal acquisition or final provider exec fails.
 - Live harness reachability is gated per registered PTY harness:
   `requires_<name>` tests summon the real CLI detached, assuming a
   pre-onboarded/authed harness, and assert detached `STATUS` reaches a usable
-  state and catches up after a real chat injection. Default local pytest probes
-  real binaries and may skip with an explicit onboarding/readiness reason,
-  because a fresh noninteractive test database cannot complete the human
-  attach chord. Strict local mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`)
-  prewires the temporary session row to model an already-onboarded harness;
-  in that mode, a missing binary, readiness gap, status timeout, unanswered
-  terminal query, or injection catch-up failure is a failure. These tests do
-  not require hosted CLIs to auto-execute shell commands; the local LLM lane
-  below owns the deterministic sentinel-posting proof.
+  state and catches up after a real chat injection. Every enabled run prewires
+  the temporary session row to model the acknowledging human and an already-
+  onboarded provider. Default local pytest skips only when the lane is
+  explicitly disabled or the provider binary is absent; once a provider is
+  present, detached exit, readiness gap, status timeout, unanswered terminal
+  query, or injection catch-up failure is a failure. Strict local mode
+  (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) differs only by making an absent binary
+  fail. These tests do not require hosted CLIs to auto-execute shell commands;
+  the local LLM lane below owns the deterministic sentinel-posting proof.
+- A POSIX host-PTY scenario runs the root `taut summon` CLI inside a test-owned
+  shell session. The deterministic scripted-provider lane proves first attach,
+  legacy and negotiated Kitty detach bytes, direct termios restoration while
+  the foreground driver remains live, out-of-band status/chat/dismiss, shell
+  return after dismiss, fresh `--attach` only after prior-driver release, mouth
+  output through `taut say`, and final provider retirement. A local real-
+  provider case follows the live-lane enable rules, requires legacy detach, and
+  requires an enhanced-key chord only after that provider actually negotiates
+  the protocol. Host-visible terminal text is not treated as evidence for
+  provider output produced after detach.
 - A CI-safe local LLM lane uses a real PTY child and a loopback
   OpenAI-compatible model endpoint. Prepared CI first performs a bounded
   model-list wait, then exactly one real chat completion rather than completion
@@ -1659,6 +1693,12 @@ tail plus the `--attach` instruction.
   terminal-text policy.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-summon-controlling-terminal-and-live-lane-plan.md`
+  — gives the POSIX provider a controlling terminal through the shared spawn
+  owner, states the driver-crash guarantee, reaps fixture process groups on
+  every test path, removes live-harness false skips, and adds the real root-CLI
+  host-PTY scenario.
 
 - `docs/plans/2026-09-23-summon-enhanced-keyboard-detach-plan.md` — makes the
   default detach chord semantic across legacy, Kitty CSI-u, and xterm

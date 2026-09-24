@@ -24,13 +24,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 from simplebroker import Queue
@@ -397,6 +398,7 @@ class DriverProcess:
         self._driver_start_time = self._capture_child_start_time()
         self._owned_member_id: str | None = None
         self._owned_session_row: dict[str, Any] | None = None
+        self._cleanup_complete = False
 
     def _capture_child_start_time(self) -> str:
         start_time: str | None = None
@@ -682,11 +684,136 @@ class DriverProcess:
         self._stderr_file.flush()
         return rc
 
-    def cleanup(self) -> None:
+    def _provider_domain_identity(self) -> tuple[int, str, int] | None:
+        starts = self.starts()
+        if not starts:
+            return None
+        evidence = capture_process(int(starts[-1]["pid"]))
+        if evidence is None or evidence.start_time is None or evidence.pgid is None:
+            return None
+        return evidence.pid, evidence.start_time, evidence.pgid
+
+    @staticmethod
+    def _provider_domain_matches(identity: tuple[int, str, int]) -> bool:
+        pid, start_time, pgid = identity
+        evidence = capture_process(pid)
+        return (
+            evidence is not None
+            and evidence.start_time == start_time
+            and evidence.pgid == pgid
+        )
+
+    def _hard_retire_provider_domain(
+        self,
+        identity: tuple[int, str, int] | None,
+    ) -> None:
+        """Best-effort fallback after the live driver lost its close path."""
+
+        if identity is None or os.name == "nt":
+            return
+        if not self._provider_domain_matches(identity):
+            return
+        _pid, _start_time, pgid = identity
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 5.0
+        while self._provider_domain_matches(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self._provider_domain_matches(identity):
+            raise AssertionError(
+                "provider process group survived identity-checked SIGKILL; "
+                f"{self._identity_diagnostic()}"
+            )
+
+    def _attempt_hard_provider_retirement(
+        self,
+        identity: tuple[int, str, int] | None,
+        failures: list[Exception],
+    ) -> bool:
+        if identity is None or not self._provider_domain_matches(identity):
+            return False
+        try:
+            self._hard_retire_provider_domain(identity)
+        except (AssertionError, OSError) as exc:
+            failures.append(exc)
+        return True
+
+    def _retire_after_signal_failure(
+        self,
+        identity: tuple[int, str, int] | None,
+        failures: list[Exception],
+    ) -> bool:
+        """Retire the provider while its live driver can still reap it."""
+
+        hard_fallback_attempted = self._attempt_hard_provider_retirement(
+            identity,
+            failures,
+        )
         if self.proc.poll() is None:
             self.proc.kill()
-            self.proc.wait(timeout=10)
-        self._stderr_file.close()
+            self.proc.wait(timeout=10.0)
+        return hard_fallback_attempted
+
+    def cleanup(self) -> None:
+        if self._cleanup_complete:
+            return
+        try:
+            provider_identity = self._provider_domain_identity()
+        except (KeyError, OSError, ValueError):
+            provider_identity = None
+        failures: list[Exception] = []
+        cooperative_cleanup_failed = False
+        hard_fallback_attempted = False
+        try:
+            if self.proc.poll() is None:
+                try:
+                    self.stop(timeout=10.0)
+                except (
+                    AssertionError,
+                    OSError,
+                    subprocess.SubprocessError,
+                ) as stop_exc:
+                    try:
+                        self.proc.send_signal(signal.SIGTERM)
+                        self.proc.wait(timeout=10.0)
+                    except (OSError, subprocess.SubprocessError) as signal_exc:
+                        failures.extend((stop_exc, signal_exc))
+                        cooperative_cleanup_failed = True
+                        hard_fallback_attempted = self._retire_after_signal_failure(
+                            provider_identity,
+                            failures,
+                        )
+            cooperative_cleanup_failed = cooperative_cleanup_failed or (
+                not hard_fallback_attempted
+                and provider_identity is not None
+                and self._provider_domain_matches(provider_identity)
+            )
+            if cooperative_cleanup_failed and not hard_fallback_attempted:
+                self._attempt_hard_provider_retirement(provider_identity, failures)
+        finally:
+            self._cleanup_complete = True
+            self._stderr_file.close()
+        if failures:
+            raise ExceptionGroup("driver cleanup failed", failures)
+
+
+class _CleanupProcess(Protocol):
+    def cleanup(self) -> None: ...
+
+
+def _cleanup_driver_processes(procs: Iterable[_CleanupProcess]) -> None:
+    """Attempt every owned cleanup before reporting teardown failures."""
+
+    failures: list[Exception] = []
+    for proc in procs:
+        try:
+            proc.cleanup()
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+            failures.append(exc)
+    if failures:
+        raise ExceptionGroup("driver fixture cleanup failed", failures)
 
 
 @pytest.fixture
@@ -713,8 +840,7 @@ def driver_factory(
         return proc
 
     yield factory
-    for proc in procs:
-        proc.cleanup()
+    _cleanup_driver_processes(procs)
 
 
 def _who(db: Path, thread: str | None = None) -> list[Any]:

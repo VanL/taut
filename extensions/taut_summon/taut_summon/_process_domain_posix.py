@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import signal
 import subprocess
@@ -16,6 +17,39 @@ from typing import Any, Protocol
 from taut_summon._adapter import AdapterError
 
 _CLD_EXITED = 1
+_TRAMPOLINE_READY = b"READY\n"
+_TRAMPOLINE_ERROR = b"ERROR "
+
+_CONTROLLING_TERMINAL_TRAMPOLINE = r"""
+import fcntl
+import json
+import os
+import sys
+import termios
+
+status_fd = int(sys.argv[1])
+target = sys.argv[2:]
+stage = "terminal setup"
+try:
+    flags = fcntl.fcntl(status_fd, fcntl.F_GETFD)
+    fcntl.fcntl(status_fd, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    os.write(status_fd, b"READY\n")
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    stage = "provider exec"
+    os.execvpe(target[0], target, os.environ)
+except BaseException as exc:
+    payload = json.dumps({
+        "stage": stage,
+        "type": type(exc).__name__,
+        "errno": getattr(exc, "errno", None),
+        "message": getattr(exc, "strerror", None) or str(exc),
+    }).encode("utf-8", "replace")
+    try:
+        os.write(status_fd, b"ERROR " + payload)
+    except OSError:
+        pass
+    os._exit(127)
+"""
 
 
 class ProcessDomain(Protocol):
@@ -59,26 +93,132 @@ def spawn_process(
     bufsize: int = -1,
     close_fds: bool = True,
     pass_fds: tuple[int, ...] = (),
+    controlling_terminal: bool = False,
 ) -> SpawnedProcess:
     """Create a new POSIX session before publishing its I/O and domain."""
 
-    proc = subprocess.Popen(
-        list(argv),
-        stdin=stdin,
-        stdout=stdout,
-        stderr=stderr,
-        env=env,
-        text=text,
-        encoding=encoding,
-        bufsize=bufsize,
-        close_fds=close_fds,
-        pass_fds=pass_fds,
-        start_new_session=True,
-    )
+    target = list(argv)
+    status_read_fd = -1
+    status_write_fd = -1
+    if controlling_terminal:
+        status_read_fd, status_write_fd = os.pipe()
+        popen_argv = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _CONTROLLING_TERMINAL_TRAMPOLINE,
+            str(status_write_fd),
+            *target,
+        ]
+        inherited_fds = tuple(sorted({*pass_fds, status_write_fd}))
+    else:
+        popen_argv = target
+        inherited_fds = pass_fds
+
+    try:
+        proc = subprocess.Popen(
+            popen_argv,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            env=env,
+            text=text,
+            encoding=encoding,
+            bufsize=bufsize,
+            close_fds=close_fds,
+            pass_fds=inherited_fds,
+            start_new_session=True,
+        )
+    except BaseException:
+        _close_fd(status_read_fd)
+        _close_fd(status_write_fd)
+        raise
+
+    if controlling_terminal:
+        _close_fd(status_write_fd)
+        status_write_fd = -1
+        try:
+            status_payload = _read_spawn_status(status_read_fd)
+        except BaseException as exc:
+            cleanup_failure = _retire_unpublished_process(proc)
+            if cleanup_failure is not None:
+                exc.add_note(
+                    f"unpublished child cleanup also failed: {cleanup_failure}"
+                )
+            raise
+        finally:
+            _close_fd(status_read_fd)
+        failure = _decode_spawn_failure(status_payload)
+        if failure is not None:
+            cleanup_failure = _retire_unpublished_process(proc)
+            if cleanup_failure is not None:
+                failure.add_note(
+                    f"unpublished child cleanup also failed: {cleanup_failure}"
+                )
+            raise failure
+
     return SpawnedProcess(
         process=ProcessIO(pid=proc.pid, stdin=proc.stdin, stdout=proc.stdout),
         domain=PosixProcessDomain(proc),
     )
+
+
+def _close_fd(fd: int) -> None:
+    if fd < 0:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _read_spawn_status(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _decode_spawn_failure(payload: bytes) -> AdapterError | None:
+    if payload == _TRAMPOLINE_READY:
+        return None
+    if not payload.startswith(_TRAMPOLINE_READY):
+        return AdapterError("provider exec trampoline exited before readiness")
+    payload = payload[len(_TRAMPOLINE_READY) :]
+    if not payload.startswith(_TRAMPOLINE_ERROR):
+        return AdapterError("provider child setup failed without a valid status report")
+    payload = payload[len(_TRAMPOLINE_ERROR) :]
+    try:
+        report = json.loads(payload.decode("utf-8"))
+        stage = str(report["stage"])
+        error_type = str(report["type"])
+        message = str(report["message"])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return AdapterError("provider child setup failed without a valid status report")
+    return AdapterError(f"provider {stage} failed ({error_type}): {message}")
+
+
+def _retire_unpublished_process(proc: subprocess.Popen[Any]) -> str | None:
+    signal_failure: str | None = None
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        signal_failure = f"process-group SIGKILL failed: {exc}"
+    try:
+        proc.wait(timeout=2.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        wait_failure = f"leader reap failed: {exc}"
+        return (
+            wait_failure
+            if signal_failure is None
+            else f"{signal_failure}; {wait_failure}"
+        )
+    return signal_failure
 
 
 class PosixProcessDomain:

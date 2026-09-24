@@ -130,28 +130,48 @@ From the repository root:
 uv run pytest extensions/taut_summon/tests
 ```
 
-Local runs attempt the live PTY harness smoke matrix by default. A provider
-skips with an explicit reason when its binary is absent, the fresh test
-database has not been onboarded with a real attach/detach cycle, or status
-cannot reach a usable detached session. CI skips the real-harness matrix
-unless `TAUT_SUMMON_LIVE_HARNESS=1` is set. For a fast local loop, use:
+Local runs attempt the live PTY harness smoke matrix by default. Every enabled
+run prewires the temporary member as already acknowledged and onboarded; this
+models the human acknowledgement but does not synthesize provider login or
+credentials. When a provider binary is present, the lane proves real-provider
+reachability by requiring usable detached status and catch-up after a real chat
+injection. It supplies the orientation and the injected probe as at least two
+provider inputs, so it can consume real provider quota. The lane skips only
+when explicitly disabled or when a provider binary is absent. Any later
+readiness, status, terminal-query, or injection failure fails the test. CI
+skips the real-harness matrix unless `TAUT_SUMMON_LIVE_HARNESS=1` is set. For a
+fast local loop, use:
 
 ```bash
 TAUT_SUMMON_LIVE_HARNESS=0 uv run pytest extensions/taut_summon/tests
 ```
 
-Run `taut summon --attach <name>` once for a provider that still needs trust,
-login, or model setup before expecting its detached live smoke to pass.
-For a hard local external-provider smoke, use strict mode. It prewires the
-temporary test session to model an already-onboarded provider and fails on
-missing binaries, readiness gaps, status timeouts, unanswered terminal queries,
-or injection catch-up failures. The external-provider lane does not require
-hosted CLIs to auto-execute shell commands; the local LLM lane below owns the
-deterministic sentinel-posting proof.
+Complete any provider trust, login, or model setup before expecting its live
+smoke to pass. Strict mode has the same runtime checks as the default enabled
+lane, but also fails instead of skipping when a provider binary is absent. The
+external-provider lane does not require hosted CLIs to auto-execute shell
+commands; the local LLM lane below owns the deterministic sentinel-posting
+proof.
 
 ```bash
 TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run pytest extensions/taut_summon/tests/test_live_harness.py
 ```
+
+The POSIX host-terminal scenario always runs a deterministic scripted provider
+through the root `taut summon` CLI. It covers first attach, legacy and Kitty
+detach input, direct termios restoration, out-of-band status/chat/dismiss,
+shell return, fresh attach after prior-driver release, and provider retirement.
+To add the same lifecycle smoke for one real provider, select it explicitly;
+the test never chooses the first binary on `PATH`:
+
+```bash
+TAUT_SUMMON_HOST_PTY_PROVIDER=codex uv run pytest extensions/taut_summon/tests/test_host_terminal_scenarios.py
+```
+
+Set `TAUT_SUMMON_HOST_PTY_READY_TEXT` for an unrecognized provider prompt and
+`TAUT_SUMMON_HOST_PTY_SETUP_INPUT` when that provider needs one prepared input.
+This lane consumes real provider input and credentials just like the live
+harness matrix.
 
 The local LLM smoke runs locally by default when a loopback OpenAI-compatible
 endpoint lists the served model, and it runs in CI through the dedicated

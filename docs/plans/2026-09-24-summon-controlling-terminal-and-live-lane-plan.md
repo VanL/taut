@@ -1,8 +1,9 @@
 # Summon Controlling Terminal and Live Lane Plan
 
-Status: draft — findings verified by live reproduction and code reading;
-owner decided the live-lane direction on 2026-09-24; awaiting independent
-plan review.
+Status: completed — spec and implementation slices completed and independently
+reviewed on 2026-09-24. Deterministic gates are green; the explicitly selected
+real-provider host smoke was not run. The targeted closing commit records the
+completed work.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change adds a
 normative provider-survival statement to [SUM-11], changes the POSIX spawn
@@ -46,29 +47,33 @@ and §2.
 
 ## Requested Outcomes
 
-- [ ] The POSIX provider's PTY slave is its controlling terminal; when the
+- [x] The POSIX provider's PTY slave is its controlling terminal; when the
   master holder dies, the provider receives `SIGHUP` under the OS's normal
   rules. [SUM-11] states what a driver crash guarantees about the provider.
-- [ ] `_spawn_fake` and `DriverProcess.cleanup` reap every process group
+- [x] `_spawn_fake` and `DriverProcess.cleanup` reap every process group
   they create on every path, including timeouts and assertion failures.
-- [ ] The live-harness lane keeps its local default-on behavior and has no
+- [x] The live-harness lane keeps its local default-on behavior and has no
   false skips: the default run prewires the ledger (the test is the
   acknowledging human), waits deadline-based for behavioral readiness, and
   then passes or fails. A skip is produced only when the lane is disabled
   by `TAUT_SUMMON_LIVE_HARNESS=0`/CI or the provider binary is absent;
   strict mode differs only by failing on an absent binary.
-- [ ] A host-PTY scenario lane exists: a test owns a real pseudo-terminal
-  as the *host* side, launches the real `taut summon <provider> <thread>`
-  CLI inside it (real installed provider by default locally, scripted
-  provider in CI), scrapes the screen text, and drives the documented
-  human interaction patterns end to end: first-attach acknowledgement,
-  provider prompt reached, orientation delivered, a chat message injected
-  and answered through the mouth, the `Ctrl-\ Ctrl-\` detach chord in
-  both legacy and Kitty-encoded forms with the shell restored afterward,
-  `--attach` reattach, and `taut dismiss`. This lane replaces the "physical
-  terminal observation pending" step of the active detach plan with an
-  automated proof.
-- [ ] The two detach-diff follow-ups found in review are recorded for the
+- [x] A host-PTY scenario lane exists: a test owns a real pseudo-terminal
+  as the *host* side and launches the real root
+  `taut summon <provider> <thread>` CLI inside a shell whose controlling
+  terminal and foreground process group are test-owned. The scripted lane
+  always drives first-attach acknowledgement, provider prompt, legacy and
+  Kitty detach chords, direct termios restoration evidence, orientation
+  receipt, a chat message answered through the mouth, out-of-band status and
+  dismiss, shell-prompt return after dismiss, a fresh `--attach` run after
+  the first driver exits, and final provider retirement. A real installed
+  provider runs locally under the same default-on rule after explicit provider
+  selection, with provider-specific prompt/readiness matching and enhanced-key
+  assertions only when that provider actually negotiates the protocol. It
+  never silently chooses a binary from `PATH`. This lane replaces the
+  "physical terminal observation pending" step of the active detach plan
+  with an automated proof; it does not invent live-driver reattachment.
+- [x] The two detach-diff follow-ups found in review are recorded for the
   active detach plan, not implemented here.
 
 ## Source Documents
@@ -107,7 +112,8 @@ Supporting context:
   authoring time; unchanged through `c894059` (the 0.9.9 release SHA). The
   [SUM-7.1] and [SUM-11] paragraphs this plan touches are unchanged since
   `c0a4616`.
-- Promotion baseline identifier: recorded after the spec-promotion slice.
+- Promotion baseline identifier: `cfd8799` (current pre-promotion HEAD; its
+  post-0.9.9 changes only retire historical plan links in this spec).
 
 ## Proposed Spec Delta
 
@@ -115,7 +121,7 @@ Promotion strategy: **A — in-file edit, text before link claims**.
 
 | Spec file | Strategy | Sections touched |
 |-----------|----------|------------------|
-| `docs/specs/04-summon.md` | A | [SUM-7.1] POSIX domain sentence; [SUM-11] "Driver crash" bullet; [SUM-12] one verification bullet; `## Related Plans` |
+| `docs/specs/04-summon.md` | A | [SUM-7.1] POSIX domain sentence; [SUM-11] "Driver crash" bullet; [SUM-12] controlling-terminal, live-lane, and host-PTY verification bullets; `## Related Plans` |
 
 ### [SUM-7.1] — amend the POSIX sentence of the process-domain paragraph
 
@@ -140,16 +146,26 @@ Proposed: `- Driver crash: cursors and ledger make restart safe
 evidence. Because the PTY slave is the provider's controlling terminal,
 closing the master on driver death delivers the operating system's
 `SIGHUP` to the provider's foreground group; Taut promises nothing beyond
-that OS behavior (a provider that ignores `SIGHUP` may survive, and a
-resummon then requires the existing `--takeover` evidence path). Taut adds
-no watchdog for this case.`
+that OS behavior (a provider that ignores `SIGHUP` may survive even though
+ordinary dead-driver evidence permits a new claim, so Taut cannot prevent
+duplicate providers in that case). Taut adds no provider census or watchdog
+for this residual risk.`
 
-### [SUM-12] — add one bullet under the PTY adapter proofs
+### [SUM-12] — add three bullets under the PTY adapter proofs
 
 > - a real-PTY test kills the master holder with `SIGKILL` while a fixture
->   provider blocks on `/dev/tty` reads and asserts the provider exits
->   within the bounded interval; the same scenario without a controlling
->   terminal is the recorded pre-fix failure
+>   provider and foreground descendant use the controlling terminal and
+>   asserts the group exits within the bounded interval; the same scenario
+>   without a controlling terminal is the recorded pre-fix failure; a
+>   setup-failure companion proves no child remains, no fd leaks, and no
+>   `SpawnedProcess` or adapter handle is published
+> - every enabled live-harness run prewires the temporary session and skips
+>   only for explicit disablement or an absent provider binary; strict mode
+>   differs only by failing on an absent binary
+> - a POSIX host-PTY scenario drives the real root CLI through first attach,
+>   legacy and negotiated Kitty detach, direct termios restoration,
+>   out-of-band control, shell return after dismiss, fresh attach after the
+>   old driver exits, mouth output, and final provider retirement
 
 ### `## Related Plans` — add
 
@@ -166,10 +182,13 @@ Files to modify:
 - `extensions/taut_summon/taut_summon/_process_domain_posix.py` — the
   shared spawn owner (line ~76: `start_new_session=True`). The controlling
   terminal must be set here, in the child, before `exec`. `preexec_fn` is
-  not thread-safe; use an exec trampoline (a tiny `python -c` or a module
-  entry that does `fcntl.ioctl(0, termios.TIOCSCTTY, 0)` then
-  `os.execvpe`) or `os.login_tty` semantics inside the existing spawn
-  helper — read its current structure first.
+  not thread-safe; use an exec trampoline owned by this module (a tiny
+  `python -c` or a private module entry) that does
+  `fcntl.ioctl(0, termios.TIOCSCTTY, 0)` then `os.execvpe`. The shared owner
+  must pair the trampoline with a close-on-exec status pipe: the trampoline
+  reports setup or target-exec failure, successful target exec closes the
+  pipe, and `SpawnedProcess` is not published until the parent observes that
+  success EOF. Read the current atomic publication boundary first.
 - `extensions/taut_summon/taut_summon/_pty_posix.py` —
   `spawn_posix_pty()` (line ~44–62): `pty.openpty()`, `_set_winsize`,
   `_set_nonblocking`, then `spawn_process(argv, stdin=slave, stdout=slave,
@@ -190,6 +209,14 @@ Files to modify:
   `awaiting_onboarding` and still injects orientation — read only, to
   confirm the skip-before-spawn option.
 - `extensions/taut_summon/README.md` live-harness paragraph.
+- `tests/helpers/terminal_probe.py` (new shared test helper, lifted from the
+  former TUI-local helper) — owns a POSIX host shell
+  through `forkpty`/equivalent controlling-terminal setup, deadline-based
+  transcript reads, foreground-child cleanup, and direct termios snapshots.
+  Both extension suites import it; do not ship it in either extension wheel.
+- `extensions/taut_summon/tests/test_host_terminal_scenarios.py` (new) —
+  drives the root CLI through the host shell and uses separate control-plane
+  subprocesses while the foreground Summon command remains live.
 
 Read first: [SUM-7.1] and [SUM-7.4] as promoted by E2; the E2 plan's task
 6 ("shared POSIX process domain"); `_process_domain_posix.py` in full.
@@ -212,7 +239,13 @@ Comprehension gate:
 ## Invariants and Constraints
 
 - One spawn owner ([SUM-7.1]): the controlling-terminal step lives in the
-  shared owner; no PTY-only second implementation.
+  shared owner; no PTY-local fork/exec implementation. `spawn_process`
+  exposes an explicit controlling-terminal request used by the POSIX PTY
+  caller; stream callers retain today's no-terminal behavior.
+- Atomic publication is preserved: a requested controlling terminal and the
+  final provider exec must both succeed before the owner returns a
+  `SpawnedProcess`. Setup failure retires and reaps the unpublished child and
+  closes every partial fd before raising `AdapterError`.
 - The close ladder (observe leader exit without reaping → group signal
   ladder → reap → release) is unchanged; `SIGHUP` on master close is an
   OS effect the ladder tolerates, not a new step.
@@ -225,6 +258,14 @@ Comprehension gate:
   poll ([THEORY-5.A6]-adjacent: the precondition is the OS contract, not an
   adversary).
 - The live lane's strict mode keeps its current meaning.
+- Detach releases the terminal bridge but does not exit the foreground Summon
+  command. Host-terminal tests inspect termios directly after detach and use a
+  separate CLI process for status, chat, and dismiss.
+- `--attach` never bypasses [SUM-8]'s single-driver guard. A host scenario may
+  start a fresh `--attach` only after out-of-band dismiss has stopped the prior
+  driver and the first foreground CLI has returned to its shell.
+- The host scenario exercises the root `taut summon` command, not only the
+  standalone `taut_summon run` console.
 
 Hidden couplings:
 
@@ -237,9 +278,14 @@ Hidden couplings:
   same owner; a behavior change there is a regression, not a fixture
   update.
 
-Failure policy: a failed `TIOCSCTTY` is `AdapterError` at spawn (fatal),
-like any other domain setup failure under [SUM-7.1]; a fixture-reap failure
-in teardown is reported, not swallowed.
+Failure policy: a failed `TIOCSCTTY` or final target exec is reported through
+the trampoline status pipe as `AdapterError` at spawn (fatal), like any other
+domain setup failure under [SUM-7.1]. The parent retires the unpublished
+child before returning the error. Fixture cleanup first asks the live driver
+to run its owned close path; any direct PGID signal is an identity-checked,
+best-effort last resort and is not described as reaping through a capability
+the fixture does not own. Teardown attempts cleanup for every created fixture
+and reports aggregated failures rather than abandoning later cleanup.
 
 ## Rollout, Rollback, and One-Way Doors
 
@@ -252,25 +298,40 @@ in teardown is reported, not swallowed.
 
 ## Dependency-Ordered Tasks
 
-1. **Owner decision** on the live-lane default (open question 1).
-2. **Independent plan review** including the [SUM-7.1]/[SUM-11] delta and
-   the E2 interaction.
+1. **Owner decision complete** on the live-lane default (open question 1).
+2. **Independent plan review complete**, including the [SUM-7.1]/[SUM-11]
+   delta and the E2 interaction. The review's feasibility amendments are
+   incorporated in tasks 4–8 and recorded in the Review Log.
 3. **Spec-promotion slice**; record the promotion baseline.
-4. **Red real-PTY test.** `tests/test_pty_posix.py`: spawn `fake_tui.py`
-   (or a tiny fixture that opens `/dev/tty`) through the real adapter,
-   `SIGKILL` the process that holds the master, assert the child exits
-   within 2 s. Must fail at baseline (child survives; the review confirmed
-   this with PPID 1, `Ss`, `??`). Add the escape-domain control: the
-   scripted `escape_domain` provider still has no controlling terminal.
-5. **Implement in the shared spawn owner.** Set the controlling terminal
-   in the child before exec for non-escape spawns. Verify the Ctrl-C
-   coupling above with a test that counts interrupts the fixture receives.
-   Stop if the implementation needs `preexec_fn` or a PTY-only branch.
-6. **Fixture reaping.** Give `_spawn_fake` a `request.addfinalizer` (or
-   convert it to a fixture) that `killpg`s the recorded pgid if the handle
-   is still open; make `DriverProcess.cleanup` signal the provider's group
-   through the handle's domain owner, not only the driver PID. Add a test
-   that a failing assertion in a stall scenario leaves no child.
+4. **Red real-PTY and spawn-publication tests.** In `tests/test_pty_posix.py`,
+   run a tiny `/dev/tty` fixture through the real adapter under a helper
+   process that owns the master; `SIGKILL` that master holder and assert the
+   provider leader and one foreground descendant receive the terminal hangup
+   and exit within 2 s. This must fail at baseline (the leader survives with
+   PPID 1, `Ss`, `??`). Add the escape-domain control: an `escape_domain`
+   descendant still has no controlling terminal. Add a forced setup-failure
+   case (non-tty fd or injected trampoline failure) proving `spawn_process`
+   raises before publishing a handle and leaves no child or fd behind.
+5. **Implement in the shared spawn owner.** Add an explicit
+   `controlling_terminal` request to `spawn_process`; the POSIX PTY caller
+   sets it and stream callers do not. For that request, launch the child-side
+   exec trampoline with a close-on-exec status pipe, acquire fd 0 with
+   `TIOCSCTTY`, and exec the target. Publish only after success EOF; on a
+   structured failure, run unpublished-child cleanup and raise `AdapterError`.
+   Verify the Ctrl-C coupling with a canonical/`ISIG` fixture that counts the
+   interrupts it receives. Stop if implementation needs `preexec_fn`, a
+   PTY-local spawn path, or publishes before final exec success.
+6. **Fixture reaping.** Convert `_spawn_fake` to a fixture or give it a
+   `request.addfinalizer` that calls idempotent `handle.close()`, preserving
+   the production domain owner's ladder and one reap. `DriverProcess.cleanup`
+   first uses its existing STOP path (or the installed driver signal handler)
+   while the driver is alive so driver-owned teardown closes the provider
+   domain; only after bounded cooperative failure may it identity-check the
+   recorded provider PID/PGID and apply a best-effort hard signal before
+   killing/reaping the driver. The `driver_factory` finalizer attempts every
+   cleanup and raises one aggregated teardown failure afterward. Prove the
+   assertion-failure path with a subprocess/meta-test whose outer test can
+   inspect that the deliberately failing inner case left no live provider.
 7. **Live lane: no false skips.** Red: with a provider installed and
    authed, the default (non-strict) run currently skips; assert it passes.
    Implement: call `_prewire_live_harness` in every enabled run, not only
@@ -281,44 +342,81 @@ in teardown is reported, not swallowed.
    lane and an absent binary (strict: absent binary fails). Wait with the
    existing deadline, not attempt counts. Update the README paragraph to
    say the lane runs by default, proves real-provider reachability, and
-   costs one model turn per installed provider per run. Stop if passing
+   consumes real provider input for orientation and the injected probe (at
+   least two provider inputs; do not describe it as one model turn without a
+   measured provider-specific accounting result). Stop if passing
    requires synthesizing anything beyond the `wired` acknowledgement the
    strict path already sets.
 8. **Host-PTY scenario lane.** Owner motivation (2026-09-24): a bare
    `taut summon claude` exposed a detach-chord bug that no automated test
-   reached; the local suite must prove these things really work. Build on
-   what exists: `extensions/taut_tui/tests/_terminal_probe.py`
-   (`HostTerminal`, `run_terminal_child`) already owns a host-side PTY
-   and collects output for the TUI's handoff tests, and
+   reached; the local suite must prove these things really work. Lift the
+   reusable fd/transcript pieces from
+   former TUI-local terminal probe into `tests/helpers/terminal_probe.py`,
+   then extend the shared helper with a
+   POSIX host-session owner that launches a shell under `forkpty` (or an
+   equivalent session-leader + `TIOCSCTTY` sequence), retains a cumulative
+   stripped transcript, snapshots termios, and retires the shell's complete
+   foreground process group on every path. The existing helper does not yet
+   provide those shell/session semantics. Also reuse
    `extensions/taut_summon/tests/fixtures/terminal_io.py` plus the
-   adapter's `output_tail` stripping already reduce escape-laden bytes to
-   text. Lift `HostTerminal` into a shared test helper both extensions
-   import (do not copy it), then write
+   adapter's `output_tail` stripping to reduce escape-laden bytes to text.
+   Write
    `extensions/taut_summon/tests/test_host_terminal_scenarios.py`:
-   - spawn `python -m taut_summon run <provider> general --provider
-     <provider>` (no `--detach`) under the host PTY with `TERM` and
-     `COLUMNS`/`LINES` set; drive stdin bytes as a human would;
-   - scrape with deadline-based waits for text patterns (the first-attach
-     acknowledgement prompt, the provider's own prompt, the orientation
-     text echoed by the provider, the reply in `taut log`), never sleeps;
-   - send `b"\x1c\x1c"` and assert the shell prompt returns, the
-     terminal is restored (query `stty -a` through the same PTY and assert
-     cooked mode), and `taut-summon status` reports `wired`;
-   - run the same detach with the provider first switched into Kitty
-     keyboard mode (write the CSI `>1u` push through the provider PTY via
-     the scripted provider's control file in CI; on a real provider rely on
-     its own negotiation) and send the encoded chord
-     `\x1b[92;5u\x1b[92;5u`;
-   - `--attach` again, inject one message from another member, assert the
-     mouth reply appears in `taut log`, then `taut dismiss` and assert no
-     provider process remains (ties to outcome 1).
-   Provider selection: the real installed provider by default locally
-   (same enable rule as the live lane, prewired the same way); the
-   scripted provider always, so CI runs the lane too. Screen scraping is
-   stripped-text matching; if a scenario needs a true screen model (cursor
-   position, overwrites), stop and propose `pyte` as a dev-only dependency
-   under Golden Rule 9 rather than adding it. What stays real: the host
-   PTY, the CLI process, the provider PTY, the chord bytes.
+   - start from a fresh **unwired** database and, through the host shell, run
+     `python -m taut --db <db> summon <name> general --provider <provider>`
+     (no `--detach`); drive the first-attach acknowledgement and provider
+     input as a human would;
+   - scrape only host-visible text with monotonic-deadline waits: the
+     acknowledgement, provider prompt, and detach/reset output. Prove
+     orientation delivery through the scripted provider's received log,
+     because orientation begins after detach when provider output is no
+     longer mirrored to the host terminal;
+   - send legacy `b"\x1c\x1c"`, wait for `wired` through an out-of-band
+     status subprocess, and compare `termios.tcgetattr()` on the host slave
+     with the saved cooked baseline. Do **not** expect a shell prompt yet:
+     the foreground Summon command intentionally remains live;
+   - inject a chat message from another member through an out-of-band root
+     CLI, configure the scripted provider to answer through a real
+     `python -m taut say`, and assert the reply in `taut log`;
+   - run `taut dismiss <name>` out of band, assert the first foreground CLI
+     exits, then wait for the host shell prompt and run `stty -a` as a second
+     restoration proof;
+   - start a **new driver** with `taut summon --attach <name>` through the
+     same host shell, acknowledge it, detach again, dismiss out of band, and
+     assert the recorded scripted-provider PID/process group is gone. This
+     is reattach after driver retirement, never concurrent live-driver
+     attachment;
+   - in the scripted lane, configure provider output to push Kitty mode and
+     repeat the detach with `\x1b[92;5u\x1b[92;5u`; both legacy and Kitty
+     cases are mandatory in CI. In the real-provider lane, require the
+     legacy chord; exercise the encoded chord only after the transcript
+     shows that provider negotiated an enhanced keyboard protocol.
+
+   State machine (the shell and the control plane are deliberately separate):
+
+   ```text
+   host shell:  prompt -> summon/attach -> detach -> driver keeps running
+                   ^                              |
+                   |                              v
+                prompt <- CLI exits <- out-of-band dismiss
+                   |
+                   +-> fresh `summon --attach` -> detach -> dismiss -> prompt
+
+   control:                   status/chat/log --------^-----------^
+   ```
+
+   Provider selection: the scripted provider always runs so CI owns a
+   deterministic proof. A local real-provider case uses an explicit
+   environment-selected provider or the existing parameterized provider
+   matrix; never silently choose the first binary on `PATH`. It follows the
+   live lane's enable/absent-binary rules but does not prewire the first-attach
+   database. Provider-specific prompt patterns and mouth instructions live
+   with that provider's case. Screen scraping remains stripped-text matching;
+   if cursor position or overwrite semantics become necessary, stop and
+   propose `pyte` as a dev-only dependency under Golden Rule 9. The scenario
+   is POSIX-only because its contract includes `forkpty`, `termios`, and
+   `stty`; Windows ConPTY remains out of scope. What stays real: the host PTY,
+   root CLI process, provider PTY, control-plane subprocesses, and chord bytes.
 9. **Traceability, CHANGELOG, completed-work review, index flip.** Record
    in the Execution Log whether PID 70100 was terminated by the owner, and
    record in the active detach plan's Execution Log (append-only) that
@@ -347,8 +445,15 @@ not implemented by this plan:
   Windows fake API is not involved. Do not mock `spawn_process`, the
   process-domain owner, or the PTY.
 - Files: `tests/test_pty_posix.py`, `tests/test_pty_adapter.py`,
-  `tests/conftest.py`, `tests/test_live_harness.py`.
+  `tests/conftest.py`, `tests/test_live_harness.py`, and
+  `tests/test_host_terminal_scenarios.py`.
 - Mutation check: remove the `TIOCSCTTY` step and confirm task-4 fails.
+- Mutation check: publish before the trampoline success EOF and confirm the
+  setup-failure test catches the escaped child/handle.
+- Host lane: the deterministic scripted scenario runs in CI; the real-provider
+  scenario follows the local live-lane gate. Both use the root CLI. The host
+  transcript is not evidence for post-detach provider output; received logs,
+  Taut log records, status, process identity, and termios own those assertions.
 - Full extension suite with `TAUT_SUMMON_LIVE_HARNESS=0` and once with
   strict mode on a wired provider if the owner has one.
 
@@ -356,6 +461,7 @@ not implemented by this plan:
 
 ```bash
 cd extensions/taut_summon && TAUT_SUMMON_LIVE_HARNESS=0 uv run --extra dev pytest -n 0 tests/test_pty_posix.py tests/test_pty_adapter.py
+cd extensions/taut_summon && TAUT_SUMMON_LIVE_HARNESS=0 uv run --extra dev pytest -n 0 tests/test_host_terminal_scenarios.py
 cd extensions/taut_summon && TAUT_SUMMON_LIVE_HARNESS=0 uv run --extra dev pytest
 cd extensions/taut_summon && uv run --extra dev ruff check taut_summon tests && uv run --extra dev mypy taut_summon tests --config-file pyproject.toml
 bin/check-doc-paths && bin/check-plan-status-index
@@ -373,6 +479,10 @@ escape-domain control sufficient?"
 
 - Windows ConPTY lifecycle (Job Object path).
 - Any watchdog or liveness poll for providers.
+- Concurrent attachment to a live driver or a change to Summon's foreground
+  lifecycle; reattach in the scenario occurs only after dismiss/release.
+- A cross-platform host-shell scenario. The new lane is POSIX-only; existing
+  Windows ConPTY tests retain their current ownership boundary.
 - The detach-diff follow-ups (deferred above).
 - The `_owner_phase` `Literal` typing and transition test (P3 in the
   review; separate small plan or Class 2 change).
@@ -397,6 +507,14 @@ escape-domain control sufficient?"
 
 (append-only)
 
+- 2026-09-24 — Owner reports the independent review complete. Feasibility
+  re-review found the direction sound but required three amendments before
+  execution: preserve spawn-time failure and atomic publication with a
+  trampoline status pipe; route fixture cleanup through the live driver's
+  owned teardown before any best-effort hard fallback; and rewrite the
+  host-PTY scenario around Summon's foreground lifecycle and single-driver
+  guard. Tasks 4–8 now carry those requirements.
+
 ## Execution Log
 
 (append-only)
@@ -408,11 +526,55 @@ escape-domain control sufficient?"
   detach-chord bug that no automated test reached. Add a host-PTY scenario
   lane that launches the real CLI in a real terminal, scrapes the screen,
   and drives the documented interaction patterns (task 8).
+- 2026-09-24 — Spec promotion completed against `cfd8799`. Independent review
+  corrected the residual SIGHUP contract: ordinary dead-driver evidence can
+  permit a new claim while a SIGHUP-ignoring orphan survives, so duplicate
+  prevention is not promised and no `--takeover` claim was invented.
+- 2026-09-24 — Controlling-terminal slice completed red-green. The shared
+  POSIX spawn owner now uses an isolated `-I -S` exec trampoline, a
+  close-on-exec READY/error status protocol, `TIOCSCTTY`, and unpublished-child
+  retirement. Proofs cover unchanged stream spawning, terminal ownership,
+  pre-READY exit, setup and target-exec failure, master-holder death across a
+  foreground tree, escaped-session isolation, and exactly one canonical
+  `SIGINT`. Independent re-review returned CLEAR.
+- 2026-09-24 — Fixture cleanup completed red-green. `_spawn_fake` registers
+  idempotent `handle.close`; driver fixtures try STOP and installed signal
+  teardown before an identity-checked hard fallback; the failure path proves
+  provider retirement precedes driver kill; cleanup-all aggregates ordinary
+  exceptions; and an inner failing pytest case proves its provider is gone
+  while the outer pytest host remains alive. Independent re-review returned
+  CLEAR.
+- 2026-09-24 — Live lane completed red-green. Every enabled provider is
+  prewired before spawn and any subsequent readiness/status/query/catch-up
+  gap fails. Explicit disablement and an absent binary remain the only skips;
+  strict mode differs only for the absent binary.
+- 2026-09-24 — Host-PTY lane completed red-green. The shared root test helper
+  owns a POSIX shell session and identity-checked cleanup. Deterministic legacy
+  and Kitty cases drive the root CLI through first attach, detach, direct
+  termios proof, out-of-band status/chat/log/dismiss, shell return, fresh
+  attach, and final provider retirement. An explicitly selected real-provider
+  case carries the same lifecycle and uses encoded detach only after a complete
+  nonzero Kitty enable sequence. It was not externally executed in this run.
+  Independent re-review returned CLEAR.
+- 2026-09-24 — Verification: full Summon suite with external harnesses disabled
+  passed `716 passed, 18 skipped` in 463.92 seconds before final host-helper
+  hardening; the affected host file then passed `10 passed, 1 expected skip`.
+  Summon Ruff check and format passed; strict mypy passed 55 files. The
+  controlling-terminal file passed `22 passed, 1 platform skip`; the full PTY
+  adapter file passed `177 passed, 1 expected inner-probe skip`; documentation
+  paths, plan index, and `git diff --check` passed. PID 70100 was absent when
+  checked; whether the owner terminated it cannot be established from current
+  process evidence. The targeted closing commit records the completed work.
 
 ## Fresh-Eyes Review
 
-The riskiest guess is the child-side sequence (session leader, then
-`TIOCSCTTY`, then exec) and its thread-safety; task 5 forbids
-`preexec_fn` and names the alternatives. The Ctrl-C line-discipline
-coupling is the hidden interaction most likely to surprise; it has its own
-assertion.
+The riskiest spawn boundary is no longer only the child-side sequence
+(session leader, then `TIOCSCTTY`, then exec): it is preserving synchronous
+failure and atomic publication across the trampoline. Task 5 therefore
+requires a close-on-exec status pipe and forbids `preexec_fn`, a PTY-local
+spawn path, or early publication. The Ctrl-C line-discipline coupling remains
+the hidden signal interaction most likely to surprise and has its own
+canonical/`ISIG` assertion. The host-lane risk is lifecycle confusion:
+detach restores the terminal bridge but intentionally does not return the
+shell, so task 8 gives terminal observation, control commands, dismiss, shell
+return, and fresh reattach distinct owners and phases.

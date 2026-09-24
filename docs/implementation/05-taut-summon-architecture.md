@@ -276,8 +276,25 @@ remains private to that domain, so PTY code cannot accidentally reap through
 containment, terminal observation, forced retirement, and the one leader reap.
 
 On POSIX, spawn forces a new session and saves the leader PID as the process-
-group identity. Natural exit is observed with `waitid(..., WNOWAIT)` and cached
-without reaping. Python runtimes that expose `os.waitid()` use it directly;
+group identity. PTY callers explicitly request controlling-terminal setup;
+stream callers do not. For that request, the shared spawn owner starts a tiny
+exec trampoline in the new session. The trampoline marks its status pipe
+close-on-exec, claims fd 0's PTY with `TIOCSCTTY`, and execs the provider. The
+parent publishes `ProcessIO` and `ProcessDomain` only after EOF on that pipe
+proves the final exec succeeded. A setup or exec diagnostic instead retires and
+reaps the unpublished child before `AdapterError` crosses the boundary. This
+keeps the child-only terminal operation out of Python's thread-unsafe
+`preexec_fn` and avoids a second PTY-local fork/exec owner.
+
+Closing the sole PTY master after driver death now invokes the kernel terminal
+hangup path for the provider's foreground process group. This is an OS
+contract, not a watchdog: a provider that ignores `SIGHUP` can remain after the
+dead driver claim becomes reclaimable, so duplicate providers remain possible
+in that case. A descendant that starts a new session also leaves the retained
+domain and has no controlling terminal from Taut.
+
+Natural exit is observed with `waitid(..., WNOWAIT)` and cached without
+reaping. Python runtimes that expose `os.waitid()` use it directly;
 macOS Python 3.11/3.12 use the isolated typed libc compatibility binding in
 `_darwin_wait.py`. Finalization keeps the leader waitable while sending the
 bounded SIGTERM/SIGKILL ladder to the saved group. A successful SIGTERM
@@ -866,6 +883,10 @@ require a separately drained subprocess pipe.
   clients, not services.
 - **Mouth is CLI-only** ([SUM-6]): no extension code path posts chat under
   the member's identity.
+- **Activity is an explicit write** ([SUM-7.1]): rate-limited provider events
+  call core's `touch_identity_activity()` seam. Summon does not rely on a
+  read such as `whoami()` to refresh liveness, and the seam cannot heal a
+  process claim or change anchor, persona, membership, or cursor state.
 - **No summon wire protocol**: the closed `AdapterEvent` union carries only
   activity and exit; a provider envelope would be drift.
 - **Extension-owned state only**: `taut_summon_*` tables + the extension's
@@ -879,12 +900,13 @@ require a separately drained subprocess pipe.
   credential-free transport proof without pretending to cover provider
   onboarding; it prewires the synthetic PTY member as already onboarded so
   detached CI tests injection and model transport rather than the human attach
-  chord. External PTY harnesses have a default local readiness probe and an
-  opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires the
-  temp database and fails on readiness or injection catch-up gaps. Release
-  prechecks explicitly enable that lane with `TAUT_SUMMON_LIVE_HARNESS=1` as
-  well as selecting strict mode; strictness alone does not override an inherited
-  disabled live-test environment.
+  chord. Every enabled external PTY harness prewires its temporary member and
+  then treats readiness, terminal-query, status, and injection catch-up gaps as
+  failures. It skips only when explicitly disabled or when the provider binary
+  is absent. Strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) differs only by
+  failing on an absent binary. Release prechecks explicitly enable that lane
+  with `TAUT_SUMMON_LIVE_HARNESS=1`; strictness alone does not override an
+  inherited disabled live-test environment.
 - **Weft congruence is contract, not code**: STOP/STATUS/PING verbs and
   queue roles per [SUM-9]; no weft imports, no vendored weft agent code.
 
@@ -912,6 +934,9 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |
 | `extensions/taut_summon/tests/test_conformance.py` | The portable, parameterized [SUM-12] conformance suite |
 | `extensions/taut_summon/tests/test_live_local_llm.py` | The CI-safe local-LLM PTY smoke: loopback model endpoint, counting proxy, orientation, and `taut say` sentinel |
+| `extensions/taut_summon/tests/test_pty_posix.py` | Real POSIX session, controlling-terminal, synchronous spawn-failure, hangup, escaped-domain, signal-delivery, and process-domain proofs |
+| `extensions/taut_summon/tests/test_host_terminal_scenarios.py` | POSIX root-CLI host-terminal scenarios across attach, detach, out-of-band control, dismiss, shell restoration, and fresh reattach |
+| `tests/helpers/terminal_probe.py` | Shared real-terminal leases plus an identity-checked POSIX host-shell/session owner used by Summon and TUI acceptance tests |
 | `bin/combine-coverage.py` | Canonical raw-shard validator and public Coverage combiner; required-path truth remains separate |
 | `tests/test_combine_coverage.py` | Firing proof for absent, zero-byte, unreadable, warning-producing, valid-empty, and populated coverage inputs |
 
@@ -928,7 +953,7 @@ require a separately drained subprocess pipe.
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |
 | [SUM-9], [SUM-10], [SUM-11], control and recovery | `_control.py::ControlPolicy`, `_ReplyReactor`, `_driver.py::_open_owner_source` | `test_control.py`, `test_owner_lifecycle.py`, real process `test_driver.py` |
-| [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
+| [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_pty_posix.py`, `extensions/taut_summon/tests/test_host_terminal_scenarios.py`, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
 | [SUM-13], [SUM-13.1], typed embedding, exact-run readiness, and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py` real scripted readiness, control, resume, rename, replacement, and callback-failure cases; `extensions/taut_summon/tests/test_owner_lifecycle.py` readiness deadline, real broker failure without replacement, and partial acquisition cleanup; `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases; `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
 
 ### Restoration verification map

@@ -20,12 +20,15 @@ import sys
 import threading
 import time
 import types
+from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Self, cast
 
 import psutil
 import pytest
 import taut_summon._pty as _pty_module
+from conftest import _cleanup_driver_processes
 from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
@@ -62,6 +65,9 @@ else:
 _TERMINAL_RESPONSE_BUFFER_LIMIT = _pty_module._TERMINAL_RESPONSE_BUFFER_LIMIT
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
+PYTEST_REAP_PROBE_RUNNER = (
+    Path(__file__).with_name("fixtures") / "pytest_reap_probe_runner.py"
+)
 
 # These tests allocate real PTYs and intentionally exercise full input queues,
 # signal/close races, and fake TUI startup. They run under xdist, but in the
@@ -69,6 +75,243 @@ FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 # under test.
 pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
 posix_only = pytest.mark.posix_only
+
+_FakeFinalizerRegistrar = Callable[[Callable[[], None]], None]
+_fake_finalizer_registrar: ContextVar[_FakeFinalizerRegistrar | None] = ContextVar(
+    "fake_finalizer_registrar",
+    default=None,
+)
+_FIXTURE_REAP_PROBE_ENV = "TAUT_SUMMON_FIXTURE_REAP_PROBE"
+
+
+@pytest.fixture(autouse=True)
+def _install_fake_process_finalizer_registrar(
+    request: pytest.FixtureRequest,
+) -> None:
+    token = _fake_finalizer_registrar.set(request.addfinalizer)
+    request.addfinalizer(lambda: _fake_finalizer_registrar.reset(token))
+
+
+def test_driver_fixture_cleanup_attempts_every_driver_before_reporting_failures() -> (
+    None
+):
+    cleaned: list[str] = []
+
+    class Driver:
+        def __init__(self, name: str, *, failure: Exception | None = None) -> None:
+            self.name = name
+            self.failure = failure
+
+        def cleanup(self) -> None:
+            cleaned.append(self.name)
+            if self.failure is not None:
+                raise self.failure
+
+    with pytest.raises(ExceptionGroup, match="driver fixture cleanup failed") as caught:
+        _cleanup_driver_processes(
+            [
+                Driver("first", failure=RuntimeError("first failed")),
+                Driver("second"),
+                Driver("third", failure=ValueError("third failed")),
+            ]
+        )
+
+    assert cleaned == ["first", "second", "third"]
+    assert [str(exc) for exc in caught.value.exceptions] == [
+        "first failed",
+        "third failed",
+    ]
+
+
+def test_driver_fixture_cleanup_does_not_capture_base_exceptions() -> None:
+    cleaned: list[str] = []
+
+    class Driver:
+        def __init__(self, name: str, *, interrupt: bool = False) -> None:
+            self.name = name
+            self.interrupt = interrupt
+
+        def cleanup(self) -> None:
+            cleaned.append(self.name)
+            if self.interrupt:
+                raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _cleanup_driver_processes([Driver("first", interrupt=True), Driver("second")])
+
+    assert cleaned == ["first"]
+
+
+def test_spawn_fake_registers_the_handle_owned_close_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finalizers: list[Callable[[], None]] = []
+
+    class Handle:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    handle = Handle()
+    monkeypatch.setattr(PtyAdapter, "spawn", lambda *_args, **_kwargs: handle)
+    token = _fake_finalizer_registrar.set(finalizers.append)
+    try:
+        spawned, _log = _spawn_fake(tmp_path, {"queries": False})
+    finally:
+        _fake_finalizer_registrar.reset(token)
+
+    assert spawned is handle
+    assert len(finalizers) == 1
+    finalizers[0]()
+    assert handle.close_count == 1
+
+
+@posix_only
+@pytest.mark.skipif(
+    not os.environ.get(_FIXTURE_REAP_PROBE_ENV),
+    reason="inner assertion-failure cleanup probe",
+)
+def test_spawn_fake_assertion_failure_probe(tmp_path: Path) -> None:
+    probe_path = Path(os.environ[_FIXTURE_REAP_PROBE_ENV])
+    _handle, log = _spawn_fake(
+        tmp_path,
+        {"queries": False, "modes": False, "redraw": False},
+    )
+    start = _wait_for(log, "start")
+    provider = psutil.Process(int(start["pid"]))
+    probe_path.write_text(
+        json.dumps({"pid": provider.pid, "create_time": provider.create_time()}),
+        encoding="utf-8",
+    )
+    raise AssertionError("intentional fixture teardown probe")
+
+
+@posix_only
+def test_spawn_fake_reaps_provider_after_assertion_failure(tmp_path: Path) -> None:
+    probe_path = tmp_path / "fixture-reap-probe.json"
+    result_path = tmp_path / "fixture-reap-result.txt"
+    env = os.environ.copy()
+    env[_FIXTURE_REAP_PROBE_ENV] = str(probe_path)
+    env["TAUT_SUMMON_FIXTURE_REAP_RESULT"] = str(result_path)
+    env["TAUT_SUMMON_LIVE_HARNESS"] = "0"
+    runner = subprocess.Popen(
+        [sys.executable, str(PYTEST_REAP_PROBE_RUNNER)],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    identity: tuple[int, float] | None = None
+    try:
+        _wait_for_path(result_path, timeout=20.0)
+        assert result_path.read_text(encoding="utf-8") == "1"
+        payload = json.loads(probe_path.read_text(encoding="utf-8"))
+        identity = (int(payload["pid"]), float(payload["create_time"]))
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        runner.terminate()
+        runner.wait(timeout=5.0)
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@posix_only
+def test_driver_fixture_cleanup_runs_driver_owned_provider_retirement(
+    summon_db: Path,
+    driver_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = driver_factory(
+        summon_db, "fixture-cleanup", "general", provider="scripted"
+    )
+    driver.wait_for_start()
+    provider = psutil.Process(driver.child_pid())
+    provider_identity = (provider.pid, provider.create_time())
+    hard_fallback_calls: list[object] = []
+    monkeypatch.setattr(
+        driver,
+        "_hard_retire_provider_domain",
+        hard_fallback_calls.append,
+    )
+
+    driver.cleanup()
+
+    assert driver.proc.returncode == 0
+    assert hard_fallback_calls == []
+    deadline = time.monotonic() + 5.0
+    while _same_process(provider_identity) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _same_process(provider_identity)
+
+
+@posix_only
+def test_driver_fixture_cleanup_hard_retires_provider_before_driver_kill(
+    summon_db: Path,
+    driver_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = driver_factory(
+        summon_db,
+        "fixture-hard-cleanup",
+        "general",
+        provider="scripted",
+        backoff="60,60",
+    )
+    driver.wait_for_start()
+    provider = psutil.Process(driver.child_pid())
+    provider_identity = (provider.pid, provider.create_time())
+    operations: list[str] = []
+    real_hard_retire = driver._hard_retire_provider_domain
+    real_wait = driver.proc.wait
+    wait_calls = 0
+
+    def fail_stop(*, timeout: float) -> int:
+        del timeout
+        raise AssertionError("forced STOP failure")
+
+    def ignore_driver_signal(signum: int) -> None:
+        del signum
+        operations.append("driver-signal")
+
+    def fail_first_wait(timeout: float | None = None) -> int:
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            raise subprocess.TimeoutExpired(
+                driver.proc.args, 0.0 if timeout is None else timeout
+            )
+        return real_wait(timeout=timeout)
+
+    def hard_retire(identity: tuple[int, str, int] | None) -> None:
+        operations.append("provider-hard-retire")
+        real_hard_retire(identity)
+        assert not _same_process(provider_identity)
+
+    def kill_driver() -> None:
+        operations.append("driver-kill")
+        os.kill(driver.proc.pid, signal.SIGKILL)
+
+    monkeypatch.setattr(driver, "stop", fail_stop)
+    monkeypatch.setattr(driver.proc, "send_signal", ignore_driver_signal)
+    monkeypatch.setattr(driver.proc, "wait", fail_first_wait)
+    monkeypatch.setattr(driver, "_hard_retire_provider_domain", hard_retire)
+    monkeypatch.setattr(driver.proc, "kill", kill_driver)
+
+    with pytest.raises(ExceptionGroup, match="driver cleanup failed"):
+        driver.cleanup()
+
+    assert operations == [
+        "driver-signal",
+        "provider-hard-retire",
+        "driver-kill",
+    ]
+    assert not _same_process(provider_identity)
 
 
 class _MatcherClock:
@@ -684,6 +927,11 @@ def _spawn_fake(
             **(env or {}),
         },
     )
+    registrar = _fake_finalizer_registrar.get()
+    if registrar is None:
+        handle.close()
+        raise RuntimeError("_spawn_fake requires an active pytest fixture request")
+    registrar(handle.close)
     return handle, log
 
 
@@ -714,6 +962,15 @@ def _wait_for(path: Path, event: str, *, timeout: float = 10.0) -> dict[str, Any
                 return entry
         time.sleep(0.05)
     raise AssertionError(f"timed out waiting for {event}: {_entries(path)!r}")
+
+
+def _wait_for_path(path: Path, *, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}")
 
 
 def _capture_process_identity(pid_file: Path) -> tuple[int, float]:
