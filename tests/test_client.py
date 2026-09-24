@@ -23,11 +23,11 @@ from taut import addressing, identity
 from taut._config import load_config
 from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE
 from taut._exceptions import (
-    AmbiguousMessageError,
     BlankMessageError,
     EmptyResultError,
     IdentityError,
     MembershipError,
+    MessageIdResolutionError,
     NotFoundError,
     NotInitializedError,
     TautError,
@@ -771,6 +771,7 @@ def test_react_to_message_reports_disabled_project_policy_before_state_work(
 def test_react_to_message_requires_an_ordinary_message(tmp_path: Path) -> None:
     actor = client(tmp_path, "actor")
     notice = actor.join("general")
+    assert notice is not None
 
     with pytest.raises(
         NotFoundError,
@@ -1380,6 +1381,7 @@ def test_show_message_returns_notice_and_foreign_message_shapes(
 ) -> None:
     viewer = client(tmp_path, "viewer")
     notice = viewer.join("general")
+    assert notice is not None
     foreign_ts = viewer.queue("general").write("foreign body")
 
     assert viewer.show_message(str(notice.ts)) == notice
@@ -1584,6 +1586,7 @@ def test_delete_message_allows_author_after_leaving_subthread(tmp_path: Path) ->
 def test_delete_message_rejects_notice_and_foreign_rows(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     notice = van.join("general")
+    assert notice is not None
     queue = van.queue("general")
     foreign_ts = queue.write("foreign body")
 
@@ -2195,12 +2198,14 @@ def test_rejoin_keeps_existing_unread_cursor(tmp_path: Path) -> None:
     bob.join("general")
     unread = alice.say("general", "still unread after rejoin")
 
+    member_id = bob.whoami().member_id
+    before = bob._state.get_membership(thread="general", member_id=member_id)
     rejoin_notice = bob.join("general")
+    after = bob._state.get_membership(thread="general", member_id=member_id)
 
-    assert [message.ts for message in bob.read("general")] == [
-        unread.ts,
-        rejoin_notice.ts,
-    ]
+    assert rejoin_notice is None
+    assert after == before
+    assert [message.ts for message in bob.read("general")] == [unread.ts]
 
 
 def test_blank_channel_say_precedes_routing_and_leaves_state_unchanged(
@@ -2740,7 +2745,10 @@ def test_say_missing_thread_does_not_create_member(tmp_path: Path) -> None:
 def test_reply_missing_thread_does_not_create_member(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
 
-    with pytest.raises(NotFoundError):
+    with pytest.raises(
+        MessageIdResolutionError,
+        match="message id must be a full 19-digit message id",
+    ):
         van.reply("missing", "1234", "hello")
 
     assert van.who() == []
@@ -2838,6 +2846,7 @@ def test_join_notice_does_not_skip_message_published_after_membership(
     monkeypatch.setattr(Queue, "write", write_with_gate)
 
     notice = bob.join("general")
+    assert notice is not None
 
     assert [message.text for message in bob.read("general")] == [
         "between membership and notice",
@@ -3258,7 +3267,7 @@ def test_persistent_client_reuses_queue_handles_and_closes_them(
     assert closed.count("general") == 1
 
 
-def test_reply_rejects_missing_short_and_ambiguous_message_ids(
+def test_reply_rejects_missing_and_malformed_message_ids(
     tmp_path: Path,
 ) -> None:
     van = client(tmp_path, "van")
@@ -3289,19 +3298,15 @@ def test_reply_rejects_missing_short_and_ambiguous_message_ids(
 
     from taut import MessageIdNotFoundError, MessageIdResolutionError
 
-    with pytest.raises(
-        MessageIdNotFoundError, match="suffix must be at least 4 digits"
-    ) as short:
-        van.reply("general", "123", "bad")
-    assert isinstance(short.value, NotFoundError)
-    assert isinstance(short.value, MessageIdResolutionError)
+    for malformed in ("123", "4321", "not-an-id"):
+        with pytest.raises(
+            MessageIdResolutionError,
+            match="message id must be a full 19-digit message id",
+        ) as failure:
+            van.reply("general", malformed, "bad")
+        assert not isinstance(failure.value, MessageIdNotFoundError)
     with pytest.raises(MessageIdNotFoundError, match="message not found"):
         van.reply("general", "1234567890123456789", "missing")
-    with pytest.raises(
-        AmbiguousMessageError, match="ambiguous message id suffix"
-    ) as ambiguous:
-        van.reply("general", "4321", "ambiguous")
-    assert isinstance(ambiguous.value, MessageIdResolutionError)
 
 
 def test_guest_read_only_resolution_does_not_generate_timestamp(tmp_path: Path) -> None:
@@ -4102,6 +4107,7 @@ def test_unregistered_broker_queues_are_invisible_to_list(tmp_path: Path) -> Non
 def test_log_validates_limit_since_and_empty_result(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     notice = van.join("general")
+    assert notice is not None
 
     with pytest.raises(ValueError, match="limit must be positive"):
         van.log("general", limit=0)
@@ -6058,48 +6064,6 @@ def test_dm_mentions_suppressed_on_wrong_participant_cardinality(
         eve.inbox()
     with pytest.raises(EmptyResultError):
         bob.inbox()
-
-
-def test_reply_suffix_miss_names_the_scan_window(tmp_path: Path) -> None:
-    van = client(tmp_path, "van")
-    van.join("general")
-    van.say("general", "root")
-
-    with pytest.raises(
-        NotFoundError,
-        match="message not found in the most recent 1,000 messages of general; "
-        "use the full 19-digit id",
-    ):
-        van.reply("general", "1234509876", "missing")
-
-
-def test_reply_suffix_prefers_in_window_match_over_evicted_older_message(
-    tmp_path: Path,
-) -> None:
-    # [TAUT-8.1]: suffix resolution scans only the most recent 1,000 message
-    # ids, so a suffix shared by an evicted older message and an in-window
-    # recent message resolves to the recent one instead of raising ambiguity.
-    van = client(tmp_path, "van")
-    van.join("general")
-    member_id = van.whoami().member_id
-    old_ts = 1000000000000994321
-    recent_ts = 1200000000000994321
-
-    def envelope(text: str) -> str:
-        return encode_envelope(
-            from_id=member_id, from_name="van", kind="message", text=text
-        )
-
-    queue = van.queue("general")
-    queue.insert_messages([(envelope("old collision"), old_ts)])
-    queue.insert_messages(
-        [(envelope(f"filler {i}"), 1100000000000000000 + i) for i in range(1000)]
-    )
-    queue.insert_messages([(envelope("recent collision"), recent_ts)])
-
-    reply = van.reply("general", "994321", "resolved to recent")
-
-    assert reply.thread == f"general.{recent_ts}"
 
 
 def test_persistent_client_writes_reuse_one_session(

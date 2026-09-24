@@ -63,6 +63,7 @@ def _create_message_fixture(
     writer = TautClient(db_path=db_path, as_name="van")
     try:
         created_notice = writer.join("before")
+        assert created_notice is not None
         created = writer.last_created_member
         assert created is not None
         assert created.token is not None

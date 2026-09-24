@@ -650,7 +650,7 @@ def _write_root_help(
         "remain text on stderr.\n"
         "  -t, --timestamps Show 19-digit message ids in human message output.\n"
         "  -q, --quiet      Suppress ordinary output while preserving exit "
-        "status.\n"
+        "status; rejected by read and inbox, whose output is their effect.\n"
         "  --version        Show the Taut version and exit.\n\n"
         "commands:\n"
     )

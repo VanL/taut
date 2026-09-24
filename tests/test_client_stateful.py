@@ -69,6 +69,7 @@ class ClientMembershipCursorMachine(RuleBasedStateMachine):
             self.history: list[ExpectedRecord] = []
 
             created = self.clients["alice"].join("general")
+            assert created is not None
             self._append_record(
                 created,
                 from_name="alice",
@@ -124,6 +125,7 @@ class ClientMembershipCursorMachine(RuleBasedStateMachine):
     @rule()
     def bob_join(self) -> None:
         joined = self.clients["bob"].join("general")
+        assert joined is not None
         self._append_record(
             joined,
             from_name="bob",
@@ -266,6 +268,7 @@ def test_membership_rejoin_starts_after_history_written_while_left(
         while_away = alice.say("general", "written while bob was away")
 
         rejoined = bob.join("general")
+        assert rejoined is not None
 
         assert rejoined.text == "bob joined"
         with pytest.raises(EmptyResultError, match="^nothing unread$"):

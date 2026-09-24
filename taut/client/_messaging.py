@@ -14,11 +14,11 @@ from simplebroker.ext import TimestampError, TimestampGenerator
 from taut import addressing
 from taut._constants import MESSAGE_ID_RE, REACTION_SLUG_RE
 from taut._exceptions import (
-    AmbiguousMessageError,
     BlankMessageError,
     EmptyResultError,
     MembershipError,
     MessageIdNotFoundError,
+    MessageIdResolutionError,
     NotFoundError,
     ThreadNameError,
 )
@@ -199,6 +199,10 @@ class MessagingMixin(_ClientBase):
     def reply(self, thread: str, msg_id: str, text: str) -> Message:
         if is_blank_message_text(text):
             raise BlankMessageError("blank message")
+        if MESSAGE_ID_RE.fullmatch(msg_id) is None:
+            raise MessageIdResolutionError(
+                "message id must be a full 19-digit message id"
+            )
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
         self._ensure_no_incomplete_channel_rename()
         parent_thread = self._state.get_thread(thread)
@@ -306,6 +310,7 @@ class MessagingMixin(_ClientBase):
         membership: MembershipRow,
         member: MemberRow,
         *,
+        advance: bool,
         limit: int,
     ) -> list[Message]:
         row = self._state.get_thread(membership["thread"])
@@ -325,7 +330,7 @@ class MessagingMixin(_ClientBase):
             message_from_body(membership["thread"], body, ts)
             for body, ts in raw_messages
         ]
-        if raw_messages:
+        if advance and raw_messages:
             self._state.advance_cursor(
                 thread=membership["thread"],
                 member_id=member["member_id"],
@@ -337,6 +342,7 @@ class MessagingMixin(_ClientBase):
         self,
         thread: str | None = None,
         *,
+        advance: bool = True,
         limit: int = 1000,
     ) -> list[Message]:
         if isinstance(limit, bool) or not isinstance(limit, int):
@@ -376,10 +382,28 @@ class MessagingMixin(_ClientBase):
             memberships = self._state.list_memberships(member["member_id"])
         messages: list[Message] = []
         for membership in memberships:
-            messages.extend(self._read_membership_page(membership, member, limit=limit))
+            messages.extend(
+                self._read_membership_page(
+                    membership,
+                    member,
+                    advance=advance,
+                    limit=limit,
+                )
+            )
         if not messages:
             raise EmptyResultError("nothing unread")
         return messages
+
+    def mark_seen(self, thread: str, through_ts: int) -> None:
+        """Advance through one record already delivered by a stream adapter."""
+
+        resolved = self._resolve_member(create=False, _touch_activity=False)
+        member = self._require_member(resolved)
+        self._state.advance_cursor(
+            thread=thread,
+            member_id=member["member_id"],
+            seen_ts=through_ts,
+        )
 
     def log(
         self,
@@ -791,31 +815,16 @@ class MessagingMixin(_ClientBase):
 
     def _resolve_message_id(self, thread: str, msg_id: str) -> Message:
         queue = self.queue(thread)
-        if MESSAGE_ID_RE.fullmatch(msg_id):
-            exact = int(msg_id)
-            found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
-            if found is None:
-                raise MessageIdNotFoundError(f"message not found: {msg_id}")
-            body, timestamp = found
-            return message_from_body(thread, body, timestamp)
-        if len(msg_id) < 4 or not msg_id.isdigit():
-            raise MessageIdNotFoundError("message id suffix must be at least 4 digits")
-        recent: deque[Message] = deque(maxlen=1000)
-        for result in queue.peek_generator(with_timestamps=True):
-            body, ts = result
-            recent.append(message_from_body(thread, body, ts))
-        matches = [message for message in recent if str(message.ts).endswith(msg_id)]
-        if not matches:
-            raise MessageIdNotFoundError(
-                f"message not found in the most recent 1,000 messages of {thread}; "
-                "use the full 19-digit id"
+        if MESSAGE_ID_RE.fullmatch(msg_id) is None:
+            raise MessageIdResolutionError(
+                "message id must be a full 19-digit message id"
             )
-        if len(matches) > 1:
-            raise AmbiguousMessageError(
-                "ambiguous message id suffix: "
-                + ", ".join(str(message.ts) for message in matches)
-            )
-        return matches[0]
+        exact = int(msg_id)
+        found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
+        if found is None:
+            raise MessageIdNotFoundError(f"message not found: {msg_id}")
+        body, timestamp = found
+        return message_from_body(thread, body, timestamp)
 
     def _locate_exact_message(
         self,

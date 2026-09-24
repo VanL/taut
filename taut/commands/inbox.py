@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext
-from taut.commands._rendering import emit_notifications
+from taut.commands._rendering import emit_notifications, write_human_line
 
 
 class InboxCommand:
@@ -16,6 +16,12 @@ class InboxCommand:
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
+        if context.quiet:
+            write_human_line(
+                context.stderr,
+                "inbox does not support -q; poll with taut list -q",
+            )
+            return 1
         client = context.client()
         notifications = client.inbox()
         emit_notifications(

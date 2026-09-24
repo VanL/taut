@@ -69,7 +69,9 @@ def test_persistent_reactor_recycles_and_closes_postgres_session(
     # owner-thread session.close then recycles internally and retires leases.
     assert recycle_calls[0][1] == threading.get_ident()
     assert close_calls[0][1] == thread.ident
-    assert peer.join("survives").thread == "survives"
+    joined = peer.join("survives")
+    assert joined is not None
+    assert joined.thread == "survives"
     peer.close()
 
 

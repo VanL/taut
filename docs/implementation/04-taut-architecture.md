@@ -497,7 +497,12 @@ may return up to the limit from every joined chat thread. It decodes each whole
 returned page before advancing that thread's cursor once to the page's highest
 timestamp; a decoder failure leaves the page cursor unchanged. `read` is a
 thin delegating alias, and the CLI omits the keyword to preserve its
-1,000-per-thread default.
+1,000-per-thread default. The CLI is the stream-delivery exception: it fetches
+with `advance=False`, writes and flushes each record through the shared
+renderer, then advances through that record with `mark_seen()`. A closed pipe,
+encoding failure, or presentation failure therefore leaves only undelivered
+records unread; the Python API keeps its atomic whole-page return-and-commit
+contract.
 
 Direct-message selection has one actor-aware boundary in the client. The
 operation-specific selector parser recognizes current `@name-or-alias` routes
@@ -900,7 +905,7 @@ from `main(None)`: only `None` reads process argv. The client classifies runtime
 reply-id failures with `MessageIdResolutionError`; not-found cases use its
 `MessageIdNotFoundError` subtype, which also remains a `NotFoundError` so exit 2
 is stable. The reply adapter catches that typed family and adds the owning
-command form plus the full-id/4-digit-suffix rule to stderr. Unrelated
+command form plus the exact full-id rule to stderr. Unrelated
 `NotFoundError` messages are never classified by their prose.
 
 Top-level verb dispatch now lives under `taut/commands/`. Lightweight
@@ -969,12 +974,11 @@ lease remains byte-transparent and bypasses the text renderer by design.
 
 Human notification actions are derived at render time. Channel and subthread
 mentions use the membership-independent `log` path and retain their membership
-and reply-suffix probes. DM mentions use the pointer's stable source thread in
+and source-existence probes. DM mentions use the pointer's stable source thread in
 `taut log`, and `dm_started` uses it in `taut read`. Classifying and building
 those DM actions performs no identity, registry, list, or source-queue lookup.
-Only a joined top-level channel gets a reply action, using the shortest unique
-suffix in the same 1,000-message window as `reply` and the full id when no
-shorter suffix is safe. JSON notification fields remain the durable machine
+Only a joined top-level channel gets a reply action, using the exact 19-digit
+source message id. JSON notification fields remain the durable machine
 contract.
 
 Read-only extension identity uses `IdentityMixin.peek_identity()`. It delegates

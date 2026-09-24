@@ -3728,7 +3728,7 @@ def test_registry_leave_not_member_and_set_collision_exit_classes(
     assert "already exists" in err
 
 
-def test_registry_reply_full_suffix_and_stdin_use_real_state(tmp_path: Path) -> None:
+def test_registry_reply_full_ids_and_stdin_use_real_state(tmp_path: Path) -> None:
     from taut.client import TautClient
 
     db_path = tmp_path / "chat.db"
@@ -3737,15 +3737,8 @@ def test_registry_reply_full_suffix_and_stdin_use_real_state(tmp_path: Path) -> 
     try:
         first = setup.say("general", "first root")
         second = setup.say("general", "second root")
-        ids = [str(message.ts) for message in setup.log("general")]
     finally:
         setup.close()
-    second_id = str(second.ts)
-    suffix = next(
-        second_id[-length:]
-        for length in range(4, len(second_id) + 1)
-        if sum(candidate.endswith(second_id[-length:]) for candidate in ids) == 1
-    )
     root = ["--db", str(db_path), "--as", "van", "reply", "general"]
 
     result, out, err = _dispatch_static([*root, str(first.ts), "full reply", "--json"])
@@ -3753,7 +3746,7 @@ def test_registry_reply_full_suffix_and_stdin_use_real_state(tmp_path: Path) -> 
     assert json.loads(out)["thread"] == f"general.{first.ts}"
 
     result, out, err = _dispatch_static(
-        [*root, suffix, "-", "--json"],
+        [*root, str(second.ts), "-", "--json"],
         stdin=StringIO("stdin reply\n"),
     )
     assert result == 0, err
@@ -3784,7 +3777,6 @@ def test_registry_reply_adds_usage_hint_only_for_message_id_failures(
     setup = TautClient(db_path=str(db_path), as_name="van")
     try:
         van_id = setup.whoami().member_id
-        known_ids = {str(message.ts) for message in setup.log("general")}
     finally:
         setup.close()
     queue = Queue("general", db_path=str(db_path))
@@ -3810,24 +3802,18 @@ def test_registry_reply_adds_usage_hint_only_for_message_id_failures(
         )
     finally:
         queue.close()
-    known_ids.update((str(first_ts), str(second_ts)))
-    unknown_suffix = next(
-        candidate
-        for candidate in ("1111", "2222", "3333", "4444", "5555", "6666")
-        if not any(message_id.endswith(candidate) for message_id in known_ids)
-    )
     root = ["--db", str(db_path), "--as", "van", "reply"]
 
     result, out, err = _dispatch_static([*root, "general", str(first_ts)[-4:], "child"])
     assert result == 1
     assert out == ""
-    assert "ambiguous message id suffix" in err
+    assert "full 19-digit message id" in err
     assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
 
     result, out, err = _dispatch_static([*root, "general", "123", "child"])
-    assert result == 2
+    assert result == 1
     assert out == ""
-    assert "message id suffix must be at least 4 digits" in err
+    assert "full 19-digit message id" in err
     assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
 
     result, out, err = _dispatch_static(
@@ -3838,16 +3824,10 @@ def test_registry_reply_adds_usage_hint_only_for_message_id_failures(
     assert "message not found: 1000000000000000000" in err
     assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
 
-    result, out, err = _dispatch_static([*root, "general", unknown_suffix, "child"])
-    assert result == 2
-    assert out == ""
-    assert "message not found in the most recent 1,000 messages" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
-
     result, out, err = _dispatch_static([*root, "missing", "1234", "child"])
-    assert result == 2
+    assert result == 1
     assert out == ""
-    assert err == "thread not found: missing\n"
+    assert "full 19-digit message id" in err
 
 
 def test_registry_reply_renders_notification_warning_after_real_write(
@@ -3897,7 +3877,7 @@ def test_registry_reply_renders_notification_warning_after_real_write(
     assert stderr.getvalue() == "warning: injected reply warning\n"
 
 
-def test_registry_read_quiet_still_advances_cursor_and_json_reads_next_page(
+def test_registry_read_quiet_is_usage_error_and_keeps_cursor(
     tmp_path: Path,
 ) -> None:
     from taut.client import TautClient
@@ -3912,13 +3892,16 @@ def test_registry_read_quiet_still_advances_cursor_and_json_reads_next_page(
     root = ["--db", str(db_path), "--as", "van", "read", "general"]
 
     result, out, err = _dispatch_static([*root, "--quiet"])
-    assert result == 0, err
-    assert out == err == ""
-
-    result, out, err = _dispatch_static(root)
-    assert result == 2
+    assert result == 1
     assert out == ""
-    assert err == "nothing unread\n"
+    assert "list -q" in err
+
+    result, out, err = _dispatch_static([*root, "--json"])
+    assert result == 0, err
+    assert [json.loads(line)["text"] for line in out.splitlines()] == [
+        "bob joined",
+        "consumed quietly",
+    ]
 
     bob = TautClient(db_path=str(db_path), as_name="bob")
     try:
@@ -4066,7 +4049,7 @@ def test_registry_inbox_claims_pointers_keeps_source_and_renders_human_actions(
     result, out, err = _dispatch_static(root)
     assert result == 0, err
     assert "inspect: taut log general" in out
-    assert re.search(r"reply: taut reply general \d{4,19}", out)
+    assert re.search(r"reply: taut reply general \d{19}", out)
 
     bob = TautClient(db_path=str(db_path), as_name="bob")
     try:

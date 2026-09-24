@@ -120,6 +120,12 @@ Taut resolves its database the way git resolves a repository:
    `No taut database found. Run 'taut init' to create one.` Only
    `taut init` creates a database.
 
+When discovery locates a `.taut.db` path that exists but cannot be used —
+unreadable, unwritable, or not a SimpleBroker database — the diagnostic names
+that path and SimpleBroker's own validation reason, exits 1, and does not
+suggest `taut init`. `taut init` on such a path reports the same reason and
+exits 1 rather than reporting `exists:`. Only an absent path is "not found".
+
 `.taut.toml` is Taut's default project configuration file; selecting Postgres
 normally uses it. The resolved `TAUT_PROJECT_CONFIG_PATH` and
 `TAUT_PROJECT_CONFIG_NAME` settings may explicitly select a different Taut
@@ -927,7 +933,14 @@ claim/read broker APIs as defined in [IAN-7.4].
 strictly a high-water mark of *seen* message timestamps:
 
 - `read`, `watch`, and successful `message show` advance it as they display
-  messages.
+  messages. For the CLI adapters this is literal: the cursor commits only
+  through records that the adapter has written to its output stream. When
+  delivery fails partway (a closed pipe, an encoding error, or a
+  presentation-policy failure), the cursor remains at the highest record
+  already written and the remaining records stay unread. The Python `read()`
+  and `read_unread()` calls return a whole page to the caller and commit it
+  atomically, because the caller already holds the records when the call
+  returns.
 - `log`, `list`, and `who` never move it (`log` is history inspection, not
   catching up).
 - Cursor writes are monotonic: `last_seen_ts` only increases.
@@ -1018,7 +1031,7 @@ timestamp parsing ([TAUT-3.5]).
 ### [TAUT-7.6] Exact-message show and delete
 
 Both exact-message operations accept one `msg_id: str` that must be a full
-19-digit native message id. They do not accept [TAUT-8.1]'s reply suffix form.
+19-digit native message id, the same exact form required by [TAUT-8.1] reply.
 A non-string, including `bool` or `int`, raises
 `TypeError("msg_id must be a string")`. A string that either does not match
 `MESSAGE_ID_RE` or fails
@@ -1216,18 +1229,18 @@ later token is command-local. `--version` is a root action before the verb.
 | Verb | Behavior | Exit codes |
 |---|---|---|
 | `init` | Create the resolved SQLite `.taut.db` or initialize the configured backend target plus sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
-| `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona. | 0; 1 error |
+| `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. When the acting member already belongs to THREAD, `join` succeeds, applies `--persona` if given, and writes no notice, no membership row, and no cursor change; it prints the thread header so callers see the same shape either way. `--persona` sets/updates the member's persona. | 0; 1 error |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
 | `channel show CHANNEL` | Return current metadata for one registered top-level channel. Resolves no actor and changes no activity, membership, queue, message, notification, or cursor state. | 0 showed; 1 invalid name, corrupt metadata, or error; 2 no such top-level channel |
 | `channel topic CHANNEL TEXT` / `channel topic CHANNEL --clear` | Set one exact one-line topic or explicitly clear it. Requires an existing acting member and current channel membership. A same-value set and absent clear are successful no-ops. No stdin form. | 0 changed or no-op; 1 usage, invalid topic, corruption, or error; 2 no such channel / unrecognized member / not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
 | `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` retains every [IAN-5.1] channel/sub-thread form, including quoted `#channel`, and also accepts `@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle. Channel and sub-thread targets require membership. `@route` may create the deterministic conversation; `dm.d_*` requires an existing fully valid actor-accessible conversation and never creates or heals one. Prints message id with `-t` only when a message is written. | 0 wrote; 1 malformed syntax on a nonblank attempt or error; 2 blank filtered / not a member / no such member / inaccessible or invalid stable DM |
-| `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
+| `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. MSG_ID is the exact 19-digit message id, as for `message show`, `message delete`, and `message react`; there is no short form. Any other value is a malformed argument. | 0 wrote; 1 error, including a malformed MSG_ID; 2 blank filtered / no such message / unrecognized member |
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
 | `message react MSG_ID REACTION` | Send one configured reaction to current members of the exact source thread except the actor. Advances the actor's high-water cursor and attempts one atomic best-effort exact-name broadcast to every requested notification queue. A broadcast failure warns; repeating may duplicate. | 0 valid operation, including a broadcast warning; 1 malformed/config/cursor error; 2 unrecognized member / inaccessible, ineligible, or recipient-empty target |
-| `read [THREAD_OR_DM]` | Show unread (all joined threads when bare, grouped), advance each selected cursor through displayed messages. An explicit DM may be `@name-or-alias` or a stable `dm.d_*` handle and must already be accessible under [IAN-5.3]. Reads are paged at up to 1,000 unread messages per thread; rerun until exit 2 to drain. Subthreads retain implicit-join behavior. | 0 showed messages; 1 error; 2 nothing unread / unrecognized member / not a member or accessible conversation |
-| `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
+| `read [THREAD_OR_DM]` | Show unread (all joined threads when bare, grouped), advance each selected cursor through displayed messages. An explicit DM may be `@name-or-alias` or a stable `dm.d_*` handle and must already be accessible under [IAN-5.3]. Reads are paged at up to 1,000 unread messages per thread; rerun until exit 2 to drain. Subthreads retain implicit-join behavior. Rejects `-q` (usage error, exit 1). | 0 showed messages; 1 error; 2 nothing unread / unrecognized member / not a member or accessible conversation |
+| `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. Rejects `-q` (usage error, exit 1). | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
 | `search QUERY... [--channel CHANNEL]... [--dm TARGET]... [--dms] [--from MEMBER] [--kind KIND]... [--before MSG_ID] [--limit N] [--reindex]` | Cursor-neutral search over registered chat and actor-accessible DMs. Query, scope, freshness, and repair follow spec 06. | 0 hits; 1 usage, malformed selector, provider, or index error; 2 no hits or well-formed explicit selector miss |
 | `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace persistence maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
@@ -1248,11 +1261,15 @@ interface. Installing a package may add a top-level verb, but no package may
 override a built-in or win a conflict by installation order.
 
 Exit-code rule, matching SimpleBroker: 0 success, 1 error, 2 "empty /
-nothing matched / not found" — so `taut read -q && process_inbox` and
-polling loops compose in shell. Usage errors — unknown flags, unknown
+nothing matched / not found" — so polling loops compose in shell. The polling
+idiom is `taut list -q && handle_new`: `list` never moves a cursor, exits 0
+only when something is unread, and leaves the messages for a following
+`read`. `read` and `inbox` reject `-q` as a usage error: their output is their
+effect, and a silent invocation would only advance a bookmark or discard
+claimed pointers. The diagnostic names `list -q`. Usage errors — unknown flags, unknown
 subcommands, missing or malformed arguments rejected by the parser — are
 errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
-class so that polling idioms like `taut read -q && handle_new` cannot
+class so that polling idioms like `taut list -q && handle_new` cannot
 mistake a typo for "nothing new". `--help` and `--version` exit 0.
 Signal-interrupted `watch` is the fourth exit class: 130 after cleanup,
 matching SimpleBroker's `EXIT_INTERRUPTED` convention.
@@ -1267,7 +1284,7 @@ policy preflight retains priority: if the policy is unavailable, the command
 exits 1 with its existing fixed diagnostic before blank filtering runs.
 
 Help text is part of the agent-usable surface: every option and positional names
-its purpose, message-id suffix, exact-id, and timestamp forms are discoverable
+its purpose, exact-id and timestamp forms are discoverable
 from the owning subcommand, and root help names exit-code classes. The
 `message` noun requires `show`, `delete`, or `react`; the `channel` noun
 requires `show`, `topic`, or `rename`. A missing nested subcommand follows the
@@ -3093,11 +3110,6 @@ expression behavior.
 
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
   existing human message-time formatter for shared CLI/TUI rendering.
-
-- `docs/plans/2026-09-24-watch-interrupt-drain-plan.md` — replaces the
-  immediate in-frame `KeyboardInterrupt` with flag-and-drain on the reactor
-  owner, declares the interrupted-watch exit code, and corrects the
-  tuning-knob name.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   reactor wake ownership and safe signal handling by replacing the drifted

@@ -383,6 +383,12 @@ Rules:
   notification.
 - The sender does not receive a mention notification for mentioning themself.
 - Mentions inside foreign broker bodies are not parsed by Taut.
+- Mention parsing is markup-blind. Taut does not interpret Markdown or any
+  other markup: an `@name` token inside a backtick span, a fenced block, a
+  quotation, or a path is a mention whenever its route key resolves. A false
+  mention costs its recipient one consumable pointer; a missed mention costs a
+  person not being told, so the parser errs toward notifying. The email-shaped
+  exclusion (`x@name.tld`) is the only inert form.
 - Mention routing uses the current name/alias route table at write time; later
   name changes do not retarget the old mention.
 - Mentions written into a direct-message queue notify only the two DM
@@ -545,14 +551,13 @@ rows.
 
 Human notification actions are type-specific. A channel or subthread mention
 renders `taut log <source-thread>`; a direct-message mention renders
-`taut log <stable-dm-thread>`. A mention includes the shortest unique
-source-message suffix usable with `taut reply` only when the source is a
-top-level channel and the recipient is a member (full id on ambiguity). A
-reply pointer renders `taut log <child-thread>`; `dm_started` renders
+`taut log <stable-dm-thread>`. A mention includes the exact 19-digit source
+message id in a ready-to-run `taut reply <thread> <id>` action only when the
+source is a top-level channel and the recipient is a member. A reply pointer
+renders `taut log <child-thread>`; `dm_started` renders
 `taut read <stable-dm-thread>`, and no invented reply id. Choosing and
 constructing a DM action uses the pointer's stable source thread and performs
-no identity, list, registry, or source-queue lookup. Existing channel mention
-reply-suffix eligibility and uniqueness probes are unchanged. `log` remains
+no identity, list, registry, or source-queue lookup. `log` remains
 membership-independent for channels/subthreads but is participant-scoped for
 DMs under [IAN-5.3]. All render local `HH:MM`. JSON timestamps and names do not
 change.
@@ -710,7 +715,7 @@ acknowledge delivery. A later consuming read may therefore return the same
 notifications, while another consumer may remove them before the next peek.
 
 Notification rendering treats `message_ts` as a fallible pointer. A mention
-may advertise the shortest usable `taut reply` action only after a
+may advertise the exact-id `taut reply` action only after a
 cursor-neutral public exact `peek_one()` confirms that the top-level source
 still exists and the recipient remains a member. The renderer must not call
 `show_message()`, because showing the source would advance the recipient's

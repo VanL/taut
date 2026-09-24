@@ -16,6 +16,12 @@
 - The documented SQLite watcher knob is `TAUT_MAX_INTERVAL`, not the ignored
   `BROKER_MAX_INTERVAL`; the idle follower budget is at most 2.5% of one core.
 
+- CLI reads now advance bookmarks only after each record is written and
+  flushed, so closed pipes and encoding failures leave undelivered records
+  unread. `read -q` and `inbox -q` are usage errors; use `list -q` to poll.
+- Rejoining an existing membership is silent and cursor-neutral. Reply ids and
+  human inbox actions now use only exact 19-digit message ids.
+
 - POSIX Summon PTY providers now acquire their slave as a controlling terminal
   through the shared process-domain spawn owner. A close-on-exec handshake
   keeps terminal-setup and final-exec failures synchronous and prevents partial

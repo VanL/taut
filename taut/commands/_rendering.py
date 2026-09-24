@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, TextIO
 
 from taut import addressing, escape_terminal_text
 from taut._constants import PROJECT_CONFIG_NAME
-from taut._exceptions import EmptyResultError, NotFoundError
 from taut.terminal import format_message_time
 
 _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
@@ -294,6 +293,7 @@ def emit_messages(
     stdout: TextIO,
     stderr: TextIO,
     thread_labels: Mapping[str, str] | None = None,
+    on_delivered: Callable[[Message], None] | None = None,
 ) -> None:
     """Render message records in the established human or NDJSON shape."""
 
@@ -304,6 +304,9 @@ def emit_messages(
             if message.warning:
                 write_human_line(stderr, f"warning: {message.warning}")
             write_json(stdout, message_object(message))
+            if on_delivered is not None:
+                stdout.flush()
+                on_delivered(message)
         return
     for thread, grouped in _group_messages_by_thread(messages).items():
         label = thread_labels.get(thread, thread) if thread_labels else thread
@@ -328,6 +331,9 @@ def emit_messages(
                     stream=stdout,
                 ),
             )
+            if on_delivered is not None:
+                stdout.flush()
+                on_delivered(message)
 
 
 def emit_search_hits(
@@ -864,7 +870,7 @@ def _mention_reply_id(
     client: TautClient | None,
     notification: Notification,
 ) -> str | None:
-    """Return the shortest currently usable reply id for a mention pointer."""
+    """Return the exact currently usable reply id for a mention pointer."""
 
     thread = notification.thread
     message_ts = notification.message_ts
@@ -892,16 +898,6 @@ def _mention_reply_id(
     full_id = str(message_ts)
     if client.queue(thread).peek_one(exact_timestamp=message_ts) is None:
         return None
-    try:
-        recent_ids = [str(message.ts) for message in client.log(thread, limit=1000)]
-    except (EmptyResultError, NotFoundError):
-        return full_id
-    if full_id not in recent_ids:
-        return full_id
-    for length in range(4, len(full_id) + 1):
-        suffix = full_id[-length:]
-        if sum(candidate.endswith(suffix) for candidate in recent_ids) == 1:
-            return suffix
     return full_id
 
 

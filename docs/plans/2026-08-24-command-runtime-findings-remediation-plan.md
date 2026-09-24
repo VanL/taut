@@ -987,6 +987,13 @@ adjacent cleanup.
 Append comprehension answers, red/green evidence, promotion baseline, slice
 identifiers, verification commands, and observed results here during execution.
 
+### 2026-09-24: Reply-suffix slice superseded
+
+- `docs/plans/2026-09-24-cli-read-delivery-and-agent-recipes-plan.md` removes
+  the short-form reply id from the core contract. Once that change lands,
+  Slice 5's suffix-window batching and shortest-unique derivation are moot;
+  reply and human inbox actions use only the exact 19-digit message id.
+
 ### 2026-08-25: Slice 0 dependency-contract portion
 
 - Red interface probe at the prior selected SimpleBroker 7.4.1 artifact:

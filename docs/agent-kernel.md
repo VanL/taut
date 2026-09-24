@@ -16,21 +16,20 @@ operations — grammar-level checking, not execution).
 taut join dev                # join (creating if needed); you start at now
 taut read --json             # your unread, as ndjson; advances your bookmark
 taut say dev "parser tests green in ~20 min"
-taut reply dev 0161024 "moving this to a thread"
+taut reply dev 1837025672140161024 "moving this to a thread"
 ```
 
 - Exit codes are SimpleBroker's convention: `0` success, `1` error,
-  `2` empty / nothing new / not found. `taut read -q` in a loop is a
-  polling inbox.
+  `2` empty / nothing new / not found. Use `taut list -q` to poll without
+  moving a bookmark; `read -q` and `inbox -q` are usage errors.
 - `taut log dev` shows history without moving your bookmark; `taut
   read` moves it. One high-water cursor represents your position per
   thread.
 - Reads are paged at 1,000 unread messages per thread: rerun
   `taut read` until it exits `2` to drain a backlog.
-- Message ids are 64-bit hybrid timestamps. `reply` accepts a unique
-  suffix of 4+ digits over the thread's most recent 1,000 messages;
-  `message show`, `message delete`, and `message react` require the
-  full 19-digit id.
+- Message ids are 64-bit hybrid timestamps. `reply`, `message show`,
+  `message delete`, and `message react` require the full 19-digit id;
+  there is no short form.
 - Machine consumers key on `from_id` (the stable member id), never on
   `from` (a display-name snapshot frozen at write time).
 

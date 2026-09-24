@@ -66,7 +66,9 @@ def test_persistent_client_worker_closes_postgres_session(
     assert not thread.is_alive()
     assert close_calls == worker_observation
     assert close_calls[0][0] is not peer_session
-    assert peer.join("survives").thread == "survives"
+    joined = peer.join("survives")
+    assert joined is not None
+    assert joined.thread == "survives"
     peer.close()
 
 

@@ -1,7 +1,9 @@
 # CLI Read Delivery and Agent Recipe Corrections Plan
 
-Status: draft — findings verified by reproduction; all owner decisions
-recorded (2026-09-24); awaiting independent plan review.
+Status: active — independent plan review PASS; all slices except truthful
+invalid-target discovery implemented. That slice is blocked on a public
+SimpleBroker strict-discovery seam; completed-work review and final gates
+remain pending.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the
 normative cursor-advance wording in [TAUT-7.2], the [TAUT-8.1] `join` row and
@@ -29,18 +31,18 @@ assumes an id layout SimpleBroker does not produce, and an unusable
 
 ## Requested Outcomes
 
-- [ ] `taut read` advances a thread's cursor only through records that were
+- [x] `taut read` advances a thread's cursor only through records that were
   written to stdout; a delivery failure (broken pipe, encoding error) leaves
   the cursor at the last written record.
-- [ ] `taut read -q` is a usage error (exit 1, one-line diagnostic naming
+- [x] `taut read -q` is a usage error (exit 1, one-line diagnostic naming
   `list -q`): read's output is its effect, so a silent read would only
   advance the bookmark. The kernel, README, and core spec recommend
   `taut list -q` as the polling idiom. `taut inbox -q` is rejected the same
   way (owner decision 2026-09-24), because a silent inbox claims and
   discards pointers.
-- [ ] Joining a channel the member already belongs to succeeds without
+- [x] Joining a channel the member already belongs to succeeds without
   writing a notice or moving the cursor.
-- [ ] The short-form (suffix) message id is removed: `reply` accepts only
+- [x] The short-form (suffix) message id is removed: `reply` accepts only
   the full 19-digit id, matching `message show`, `message delete`, and
   `message react`; the human `inbox` action line prints the full id; the
   README Quick Start, kernel, and [TAUT-8.1]/[IAN-7.4] text drop the suffix
@@ -51,9 +53,9 @@ assumes an id layout SimpleBroker does not produce, and an unusable
 - [ ] An existing-but-unusable `.taut.db` (unreadable, unwritable, or not a
   SimpleBroker database) produces SimpleBroker's own diagnostic, not the
   "not found / run taut init" hint.
-- [ ] The CLI subprocess harness has a companion test that runs without a
+- [x] The CLI subprocess harness has a companion test that runs without a
   forced `PYTHONIOENCODING`.
-- [ ] [IAN-5.2] states that mention parsing is markup-blind — `@name`
+- [x] [IAN-5.2] states that mention parsing is markup-blind — `@name`
   inside backtick spans, fenced blocks, quotes, or paths is a mention — and
   a probe pins it (owner decision 2026-09-24).
 
@@ -94,7 +96,12 @@ Supporting context:
 - `c0a4616e76e954e3f9fbea93fbf487c3ee660cbe` — `docs/specs/02-taut-core.md`
   and `docs/specs/03-identity-addressing-notifications.md` at plan authoring
   time; both unchanged through `c894059` (0.9.9 release SHA).
-- Promotion baseline identifier: recorded after the spec-promotion slice.
+- Promotion baseline identifier: base
+  `cfd87999c3ed75a1112e8c2d2c019c4fb3fe5da2` plus the uncommitted two-spec
+  diff SHA-256
+  `741fee80603e0bc1cea2aa224b615eb060721a956cc3bbc6fbd99087ed40c862`
+  (`docs/specs/02-taut-core.md` and
+  `docs/specs/03-identity-addressing-notifications.md`).
 
 ## Proposed Spec Delta
 
@@ -263,9 +270,11 @@ Files to modify:
   (`created #thread` at ~114 or `joined` at ~120), calls
   `self._state.add_membership(...)` (~121, `ON CONFLICT DO NOTHING`), and
   writes the notice unconditionally.
-- `taut/client/_base.py` — `_require_target()` (line ~340–360) raises
-  `NotInitializedError(NO_DATABASE_MESSAGE)` when SimpleBroker's
-  `is_valid_database` returns false for an existing SQLite path.
+- `taut/client/_base.py` — `_resolve_target()` (line ~320–360) checks only
+  `Path.is_file()` / `Path.exists()` and maps a non-file or missing SQLite
+  path to `NotInitializedError(NO_DATABASE_MESSAGE)`; it does not currently
+  validate an existing file as a SimpleBroker database. Task 9 adds that
+  validation rather than changing an existing validation branch.
 - `taut/commands/reply.py` — human-mode output after a successful reply
   (currently prints nothing; read it before editing).
 - `docs/agent-kernel.md`, `README.md`, `llms.txt` if it restates the poll.
@@ -332,6 +341,9 @@ Hidden couplings:
   cursor-neutral and `message show` keeps its exact-ts advance.
 - `client.last_thread_display_names` is populated by `read_unread`; a
   cursor-neutral fetch must populate it the same way.
+- `_read_membership_page()` also records a direct-message display name before
+  the cursor commit. An `advance=False` path skips only `advance_cursor` and
+  must preserve that display-name side effect.
 - The CLI harness's forced `PYTHONIOENCODING` masks the encoding failure
   mode; removing it globally would change every CLI test's environment.
   Add a companion test instead of changing the default (Pattern 7 says the
@@ -396,8 +408,9 @@ last written record is the durable outcome.
    and the help wording in `reply.py`; delete the suffix-collision and
    too-short tests (`test_cli_reply_too_short_suffix_names_usage_and_minimum`
    and the collision cases in `tests/test_cli.py`/`test_client.py`) and
-   replace them with the malformed-argument test. Stop if any other verb
-   turns out to accept a suffix; the review found none.
+   replace them with the malformed-argument test. A malformed value raises
+   `MessageIdResolutionError` (exit 1), not `MessageIdNotFoundError` (exit 2).
+   Stop if any other verb turns out to accept a suffix; the review found none.
 8. **Docs.** README Quick Start (`reply general 0161024` becomes the full
    id from the preceding `log -t` line), README command table, and
    `docs/agent-kernel.md` (the message-id bullet) state the one id form;
@@ -427,7 +440,7 @@ last written record is the durable outcome.
     adapters' `run()` before any client call (the dispatcher already
     parsed `-q`; the adapter refuses it). Update the root help sentence.
     Replace the `read -q` poll with `list -q` in `docs/agent-kernel.md`,
-    `README.md` (two places), and any `llms.txt` restatement; run
+   `README.md` (two places); `llms.txt` contains no polling restatement. Run
     `bin/check-cli-claims` and `bin/check-doc-paths`. Stop if refusing the
     flag requires changing the shared global-option parser rather than the
     two adapters.
@@ -512,10 +525,42 @@ second renderer?" Dispositions are recorded in the Review Log.
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TAUT-3.2] | A discovered existing invalid `.taut.db` reports its path and SimpleBroker validation reason. | SimpleBroker 8.4.0's public `BackendPlugin.validate_target()` exposes the reason once a path is known, but public `resolve_broker_target()` drops invalid legacy-discovery candidates and returns `None`. | Implementing ancestor search in Taut would duplicate the broker-owned discovery algorithm and violate [TAUT-3.2]'s single-resolution boundary. Per task 9's stop gate, do not parse messages or add a second search path. | Upstream: add a strict legacy-discovery mode/API that raises public `DatabaseError` for the first existing invalid candidate; then Taut can preserve the exact reason for normal commands and `init`. |
 
 ## Review Log
 
 (append-only)
+
+- 2026-09-24 — Independent-plan-review attempt 1 did not launch. The shell
+  rejected the inline long-prompt construction before Claude started (exit
+  127: quoting/parse failure). No verdict was produced and no repository file
+  changed. The retry uses the repository skill's file-backed prompt pattern.
+- 2026-09-24 — Independent plan review, Claude Opus 4.6, bounded read-only
+  invocation (434 seconds, exit 0, `success` / `end_turn`, terminal reason
+  `completed`, no permission denials): **PASS**. The reviewer confirmed that
+  both `emit_messages` loops can invoke one post-write/post-flush callback and
+  that a failed human thread heading correctly commits no record. Findings:
+  R1 P2 corrected `_require_target` to `_resolve_target`; R2 P2 corrected the
+  false claim that validation already exists; R3 P3 added the DM display-name
+  side effect to hidden couplings; R4 P3 named
+  `MessageIdResolutionError` for malformed ids; R5 nit accepted the approximate
+  suffix-renderer line range; R6 nit noted that SimpleBroker's
+  `is_valid_database` exposes only a boolean and is covered by task 9's stop
+  gate; R7 nit removed `llms.txt` from the poll-recipe enumeration. The two
+  out-of-scope observations (an `advance=False` API misuse risk and the known
+  inbox claim-before-render hazard) remain bounded by the plan.
+- 2026-09-24 — Completed-work review, Claude Opus 4.6, bounded read-only
+  invocation (544 seconds, exit 0, `success` / `end_turn`, terminal reason
+  `completed`, no permission denials): **PASS**. F1 P3 accepted the per-record
+  identity-resolution/update cost pending profiling; correctness requires the
+  per-record commits. F2 P3 accepted and fixed the stale [TAUT-7.6] contrast
+  with the removed suffix. F3 nit accepted the defensive duplicate regex
+  check. F4 nit accepted JSON rejoin as an empty successful no-op and added a
+  firing assertion. F5 nit accepted the human heading's raw spelling as
+  cosmetic. F6 nit accepted the unreachable `quiet=True` plus callback
+  combination because `read` rejects quiet before client work. The reviewer
+  confirmed real subprocess, pipe, encoding, and SQLite proof, and agreed the
+  storage stop gate correctly avoids a second discovery implementation.
 
 ## Execution Log
 
@@ -531,6 +576,66 @@ second renderer?" Dispositions are recorded in the Review Log.
   acceptable alternative if reconsidered.
 - 2026-09-24 — Owner decision: mention parsing stays markup-blind; state
   it in [IAN-5.2] and pin it with a probe.
+- 2026-09-24 — Comprehension gate: the Python `read_unread()` API returns the
+  complete decoded page to its caller before it returns, so its existing
+  atomic page commit remains correct; only a stream adapter has a later
+  delivery boundary and therefore needs render-then-advance.
+- 2026-09-24 — Comprehension gate: `list -q` asks the broker whether anything
+  is pending after the cursor without moving that cursor. `read -q` suppresses
+  the very output that defines delivery while still advancing the bookmark,
+  so it would consume the unread view before a handler could read it.
+- 2026-09-24 — Comprehension gate: [TAUT-7.4] initializes a cursor at now only
+  when the membership is first created. A repeated join must neither recreate
+  that membership nor touch its cursor, or it can skip or replay history.
+- 2026-09-24 — Spec-promotion slice complete using strategy A. Promoted
+  [TAUT-3.2], [TAUT-7.2], [TAUT-8.1], [IAN-5.2], and [IAN-7.4], including
+  reciprocal plan backlinks. Verification:
+  `uv run --extra dev pytest tests/test_docs_references.py tests/test_cli_claims.py -n 0`
+  -> 30 passed. Promotion baseline is the base SHA plus the two-spec diff hash
+  recorded under Spec Baseline.
+- 2026-09-24 — Red proof before implementation: the ten focused delivery,
+  quiet-read, repeated-join, exact-id, inbox-action, harness, and mention tests
+  produced eight contract failures and two expected passes (markup behavior
+  already matched and the no-forced-encoding companion was a harness proof).
+  The failures showed the old notice write, suffix resolution, quiet state
+  consumption, full-id omission, exit 120 on EPIPE, and cursor loss after
+  encoding failure.
+- 2026-09-24 — Green focused proof after implementation: 16 focused client,
+  CLI, registry, delivery, watcher-regression, and mention tests passed in
+  6.24 seconds. A broader four-file run reached 699 passed and one skipped;
+  its ten failures split into four corrected local expectations and six
+  concurrently added identity-boundary tests outside this plan. The four local
+  expectations now pass; the six concurrent failures remain owned by that
+  separate in-progress worktree change.
+- 2026-09-24 — Storage stop gate fired. Public SimpleBroker 8.4.0
+  `get_backend_plugin("sqlite").validate_target(..., verify_initialized=True)`
+  provides truthful reasons for known paths, but `resolve_broker_target()`
+  collapses invalid upward-discovery candidates to `None`. The upstream
+  strict-discovery proposal is recorded in the Deviation Log; no partial
+  cwd-only search or rendered-message parsing was added.
+- 2026-09-24 — Mutation proof: restoring the old pre-render page advance and
+  removing the delivery callback made
+  `test_cli_read_encoding_failure_keeps_message_unread` fail because the
+  follow-up read exited 2 (`nothing unread`). Restoring cursor-neutral fetch
+  plus the post-flush callback made the same test pass.
+- 2026-09-24 — Verification after completed-work review: the CLI, probe,
+  registry, cache-stale, and stateful-client suites passed 444 tests with one
+  Windows-only skip; focused client/public-API proof passed 15 tests; the four
+  highest-risk read/join tests passed; `mypy taut tests` passed 141 source
+  files; targeted Ruff and formatting checks passed; `git diff --check`,
+  `check-cli-claims`, and `check-plan-status-index` passed. The full suite ran
+  2,315 passing tests and five platform skips, then reported three failures:
+  the one reply-precedence expectation owned by this change was corrected and
+  rerun green; the other two are Ruff-policy failures in concurrent Summon/TUI
+  worktree edits. `check-doc-paths` and `test_documented_paths_exist` are also
+  blocked by that concurrent TUI change deleting
+  `extensions/taut_tui/tests/_terminal_probe.py` before its DOM path claim was
+  updated. No concurrent file was reverted or repaired here.
+- 2026-09-24 — Runbook/skill evaluation: the testing, hardening,
+  traceability, and call-agent guidance covered the encountered boundaries.
+  The first inline review prompt failed exactly as the skill warns; switching
+  to its file-backed pattern resolved it. No reusable guidance amendment is
+  warranted from this task.
 
 ## Fresh-Eyes Review
 

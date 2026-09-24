@@ -123,7 +123,9 @@ def test_hint_failure_preserves_committed_result(
 
         monkeypatch.setattr(Queue, "write", fail_hint)
         if operation == "join":
-            assert bob.join("other").thread == "other"
+            joined = bob.join("other")
+            assert joined is not None
+            assert joined.thread == "other"
             assert "other" in bob.joined_thread_names()
         else:
             assert bob.inbox()
@@ -171,7 +173,9 @@ def test_queue_acquisition_failure_does_not_fail_committed_membership(
             return original(name, **kwargs)
 
         monkeypatch.setattr(client, "queue", fail_acquisition)
-        assert client.join("general").thread == "general"
+        joined = client.join("general")
+        assert joined is not None
+        assert joined.thread == "general"
         assert client.joined_thread_names() == ("general",)
         assert "cache invalidation publication failed" in caplog.text
 

@@ -71,7 +71,11 @@ class ThreadsMixin(_ClientBase):
         resource reconciliation ([TAUT-8.3]).
         """
 
-        resolved = self._resolve_member(create=False, _touch_activity=False)
+        resolved = self._resolve_member(
+            create=False,
+            _touch_activity=False,
+            _heal_claim=False,
+        )
         member = self._require_member(resolved)
         return tuple(
             row["thread"] for row in self._state.list_memberships(member["member_id"])
@@ -83,7 +87,7 @@ class ThreadsMixin(_ClientBase):
         *,
         persona: str | None = None,
         new: bool = False,
-    ) -> Message:
+    ) -> Message | None:
         """Join a channel, creating it if needed."""
 
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
@@ -101,6 +105,12 @@ class ThreadsMixin(_ClientBase):
         )
         existing_thread = self._state.get_thread(thread)
         created_thread = existing_thread is None
+        if existing_membership is not None:
+            if existing_thread is None or existing_thread["kind"] != "channel":
+                raise ThreadNameError(f"not a channel: {thread}")
+            if persona is not None:
+                self._state.update_member_persona(member["member_id"], persona)
+            return None
         if created_thread:
             current_thread = self._state.upsert_thread(
                 name=thread,
@@ -175,7 +185,12 @@ class ThreadsMixin(_ClientBase):
 
     def list_threads(self, *, all_threads: bool = False) -> list[Thread]:
         self._ensure_no_incomplete_channel_rename()
-        resolved = self._resolve_member(create=False, allow_guest=True)
+        resolved = self._resolve_member(
+            create=False,
+            allow_guest=True,
+            _touch_activity=False,
+            _heal_claim=False,
+        )
         if all_threads or resolved.row is None:
             rows = self._state.list_threads()
             member_id = resolved.row["member_id"] if resolved.row else None
@@ -199,7 +214,11 @@ class ThreadsMixin(_ClientBase):
 
         self.last_thread_display_names.clear()
         self._ensure_no_incomplete_channel_rename()
-        resolved = self._resolve_member(create=False, _heal_claim=False)
+        resolved = self._resolve_member(
+            create=False,
+            _touch_activity=False,
+            _heal_claim=False,
+        )
         member = self._require_member(resolved)
         memberships = self._state.list_memberships(member["member_id"])
         result: list[Thread] = []

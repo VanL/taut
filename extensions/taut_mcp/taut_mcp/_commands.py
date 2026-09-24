@@ -49,7 +49,7 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
             persona=cast(str | None, arguments.get("persona")),
             new=False,
         )
-        records: tuple[CommandRecord, ...] = (record,)
+        records: tuple[CommandRecord, ...] = () if record is None else (record,)
     elif name == "leave":
         records = (client.leave(cast(str, arguments["thread"])),)
     elif name == "set_name":

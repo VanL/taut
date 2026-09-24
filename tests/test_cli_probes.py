@@ -200,6 +200,23 @@ def _assert_clean_failure(rc: int, out: str, err: str, *, expected_rc: int) -> N
     assert "Traceback" not in err
 
 
+def test_probe_mentions_are_markup_blind_except_email_shape(tmp_path: Path) -> None:
+    """[IAN-5.2] Markup mimicry still routes; email-shaped text does not."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+
+    for text in ("`@bob`", "```\n@bob\n```", "> @bob", "path/@bob/x"):
+        assert run_cli("--as", "van", "say", "general", text, cwd=tmp_path)[0] == 0
+        rc, out, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
+        assert rc == 0, err
+        assert json.loads(out)["type"] == "mention"
+
+    assert run_cli("--as", "van", "say", "general", "x@bob.tld", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)[0] == 2
+
+
 def test_probe_system_dump_load_json_and_missing_input_exit(
     tmp_path: Path,
 ) -> None:

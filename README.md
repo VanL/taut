@@ -361,7 +361,7 @@ $ taut watch
 $ taut log general -t --limit 1
 ── general ──────────────────────────────────────
   1837025672140161024  09:15 claude  yes. what broke?
-$ taut reply general 0161024 "moving this to a thread"
+$ taut reply general 1837025672140161024 "moving this to a thread"
 ```
 
 Pipes work where you'd expect:
@@ -594,7 +594,7 @@ timestamps are usage errors.
 empty / nothing new / not found. So this is a polling inbox:
 
 ```bash
-while sleep 5; do taut read -q && notify-send "taut: new messages"; done
+while sleep 5; do taut list -q && notify-send "taut: new messages"; done
 ```
 
 Exit `2` deliberately combines empty and not-found results. Scripts that need
@@ -634,12 +634,8 @@ chat threads. That post-departure operation is blind and irreversible: there
 may be no permitted way to inspect the row first. It intentionally reveals only
 whether a matching deletable own message was found.
 
-For `reply`, `MSG_ID` accepts the full 19-digit message id (always
-works, any age) or a unique suffix of 4+ digits — ids are timestamps,
-and the last few digits are the part that varies. Suffix search covers
-the thread's most recent 1,000 messages. `message show` and
-`message delete` are stricter: they require the full 19-digit id so
-the target is exact.
+For `reply`, `message show`, `message delete`, and `message react`, `MSG_ID`
+is the exact full 19-digit message id. There is no short form.
 
 `message react` also requires the full id. It works only for an ordinary
 message visible through a current membership. The audience is the current

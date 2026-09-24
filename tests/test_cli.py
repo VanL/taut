@@ -29,7 +29,7 @@ from taut.commands._rendering import human_message_row as _human_message_row
 from taut.commands._rendering import thread_heading as _thread_heading
 from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
-from tests.conftest import PROJECT_ROOT, build_cli_env, run_cli
+from tests.conftest import PROJECT_ROOT, _invoke_ready_cli, build_cli_env, run_cli
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
 
@@ -1851,7 +1851,7 @@ def test_every_cli_parser_action_has_useful_help() -> None:
         ),
         (
             ("reply", "--help"),
-            ("19-digit", "suffix", "at least 4", "stdin", "Blank", "silent exit 2"),
+            ("19-digit", "stdin", "Blank", "silent exit 2"),
         ),
         (
             ("log", "--help"),
@@ -2291,7 +2291,7 @@ def test_cli_inbox_json_claims_notifications(tmp_path: Path) -> None:
     assert notification["actor_name"] == "van"
 
 
-def test_cli_human_mention_uses_shortest_working_reply_suffix(
+def test_cli_human_mention_uses_full_reply_id(
     tmp_path: Path,
 ) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
@@ -2299,25 +2299,19 @@ def test_cli_human_mention_uses_shortest_working_reply_suffix(
     assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
     source_ts = _say_ts(tmp_path, "van", "general", "hello @bob")
     full_id = str(source_ts)
-    ids = [str(value) for value in _log_ts_values(tmp_path, "general")]
-    expected_suffix = next(
-        full_id[-length:]
-        for length in range(4, len(full_id) + 1)
-        if sum(candidate.endswith(full_id[-length:]) for candidate in ids) == 1
-    )
 
     rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
 
     assert rc == 0, err
     assert "taut log general" in out
-    assert f"taut reply general {expected_suffix}" in out
+    assert f"taut reply general {full_id}" in out
     assert (
         run_cli(
             "--as",
             "bob",
             "reply",
             "general",
-            expected_suffix,
+            full_id,
             "works",
             cwd=tmp_path,
         )[0]
@@ -2514,7 +2508,7 @@ def test_cli_human_subthread_mention_offers_log_but_not_invalid_reply(
     assert run_cli("--as", "bob", "log", child, cwd=tmp_path)[0] == 0
 
 
-def test_cli_human_mention_uses_full_id_when_all_short_suffixes_collide(
+def test_cli_human_mention_uses_full_id_even_when_suffixes_collide(
     tmp_path: Path,
 ) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
@@ -3040,102 +3034,70 @@ def test_cli_reply_full_id_posts_into_subthread(tmp_path: Path) -> None:
     assert _log_texts(tmp_path, f"general.{root_ts}") == ["child"]
 
 
-def test_cli_reply_suffix_resolves_message(tmp_path: Path) -> None:
+def test_cli_reply_short_id_is_malformed_and_does_not_move_bookmark(
+    tmp_path: Path,
+) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
     root_ts = _say_ts(tmp_path, "van", "general", "root")
 
-    # Shortest >=4-digit suffix of the target id that is unique across
-    # the thread's history (a shorter one could collide with the notice).
-    ts_values = _log_ts_values(tmp_path, "general")
-    full = str(root_ts)
-    suffix = next(
-        full[-length:]
-        for length in range(4, 20)
-        if sum(1 for ts in ts_values if str(ts).endswith(full[-length:])) == 1
-    )
-
     rc, out, err = run_cli(
-        "--as", "van", "reply", "general", suffix, "via suffix", "--json", cwd=tmp_path
-    )
-
-    assert rc == 0, err
-    assert json.loads(out)["thread"] == f"general.{root_ts}"
-
-
-def test_cli_reply_ambiguous_suffix_exit_1_lists_candidates(tmp_path: Path) -> None:
-    assert run_cli("init", cwd=tmp_path)[0] == 0
-    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
-    van_id = json.loads(run_cli("--as", "van", "whoami", "--json", cwd=tmp_path)[1])[
-        "member_id"
-    ]
-
-    # White-box crafted-timestamp seeding: the public API cannot
-    # deterministically mint two message ids sharing a 4-digit suffix, so
-    # insert two envelopes whose ids differ by exactly 10_000.
-    queue = Queue("general", db_path=str(tmp_path / ".taut.db"))
-    try:
-        ts_a = queue.generate_timestamp()
-        ts_b = ts_a + 10_000
-        queue.insert_messages(
-            [
-                (
-                    encode_envelope(
-                        from_id=van_id, from_name="van", kind="message", text=text
-                    ),
-                    ts,
-                )
-                for text, ts in (("first twin", ts_a), ("second twin", ts_b))
-            ]
-        )
-    finally:
-        queue.close()
-
-    rc, out, err = run_cli(
-        "--as", "van", "reply", "general", str(ts_a)[-4:], "child", cwd=tmp_path
+        "--as", "bob", "reply", "general", str(root_ts)[-4:], "child", cwd=tmp_path
     )
 
     assert rc == 1
     assert out == ""
-    assert "ambiguous message id suffix" in err
-    assert str(ts_a) in err
-    assert str(ts_b) in err
+    assert "full 19-digit message id" in err
+    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    try:
+        assert [message.ts for message in bob.read("general")] == [root_ts]
+    finally:
+        bob.close()
 
 
-def test_cli_reply_unknown_suffix_exit_2(tmp_path: Path) -> None:
+def test_cli_repeated_join_is_silent_and_keeps_cursor(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
-    _say_ts(tmp_path, "van", "general", "root")
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    root_ts = _say_ts(tmp_path, "van", "general", "still unread")
 
-    ts_values = _log_ts_values(tmp_path, "general")
-    unknown = next(
-        candidate
-        for candidate in ("1111", "2222", "3333", "4444", "5555", "6666", "7777")
-        if not any(str(ts).endswith(candidate) for ts in ts_values)
-    )
+    rc, out, err = run_cli("--as", "bob", "join", "general", cwd=tmp_path)
 
-    rc, _out, err = run_cli(
-        "--as", "van", "reply", "general", unknown, "child", cwd=tmp_path
-    )
+    assert rc == 0, err
+    assert "general" in out
+    assert "joined" not in out
+    assert _log_texts(tmp_path, "general").count("bob joined") == 1
+    rc, out, err = run_cli("--as", "bob", "join", "general", "--json", cwd=tmp_path)
+    assert (rc, out, err) == (0, "", "")
+    assert _log_texts(tmp_path, "general").count("bob joined") == 1
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    try:
+        assert [message.ts for message in bob.read("general")] == [root_ts]
+    finally:
+        bob.close()
 
-    assert rc == 2
-    assert "message not found" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
-    assert "at least 4 digits" in err
 
-
-def test_cli_reply_too_short_suffix_names_usage_and_minimum(tmp_path: Path) -> None:
+def test_cli_read_and_inbox_reject_quiet_without_moving_state(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    message_ts = _say_ts(tmp_path, "van", "general", "hello @bob")
 
-    rc, out, err = run_cli(
-        "--as", "van", "reply", "general", "123", "child", cwd=tmp_path
-    )
+    for command in (("read", "general"), ("inbox",)):
+        rc, out, err = run_cli("--as", "bob", *command, "-q", cwd=tmp_path)
+        assert rc == 1
+        assert out == ""
+        assert err.count("\n") == 0
+        assert "list -q" in err
 
-    assert rc == 2
-    assert out == ""
-    assert "message id suffix must be at least 4 digits" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    rc, out, err = run_cli("--as", "bob", "read", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert [int(json.loads(line)["ts"]) for line in out.splitlines()] == [message_ts]
+    rc, out, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert json.loads(out)["message_ts"] == str(message_ts)
 
 
 def test_cli_who_bare_and_per_thread(tmp_path: Path) -> None:
@@ -3431,6 +3393,78 @@ def test_cli_watch_closed_pipe_exits_0_without_advancing_cursor(
         proc.wait(timeout=10)
         if proc.stderr is not None:
             proc.stderr.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="closed-reader EPIPE is a POSIX probe")
+def test_cli_read_closed_pipe_keeps_undelivered_message_unread(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "read", "general", cwd=tmp_path)[0] == 2
+    message_ts = _say_ts(tmp_path, "van", "general", "closed pipe")
+    env = build_cli_env(force_unbuffered=False)
+    env.pop("PYTHONIOENCODING", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "taut", "--as", "bob", "read", "general", "--json"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        assert proc.stdout is not None
+        proc.stdout.close()
+        assert proc.wait(timeout=10) == 1
+        assert proc.stderr is not None
+        diagnostic = proc.stderr.read()
+        assert "Traceback" not in diagnostic
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+
+    rc, out, err = run_cli("--as", "bob", "read", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert [int(json.loads(line)["ts"]) for line in out.splitlines()] == [message_ts]
+
+
+def test_cli_read_encoding_failure_keeps_message_unread(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "read", "general", cwd=tmp_path)[0] == 2
+    message_ts = _say_ts(tmp_path, "van", "general", "cannot encode 🙂")
+    env = build_cli_env(force_unbuffered=False)
+    env["PYTHONIOENCODING"] = "cp1252"
+
+    rc, out, err = _invoke_ready_cli(
+        ("--as", "bob", "read", "general", "--json"),
+        cwd=tmp_path,
+        full_env=env,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert len(err.splitlines()) == 1
+    assert "Traceback" not in err
+    rc, out, err = run_cli("--as", "bob", "read", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert [int(json.loads(line)["ts"]) for line in out.splitlines()] == [message_ts]
+
+
+def test_cli_harness_can_run_without_forced_pythonioencoding(tmp_path: Path) -> None:
+    env = build_cli_env()
+    env.pop("PYTHONIOENCODING", None)
+
+    rc, out, err = _invoke_ready_cli(("--version",), cwd=tmp_path, full_env=env)
+
+    assert rc == 0, err
+    assert out.startswith("taut ")
 
 
 def test_cli_taut_as_env_resolves_like_as_flag(tmp_path: Path) -> None:

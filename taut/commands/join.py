@@ -9,6 +9,8 @@ from taut.commands._rendering import (
     emit_created_member,
     emit_messages,
     emit_search_warnings,
+    thread_heading,
+    write_human_line,
 )
 
 
@@ -43,14 +45,21 @@ class JoinCommand:
             stdout=context.stdout,
             stderr=context.stderr,
         )
-        emit_messages(
-            [message],
-            json_output=context.json,
-            timestamps=context.timestamps,
-            quiet=context.quiet,
-            stdout=context.stdout,
-            stderr=context.stderr,
-        )
+        if message is None:
+            if not context.json and not context.quiet:
+                write_human_line(
+                    context.stdout,
+                    thread_heading(args.thread, stream=context.stdout),
+                )
+        else:
+            emit_messages(
+                [message],
+                json_output=context.json,
+                timestamps=context.timestamps,
+                quiet=context.quiet,
+                stdout=context.stdout,
+                stderr=context.stderr,
+            )
         emit_search_warnings(client, quiet=context.quiet, stderr=context.stderr)
         return 0
 

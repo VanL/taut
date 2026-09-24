@@ -10,16 +10,15 @@ from taut.commands._rendering import emit_sent_message, read_text_argument
 
 _USAGE_HINT = (
     "; usage: taut reply THREAD MSG_ID [TEXT|-] "
-    "(MSG_ID is a full 19-digit id or unique suffix of at least 4 digits)"
+    "(MSG_ID is the full 19-digit message id)"
 )
 
 
 class ReplyCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Reply to MSG_ID in THREAD. MSG_ID is a full 19-digit id or a unique "
-            "suffix of at least 4 digits from the most recent 1,000 messages. Blank "
-            "text is ignored with silent exit 2."
+            "Reply to MSG_ID in THREAD. MSG_ID is the full 19-digit message id. "
+            "Blank text is ignored with silent exit 2."
         )
         parser.add_argument(
             "thread", metavar="THREAD", help="Parent thread containing MSG_ID."
@@ -27,7 +26,7 @@ class ReplyCommand:
         parser.add_argument(
             "msg_id",
             metavar="MSG_ID",
-            help="Full 19-digit message id or unique suffix of at least 4 digits.",
+            help="Full 19-digit message id.",
         )
         parser.add_argument(
             "text",
