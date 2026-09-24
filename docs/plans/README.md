@@ -65,119 +65,20 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-09-19-reactor-restoration-plan.md` | completed | no | Class 5 reactor restoration and cruft audit; core, Summon, MCP, and TUI changes reviewed and locally verified. Native Windows/Linux qualification remains an explicit platform limit. |
 | `2026-09-16-windows-lifecycle-determinism-plan.md` | active | no | Class 4 correction of Windows lifecycle/test boundaries; S1-S3 and S5 implemented, native S2/S5 qualification passed, and final review found no new code blocker. S4 DM-navigation cause remains unresolved and blocks closure/release. |
 | `2026-09-16-coordinated-0-9-8-preparation-plan.md` | completed | no | Class 5+P coordinated 0.9.8 preparation: synchronized metadata, dependency-floor reconciliation, release-gate isolation, PG lifecycle-test alignment, final checks, artifact build, and independent review passed. |
-| `2026-09-15-reactor-worker-cache-compatibility-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b9eaada`. |
-| `2026-09-15-broker-session-integration-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3cea185`. |
-| `2026-09-15-confirmed-report-cleanup-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `c79b448`. |
 | `2026-09-15-reported-issues-followup-plan.md` | active | no | Reviewed plan in implementation: TUI rename/draft preservation, diagnostics, Summon cancellation, and search measurement. DDL unchanged. |
-| `2026-09-15-windows-pty-lifecycle-fixes-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `a880011`. |
-| `2026-09-15-numeric-start-time-token-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3037971`. |
-| `2026-09-15-mcp-result-simplification-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3037971`. |
 | `2026-09-14-audit-remediation-plan.md` | completed | yes | Thirteen audit-remediation slices, the approved Ruff registry delta, and final fresh-eyes and outside-model implementation reviews are complete. |
 | `2026-09-14-simplebroker-8-2-config-migration-plan.md` | completed | yes | Replaced Taut's mirrored config machinery with SimpleBroker 8.2.2 declarations and direct nominal Config handoff; full verification and independent implementation review passed. |
-| `2026-09-03-summon-unified-pty-cross-platform-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6f5ae88`. |
-| `2026-09-01-release-ci-test-determinism-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `742788f`. |
-| `2026-08-28-simplebroker-8-reconciliation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3c8ee51`. |
 | `2026-08-25-semantic-compatibility-hardening-plan.md` | active | no | Class 5 hardened plan rebased on SimpleBroker 8 and landed E2; SC-1 config compatibility is superseded by the 8.2 migration, while SC-2 through SC-8 remain active. |
 | `2026-08-24-command-runtime-findings-remediation-plan.md` | active | no | Independently reviewed Class 5 hardened remediation plan for broker-order streaming log output, exit and grammar hardening, batched mention rendering, Unicode excerpt correction, bounded predecessor decoding, and explicit no-change dispositions; Slice 0 now records the released SimpleBroker 7.4.2 close contract and immutable E1 shared-owner baseline. |
-| `2026-08-24-concurrency-and-schema-contract-alignment-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6e8c3da`. |
 | `2026-08-24-extension-seams-process-containment-coverage-plan.md` | active | no | Class 5+P hardened plan; E1 public activity-neutral core/MCP seams and the historical compatibility canary landed at `d5e3be2`; E2 process containment is promoted for implementation; T1 coverage production remains unpromoted. |
-| `2026-08-20-debug-payload-redaction-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `175cee5`. |
-| `2026-08-20-human-tabular-output-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `46ee6bd`. |
 | `2026-08-19-tui-setup-recovery-offer-plan.md` | active | no | Class 5 hardened successor exposing the setup-recovery offer natively in the TUI; Slice 0 at `8ec4cfe`, implementation landed at `efd6119`, Grok completed-work review passed with dispositions recorded at `9e13039`; completion awaits only the manual TUI observation (real terminal, re-gated Kimi). |
-| `2026-08-18-summon-setup-gate-recovery-attach-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `e0caca9`. |
-| `2026-08-18-tui-deep-review-remediation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `d16a278`. |
-| `2026-08-17-scripted-provider-ready-signal-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4b88b8d`. |
-| `2026-08-17-summon-shell-cancel-portability-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4b88b8d`. |
-| `2026-08-17-mcp-tools-seed-lifecycle-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4b88b8d`. |
-| `2026-08-17-tui-ci-bounded-parallelism-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4b88b8d`. |
-| `2026-08-17-tui-search-anchor-test-synchronization-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4b88b8d`. |
-| `2026-08-17-tui-text-command-alias-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `423d6f6`. |
-| `2026-08-17-summon-first-attach-handoff-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `df54c08`. |
-| `2026-08-17-tui-command-entry-correction-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `0219d4a`. |
-| `2026-08-17-tui-multiline-whitespace-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `5ed9292`. |
-| `2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `2b2fa49`. |
-| `2026-08-17-mcp-resource-seed-lifecycle-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6aa0f74`. |
-| `2026-08-18-mcp-resource-helper-seed-lifecycle-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `d16a278`. |
-| `2026-08-18-mcp-windows-resource-timeout-budget-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7930b25`. |
-| `2026-08-17-cli-subprocess-readiness-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6aa0f74`. |
-| `2026-08-14-debug-failure-capture-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `58c286b`. |
 | `2026-08-14-cross-surface-command-capability-plan.md` | status-review | no | Owner-deferred after Grok and Claude Fable 5 blocked command paths as the universal semantic seam; reconsider only when the first-party root registry reaches 25 verbs (five beyond the checked 20-verb baseline). `status-review` is the closed-vocabulary quarantine for this deferred plan. |
 | `2026-08-17-tui-command-mirror-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6aa0f74`. |
-| `2026-08-14-taut-tui-action-applicability-authority-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `45592f0`. |
-| `2026-08-14-command-context-continuity-token-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `c88c138`. |
-| `2026-08-14-windows-postrelease-ci-determinism-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `f30b62c`. |
-| `2026-08-14-pypi-finalizer-consistency-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `73b56a0`. |
-| `2026-08-14-summon-stream-close-race-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `73b56a0`. |
-| `2026-08-14-taut-tui-display-sink-coverage-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `73a3fa9`. |
-| `2026-08-14-taut-tui-action-route-contract-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4ca45f2`. |
-| `2026-08-14-review-findings-remediation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `76b1ec4`. |
-| `2026-08-13-ranged-dependency-policy-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `74e1455`. |
-| `2026-08-13-simplebroker-config-isolation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4369731`. |
-| `2026-08-12-live-point-in-time-dump-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `74e1455`. |
-| `2026-08-12-taut-tui-implementation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `74e1455`. |
-| `2026-06-30-assets-reference-cleanup-plan.md` | retired-pending | no | Soft-retired 2026-09-23 after the four-part harvest gate passed; source `33e13ee`. |
-| `2026-06-30-client-module-split-plan.md` | retired-pending | no | Soft-retired 2026-09-23 after the four-part harvest gate passed; source `3cae1f4`. |
-| `2026-07-01-schema-shim-retirement-plan.md` | retired-pending | no | Soft-retired 2026-09-23 after the four-part harvest gate passed; source `3cae1f4`. |
-| `2026-07-01-taut-state-sql-dialect-plan.md` | retired-pending | no | Soft-retired 2026-09-23 after the four-part harvest gate passed; source `3cae1f4`. |
-| `2026-07-01-taut-watch-runtime-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `24dc2bc`. |
-| `2026-07-06-evaluation-findings-remediation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `663ff86`. |
-| `2026-07-06-taut-summon-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `0db6b82`. |
-| `2026-07-06-taut-summon-spec-draft.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `d5e3078`. |
-| `2026-07-07-taut-summon-pty-harness-adapter-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `587e6e3`. |
-| `2026-07-08-release-helper-simplebroker-port-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `04170eb`. |
-| `2026-07-08-taut-sqlite-contention-hardening-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7ba4def`. |
-| `2026-07-09-taut-reactor-safety-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7ba4def`. |
-| `2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7ba4def`. |
-| `2026-07-10-taut-summon-quality-remediation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7ba4def`. |
-| `2026-07-11-multi-factor-review-remediation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b8d145e`. |
-| `2026-07-11-v0.5.2-coordinated-release-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `06bfc93`. |
-| `2026-07-12-automatic-display-name-capitalization-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b8d145e`. |
-| `2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `cdf6546`. |
-| `2026-07-13-bounded-summon-process-test-parallelism-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `cdf6546`. |
-| `2026-07-13-ci-speed-determinism-release-evidence-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `530ce77`. |
-| `2026-07-13-release-metadata-preparation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `e325ef6`. |
 | `2026-07-13-summon-stop-release-race-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
-| `2026-07-14-agent-guidance-propagation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `c09e95e`. |
 | `2026-07-14-agent-interfaces-runbook-adoption-plan.md` | completed | yes | Completed exemplar retained for its review dispositions. |
-| `2026-07-14-blank-message-no-op-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b2da819`. |
-| `2026-07-14-routine-release-classification-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b2da819`. |
-| `2026-07-14-smaller-quality-followups-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `db67b94`. |
-| `2026-07-14-taut-mcp-extension-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `dd699e4`. |
-| `2026-07-14-taut-tui-cross-reference-correction-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b2da819`. |
-| `2026-07-14-trusted-identity-selector-fast-path-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `b2da819`. |
-| `2026-07-14-universal-release-gates-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `ce2bbb1`. |
-| `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `48298ee`. |
-| `2026-07-15-taut-mcp-release-integration-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `dd699e4`. |
-| `2026-07-28-agent-guidance-delta-wave-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `7afcb14`. |
-| `2026-07-17-agent-guidance-propagation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `9221cbd`. |
-| `2026-07-27-message-show-delete-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `8509dc4`. |
-| `2026-07-28-coalescing-wave-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3706d73`. |
-| `2026-07-28-channel-topics-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `3a1ae8e`. |
-| `2026-07-28-direct-message-navigation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `061476d`. |
-| `2026-07-28-message-react-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `788cdd3`. |
-| `2026-07-28-summon-terminal-retirement-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `cf72638`. |
 | `2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | active | no | Class 5 dual-era MCP implementation, local proof, and targeted commit are complete; hosted CI OS/Python evidence remains. |
 | `2026-07-29-taut-chat-pypi-publication-plan.md` | active | no | Class 5 core-distribution rename and exact-artifact PyPI Trusted Publishing plan; independent Opus review passed after factual corrections. |
-| `2026-07-31-simplebroker-6-reconciliation-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `40a1306`. |
-| `2026-08-01-summon-rich-host-global-state-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `1ad1b8d`. |
-| `2026-08-04-ruff-complexity-and-suppression-registry-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `9ec9d87`. |
-| `2026-08-05-ruff-stable-default-expansion-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `eabc272`. |
-| `2026-08-06-taut-search-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `136cdad`. |
-| `2026-08-06-taut-search-spec-draft.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `136cdad`. |
-| `2026-08-07-program-theory-crystallization-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `c541b48`. |
-| `2026-08-07-agent-theory-delta-wave-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `4e3f12f`. |
-| `2026-08-07-information-architecture-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6d19465`. |
-| `2026-08-07-taut-dump-load-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `9410b6b`. |
-| `2026-08-07-taut-dump-load-spec-draft.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `9410b6b`. |
-| `2026-08-10-mcp-search-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `58f8524`. |
-| `2026-08-10-simplebroker-7-json-id-boundary-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `50a67eb`. |
-| `2026-08-10-stable-dm-send-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `c0a4616`. |
-| `2026-08-10-system-doctor-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `6ef344f`. |
 | `2026-08-10-test-quality-remediation-plan.md` | completed | no | Class 4 repository-wide test-oracle remediation; 81 audited dispositions with hosted OS/Python, required-path, and coverage-preservation evidence recorded in the plan. |
-| `2026-08-11-eventually-test-helper-adoption-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `434db87`. |
-| `2026-08-11-ci-factor-and-release-order-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `058d45f`. |
-| `2026-08-12-extension-main-path-and-all-extra-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `15d54e1`. |
-| `2026-08-14-tui-pretag-gate-plan.md` | retired-pending | no | Soft-retired 2026-09-24 after the four-part harvest gate passed; source `73b56a0`. |
 
 ## Retired Plans
 

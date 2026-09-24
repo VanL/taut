@@ -22,8 +22,8 @@ named harness (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`, `opencode`,
 `pi`); there is no provider-specific protocol adapter. The POSIX backend is
 implemented with a native pseudoterminal and the Windows backend with ConPTY.
 See
-`docs/plans/2026-07-06-taut-summon-plan.md`,
-`docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md`, and
+the retired plan 2026-07-06-taut-summon-plan (source `0db6b82`; see the ledger in `docs/plans/README.md`),
+the retired plan 2026-07-07-taut-summon-pty-harness-adapter-plan (source `587e6e3`; see the ledger in `docs/plans/README.md`), and
 `docs/implementation/05-taut-summon-architecture.md` for the driver design.
 Command registration and rich-host composition are documented in
 `docs/implementation/06-command-extensions.md`.
