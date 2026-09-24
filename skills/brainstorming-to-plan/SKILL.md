@@ -1,7 +1,7 @@
 # Brainstorming to Plan
 
 Status: Active (adopted from agent-guidance @ 2f7eff6 via
-`docs/plans/2026-07-14-agent-guidance-propagation-plan.md`). Bridges
+the retired plan 2026-07-14-agent-guidance-propagation-plan (source `c09e95e`; see the ledger in `docs/plans/README.md`)). Bridges
 open-ended exploration (e.g.
 superpowers:brainstorming, a design conversation, a grilling session) to
 this repository's planning contract. Self-sufficient without any external

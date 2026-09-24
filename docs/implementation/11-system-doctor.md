@@ -104,5 +104,5 @@ real SQLite and PostgreSQL and verifies logical state plus target redaction.
 
 The owning specification is `docs/specs/09-system-doctor.md`; execution and
 review records are `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`,
-`docs/plans/2026-08-10-system-doctor-plan.md`, and
-`docs/plans/2026-08-14-review-findings-remediation-plan.md`.
+the retired plan 2026-08-10-system-doctor-plan (source `6ef344f`; see the ledger in `docs/plans/README.md`), and
+the retired plan 2026-08-14-review-findings-remediation-plan (source `76b1ec4`; see the ledger in `docs/plans/README.md`).

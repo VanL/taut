@@ -5,7 +5,7 @@
 The TUI is Taut's human-first reflection over core and loaded first-party
 extensions. It is not a second chat model and does not derive behavior from
 the CLI parser. `docs/specs/10-taut-tui.md` [TUI-1] through [TUI-14] governs
-the surface; `docs/plans/2026-08-12-taut-tui-implementation-plan.md` records
+the surface; the retired plan 2026-08-12-taut-tui-implementation-plan (source `74e1455`; see the ledger in `docs/plans/README.md`) records
 the staged implementation and verification decisions.
 
 The separately distributed extension lives in

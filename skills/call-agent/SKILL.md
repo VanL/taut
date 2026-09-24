@@ -2,7 +2,7 @@
 
 Status: Active — adopted from agent-guidance @ 2f7eff6 (pre-landing
 review: grok, two rounds, in the source repo) via
-`docs/plans/2026-07-14-agent-guidance-propagation-plan.md`. Probe statuses in the
+the retired plan 2026-07-14-agent-guidance-propagation-plan (source `c09e95e`; see the ledger in `docs/plans/README.md`). Probe statuses in the
 inventory are per-machine; re-run probes on new environments.
 
 ## Purpose

@@ -89,7 +89,7 @@ Supporting context:
   2026-09-23 correction section (E4).
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` (draft): owns the
   tail-pin viewport extraction; cites this plan for S4 elicitation.
-- `docs/plans/2026-08-11-eventually-test-helper-adoption-plan.md`
+- `2026-08-11-eventually-test-helper-adoption-plan` (retired plan; source `434db87`)
   (completed): `tests.helpers.eventually` and `async_eventually`; the
   TUI's `_pause_until` predates or bypassed that adoption.
 - `docs/lessons.md`: 2026-08-14 (fixed-count pauses are not deadlines),

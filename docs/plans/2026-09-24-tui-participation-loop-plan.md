@@ -66,7 +66,7 @@ Supporting context:
 - `docs/lessons.md` 2026-08-18 (capture view state when leaving a surface,
   never on arrival) and 2026-08-14 (fixed-count short pauses are not a
   deadline).
-- `docs/plans/2026-08-12-taut-tui-implementation-plan.md` (completed)
+- `2026-08-12-taut-tui-implementation-plan` (retired plan; source `74e1455`) (completed)
   lines ~683–690: the promised app-level burst test and task-count
   diagnostic.
 - `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md` (active):

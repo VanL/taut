@@ -5,8 +5,8 @@
 This note explains why Taut search is a disposable, source-hydrated view and
 where its backend, queue, and freshness boundaries live. The intended behavior
 is governed by `docs/specs/06-search.md` [SRCH-1] through [SRCH-12]. The
-core delivery record is `docs/plans/2026-08-06-taut-search-plan.md`; the MCP
-adapter record is `docs/plans/2026-08-10-mcp-search-plan.md`.
+core delivery record is the retired plan 2026-08-06-taut-search-plan (source `136cdad`; see the ledger in `docs/plans/README.md`); the MCP
+adapter record is the retired plan 2026-08-10-mcp-search-plan (source `58f8524`; see the ledger in `docs/plans/README.md`).
 
 ## Ownership and Boundaries
 

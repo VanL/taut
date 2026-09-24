@@ -1,7 +1,7 @@
 # Interface Review
 
 Status: Active — adopted from agent-guidance @ `b248e1c` via
-`docs/plans/2026-07-17-agent-guidance-propagation-plan.md`. Promoted in
+the retired plan 2026-07-17-agent-guidance-propagation-plan (source `9221cbd`; see the ledger in `docs/plans/README.md`). Promoted in
 agent-guidance 2026-07-15 per the [DOM-14] promotion tier (3 distinct
 citations of this workflow theme: taut MCP plan §16.3–§16.4; mm
 `implementation/41` RiskEvaluationApi contract; mm external-API/MCP

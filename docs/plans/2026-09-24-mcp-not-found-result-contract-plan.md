@@ -74,10 +74,10 @@ Supporting context:
   no auth — unchanged here).
 - `docs/agent-context/runbooks/designing-agent-facing-interfaces.md`
   (every error carries its next action).
-- `docs/plans/2026-08-10-stable-dm-send-plan.md` review log: the reviewer
+- `2026-08-10-stable-dm-send-plan` (retired plan; source `c0a4616`) review log: the reviewer
   asked to keep the empty result stable-DM-only "without changing
   `@route`"; this plan restores that decision in code.
-- `docs/plans/2026-09-15-mcp-result-simplification-plan.md` (completed;
+- `2026-09-15-mcp-result-simplification-plan` (retired plan; source `3037971`) (completed;
   CLI-shaped records, 21,000-byte manifest ceiling — unchanged here).
 - `docs/implementation/07-taut-mcp-architecture.md`.
 - `docs/plans/artifacts/2026-09-23-deep-dive-review.md` §1 item 6.

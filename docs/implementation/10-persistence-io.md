@@ -5,7 +5,7 @@
 This note explains why Taut persistence I/O is a composite logical format and
 where its owners live. The normative behavior is in
 `docs/specs/08-persistence-io.md` [PIO-1] through [PIO-11]. The delivery record
-is `docs/plans/2026-08-07-taut-dump-load-plan.md`.
+is the retired plan 2026-08-07-taut-dump-load-plan (source `9410b6b`; see the ledger in `docs/plans/README.md`).
 
 The implementation owns full-workspace dump/load only. It does not turn Taut
 into a backup scheduler, add merge or replace modes, or claim one physical

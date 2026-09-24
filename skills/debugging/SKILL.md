@@ -1,7 +1,7 @@
 # Debugging: Root Cause Before Fixes
 
 Status: Active (adopted from agent-guidance @ 2f7eff6 via
-`docs/plans/2026-07-14-agent-guidance-propagation-plan.md`). Distilled from
+the retired plan 2026-07-14-agent-guidance-propagation-plan (source `c09e95e`; see the ledger in `docs/plans/README.md`)). Distilled from
 the root-cause-first discipline in
 superpowers:systematic-debugging, adapted to this repository's proof and
 replanning gates. Either may be invoked; this skill is self-sufficient

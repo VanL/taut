@@ -5,7 +5,7 @@ Date: 2026-07-06
 Status: Active
 
 Promoted on 2026-07-06 from the summon plan's reviewed spec draft
-(`docs/plans/2026-07-06-taut-summon-spec-draft.md`).
+(the retired plan 2026-07-06-taut-summon-spec-draft (source `d5e3078`; see the ledger in `docs/plans/README.md`)).
 
 Design lenses applied to every decision below, recorded once here and cited
 as **(L1)** and **(L2)** throughout:

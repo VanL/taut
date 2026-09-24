@@ -4,7 +4,7 @@ Status: Active — governed by [DOM-14] in
 `docs/specs/01-development-documentation-operating-model.md`. The
 session-start trigger check is read-only; sweeps run only as authorized
 units of work. (Adopted from agent-guidance @ 2f7eff6 via
-`docs/plans/2026-07-14-agent-guidance-propagation-plan.md`.)
+the retired plan 2026-07-14-agent-guidance-propagation-plan (source `c09e95e`; see the ledger in `docs/plans/README.md`).)
 
 ## Purpose
 

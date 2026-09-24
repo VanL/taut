@@ -1,6 +1,6 @@
 # Product-Section Registry
 
-Status: Active — created by `docs/plans/2026-08-07-information-architecture-plan.md`
+Status: Active — created by the retired plan 2026-08-07-information-architecture-plan (source `6d19465`; see the ledger in `docs/plans/README.md`)
 under the contract mechanism adopted in `docs/program-theory.md`
 (THEORY-7, owner-ratified 2026-08-07). The README declares itself the
 product contract; this registry is the mechanical authority table that

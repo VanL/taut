@@ -61,9 +61,9 @@ Source specs:
 
 Supporting context:
 
-- `docs/plans/2026-07-11-v0.5.2-coordinated-release-plan.md` line ~73 (PG
+- `2026-07-11-v0.5.2-coordinated-release-plan` (retired plan; source `06bfc93`) line ~73 (PG
   lock "must not be retained").
-- `docs/plans/2026-08-14-pypi-finalizer-consistency-plan.md` (completed;
+- `2026-08-14-pypi-finalizer-consistency-plan` (retired plan; source `73b56a0`) (completed;
   independent-runner PyPI visibility) — the 0.9.0 incident that shaped the
   current check.
 - `docs/lessons.md` 2026-08-05 (manual lockfile deletions), 2026-08-11

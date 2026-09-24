@@ -9,13 +9,13 @@ sessionless `2026-07-28` clients.
 
 The behavior contract lives in `docs/specs/05-taut-mcp.md` [MCP-1]–[MCP-12].
 The original implementation history lives in
-`docs/plans/2026-07-14-taut-mcp-extension-plan.md`; the dual-era migration and
+the retired plan 2026-07-14-taut-mcp-extension-plan (source `dd699e4`; see the ledger in `docs/plans/README.md`); the dual-era migration and
 review record live in
 `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`. This note owns
 implementation rationale and edit points, not protocol requirements.
 
 The search adapter and its review record live in
-`docs/plans/2026-08-10-mcp-search-plan.md`.
+the retired plan 2026-08-10-mcp-search-plan (source `58f8524`; see the ledger in `docs/plans/README.md`).
 
 The current portable surface is 21 explicit tools plus
 `taut://notifications/current`. The optional Claude channel is a
@@ -272,7 +272,7 @@ validation of real domain and lifecycle results; the SDK cannot supply that
 application validation without advertised schemas. This preserves 0.9.7's
 choice and permits a later additive schema feature when a concrete client
 needs it. The result simplification and measurement record lives in
-`docs/plans/2026-09-15-mcp-result-simplification-plan.md`.
+the retired plan 2026-09-15-mcp-result-simplification-plan (source `3037971`; see the ledger in `docs/plans/README.md`).
 
 ### The notification resource is a cached level; delivery paths are edges
 
