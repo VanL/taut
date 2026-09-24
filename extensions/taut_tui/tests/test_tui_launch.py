@@ -400,9 +400,8 @@ def test_real_textual_fatal_callback_reaches_post_run_debug_bridge(
         continuity_token=None,
     )
 
-    assert result == 0
+    assert result == instances[0].return_code == 1
     assert len(instances) == 1
-    assert instances[0].return_code == 1
     queue = Queue("taut.debug", db_path=str(db_path))
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)

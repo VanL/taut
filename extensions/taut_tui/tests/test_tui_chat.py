@@ -105,14 +105,19 @@ class _NotificationRefreshProbe:
         messages: tuple[Message, ...],
         anchor_index: int,
         intra_row_offset: int,
-    ) -> None:
-        self._original_restore_anchor(messages, anchor_index, intra_row_offset)
+    ) -> int:
+        result = self._original_restore_anchor(
+            messages,
+            anchor_index,
+            intra_row_offset,
+        )
         if self._awaiting_notification_restore:
             self._awaiting_notification_restore = False
             transcript = self._app.query_one("#transcript")
             # The restore method queues its geometry-dependent scroll after
             # refresh. Queue this observation behind that exact scroll.
             transcript.call_after_refresh(self.notification_refresh_applied.set)
+        return result
 
     def observe_refresh_navigation(self) -> Future[NavigationSnapshot]:
         refresh = self.original_refresh_navigation
@@ -616,8 +621,8 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                     break
             transcript = app.query_one("#transcript", TautOptionList)
             await asyncio.wait_for(probe.history_caught_up.wait(), timeout=5)
-            # Simulate the user scrolling up (wheel/keys do not run any
-            # anchor capture).
+            # Put the widget at the settled position, then cross the same
+            # explicit user-ownership seam used by wheel, keys, and scrollbar.
             scroll_applied = asyncio.Event()
             transcript.scroll_to(
                 y=0,
@@ -627,6 +632,7 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                 immediate=True,
             )
             await asyncio.wait_for(scroll_applied.wait(), timeout=5)
+            app._capture_settled_transcript_viewport()
             top_offset = int(transcript.scroll_offset.y)
             assert not transcript.is_vertical_scroll_end, {
                 "max_scroll_y": transcript.max_scroll_y,

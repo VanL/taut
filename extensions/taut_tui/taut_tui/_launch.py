@@ -44,7 +44,7 @@ def run_tui(
             surface="tui",
             operation="tui.fatal",
         )
-    return 0
+    return app.return_code or 0
 
 
 def _is_tty(stream: TextIO) -> bool:

@@ -254,7 +254,10 @@ replaced by the current visual selection. The screen owns text and parse
 feedback, while `TautApp` owns applicability, confirmation, worker submission,
 and result rendering.
 
-Search results remain public hydrated `SearchHit` values. Opening one calls
+Search results remain public hydrated `SearchHit` values. `SearchScreen`
+receives an immutable snapshot of the actor-scoped navigation labels, so DM
+hits show the same participant label as navigation; an unknown DM label is
+`Direct message`, never an internal queue name. Opening one calls
 `TautClient.history_around()` for exact bounded, cursor-neutral context, then
 uses that page as the active transcript and starts the ordinary filtered live
 watcher. This avoids both `show_message()` cursor movement and a TUI-owned
@@ -266,8 +269,11 @@ completion because message rendering defers scroll restoration.
 ## Responsive Presentation
 
 `models.py` stores session-only visual intent: logical focus, selected ids,
-target drafts, mode, inspector, pane choice, and tail or exact-message scroll
-anchor. `layout.py` is pure. It maps the exact 120/80/50-column and 20-row
+target drafts, mode, inspector, pane choice, and the named
+`TranscriptViewport` owner. The owner has exactly three semantic modes: sticky
+tail, exact-message history with an intra-row offset, and intent-tokened search
+history. Every mode carries the generation that fences deferred physical
+scroll effects. `layout.py` is pure. It maps the exact 120/80/50-column and 20-row
 boundaries to wide, medium, compact, and too-small placements. Resize performs
 one synchronous latest-state transition and one widget placement batch. It
 does not fetch history, restart a watcher, consume a pointer, or create a
@@ -283,7 +289,9 @@ modal stack and focus when space returns. Target drafts and message anchors
 live outside the widget arrangement, so reflow does not recreate domain state.
 Wide and medium transcript prompts use the pure
 `transcript_metadata_layout()` decision and a trusted hanging-text renderer.
-That renderer wraps the message body at the width remaining after timestamp
+Their timestamp is the public core `taut.terminal.format_message_time()`
+projection (`HH:MM` in local time); exact ids remain in message inspectors and
+selection state. That renderer wraps the message body at the width remaining after time
 and author metadata, then prefixes continuation lines with the same display
 width. The row-height and anchor-restoration paths measure that exact prompt,
 so the visual indent cannot drift from scroll calculations.
@@ -306,31 +314,46 @@ evidence because option layout, scrolling, resize rendering, and anchor
 restoration occupy distinct deferred callbacks. Observers delegate to
 production behavior; their deadlines are only missing-callback caps.
 
-Opening a search result gives the exact `(conversation intent, message id)`
-pair temporary ownership of its programmatic transcript anchor. The owner is
-armed with the logical anchor before the history-context future is watched.
-Live delivery and navigation refresh continue to render, but viewport capture
-cannot replace that logical anchor while the physical scroll is pending. Only
-the restore scheduled by the matching intent-tokened `ConversationSnapshot`
-can authorize ownership release. If a later content render resets the physical
-viewport before finalization, it invalidates the earlier finalizer and
-re-establishes the owned scroll before scheduling a new following-refresh
-finalizer. Generation guards make older deferred restores no-ops. A superseding
-intent, missing-hit or failed/rejected context, and teardown clear ownership
-and invalidate its callback. Wheel, scrollbar, and scroll-key input also clears
-pending ownership at the transcript widget boundary before normal viewport
-capture; programmatic `scroll_to` does not impersonate user intent. Once the
-matching restore finishes, ownership is released and normal capture resumes
-even while selection stays on the search hit. This prevents stale physical
-scrolling, post-search snap-back, and an indefinitely capture-blocking owner
-without pausing the watcher or dropping deliveries.
+`TranscriptViewport` is the sole authority for tail, history, and search
+position. System arrivals never capture widget geometry: resize, send
+completion, watcher delivery, navigation refresh, and render retain the current
+owner. A render asks the owner for a tokened tail or restore effect; the Textual
+adapter applies it after refresh with immediate public scroll operations and
+drops it if a newer generation owns the viewport. Tail is applied again after
+`OptionList` remeasures its rows, under the same token, which closes the resize
+and live-delivery race without adding a resize task.
+
+User movement crosses a two-phase seam. Wheel, scrollbar, conventional and vi
+scroll keys, and transcript clicks synchronously advance the generation before
+Textual moves, invalidating queued system effects. A later settled observation
+uses Textual's public target scroll position, waits until that observation is
+stable across refreshes, and records sticky tail or an exact-message history
+position. Leaving the compact
+conversation surface uses the same settled capture boundary. Programmatic
+`scroll_to` and `scroll_end` calls do not impersonate user intent. Search-result
+activation enters intent-tokened search ownership before loading context; only
+the matching snapshot may schedule its restore. Completion converts it to
+ordinary history. A newer user movement, target intent, missing hit, rejected
+context, failure, or teardown invalidates it. This prevents arrival capture,
+post-search snap-back, and stale deferred scrolling without pausing the watcher
+or dropping deliveries. If a history anchor disappears, the failed tokened
+restore recovers to tail and schedules a fenced tail effect; it cannot leave a
+permanent owner pointing at a missing row.
+
+The rapid-resize acceptance test drives real `TautApp`, SQLite, and its live
+watcher while requesting sizes across every breakpoint. It proves the final
+accepted size, latest model generation, draft, selection, and tail position,
+then waits another loop turn to reject stale reversion. The old
+`plan_latest_resize` test helper and its synthetic pass counters do not exist.
 
 Initial navigation tests observe the exact navigation future before inspecting
 the rendered target list. Source cancellation/error, a snapshot missing direct
 messages, and widget-application failure are distinct immediate failures rather
 than one polling timeout. Native quit acceptance retains the shipped launcher
 and real PTY/ConPTY path for Ctrl-C and Ctrl-D; the in-process key-binding proof
-is supplemental. Timeout diagnostics retain whether input was sent plus bounded
+is supplemental. The command adapter returns `TautApp.return_code`, so a fatal
+Textual crash retained for diagnostics exits 1 while an ordinary quit exits 0.
+Timeout diagnostics retain whether input was sent plus bounded
 platform, Textual, decoded-key, guarded-dispatch, and output evidence.
 
 The checked visual fixtures are:

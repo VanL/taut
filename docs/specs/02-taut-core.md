@@ -1553,6 +1553,11 @@ regex support; it must not import client, state, watcher, command-discovery,
 Summon, PTY, or TUI implementations. Its public failures are the `TypeError`,
 `ValueError`, and fixed-message `RuntimeError` cases defined by [TAUT-6.4].
 
+`taut.terminal.format_message_time(ts: int) -> str` is the public human
+message-time formatter used by the CLI renderer and first-party rich surfaces.
+It formats the nanosecond message id as local `HH:MM`; the integer Python value
+and [TAUT-8.2]'s canonical external id remain unchanged.
+
 `TautClient.peek_inbox(limit=1000)` returns up to `limit` current notification
 records in notification queue order without claiming pointers. It resolves
 only an existing member through `create=False` and `_touch_activity=False`
@@ -3068,6 +3073,9 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
+  existing human message-time formatter for shared CLI/TUI rendering.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned restoration of
   reactor wake ownership and safe signal handling by replacing the drifted

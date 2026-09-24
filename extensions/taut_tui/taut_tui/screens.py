@@ -22,6 +22,7 @@ from textual.screen import ModalScreen
 from textual.suggester import Suggester
 from textual.widgets.option_list import Option
 
+from taut.client import SearchHit
 from taut.commands.syntax import (
     CommandInput,
     CommandInvocation,
@@ -812,18 +813,23 @@ def _syntax_node(
     raise ValueError(f"unknown syntax path: {invocation.path}")
 
 
-class SearchScreen(_TautModalScreen[object | None]):
+class SearchScreen(_TautModalScreen[SearchHit | None]):
     """Cursor-neutral history search with stale-completion suppression."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, search: Callable[[str], Future[list[object]]]) -> None:
+    def __init__(
+        self,
+        search: Callable[[str], Future[list[SearchHit]]],
+        target_labels: Mapping[str, str],
+    ) -> None:
         super().__init__()
         self._search = search
+        self._target_labels = target_labels
         self._generation = 0
-        self._results: tuple[object, ...] = ()
+        self._results: tuple[SearchHit, ...] = ()
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
@@ -844,7 +850,7 @@ class SearchScreen(_TautModalScreen[object | None]):
         self.query_one("#search-errors", Static).update("Searching…")
         future = self._search(query)
 
-        def completed(done: Future[list[object]]) -> None:
+        def completed(done: Future[list[SearchHit]]) -> None:
             try:
                 self.app.call_later(self._apply_results, generation, done)
             except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
@@ -864,7 +870,7 @@ class SearchScreen(_TautModalScreen[object | None]):
     def _apply_results(
         self,
         generation: int,
-        future: Future[list[object]],
+        future: Future[list[SearchHit]],
     ) -> None:
         if generation != self._generation:
             return
@@ -880,10 +886,12 @@ class SearchScreen(_TautModalScreen[object | None]):
         options = self.query_one("#search-results", OptionList)
         options.clear_options()
         for result in results:
-            thread = str(getattr(result, "thread", "unknown"))
-            author = str(getattr(result, "from_name", "unknown"))
-            text = str(getattr(result, "text", ""))
-            options.add_option(f"{thread}  {author}  {text}")
+            target = self._target_labels.get(result.thread)
+            if target is None:
+                target = (
+                    "Direct message" if result.thread_kind == "dm" else result.thread
+                )
+            options.add_option(f"{target}  {result.from_name}  {result.text}")
 
 
 class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):

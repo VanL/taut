@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from types import MappingProxyType
 
 import pytest
 from textual.app import App, ComposeResult
@@ -399,7 +400,7 @@ def test_search_result_terminal_controls_are_escaped_even_for_fast_completion() 
     from taut_tui.screens import SearchScreen
 
     payload = "PAY\x1b]8;;https://evil.invalid\x07LOAD"
-    completed: Future[list[object]] = Future()
+    completed: Future[list[SearchHit]] = Future()
     completed.set_result(
         [
             SearchHit(
@@ -419,7 +420,9 @@ def test_search_result_terminal_controls_are_escaped_even_for_fast_completion() 
 
     class SearchHost(App[None]):
         def on_mount(self) -> None:
-            self.push_screen(SearchScreen(lambda _query: completed))
+            self.push_screen(
+                SearchScreen(lambda _query: completed, MappingProxyType({}))
+            )
 
     async def exercise() -> None:
         app = SearchHost()
@@ -440,14 +443,82 @@ def test_search_result_terminal_controls_are_escaped_even_for_fast_completion() 
     asyncio.run(exercise())
 
 
-def test_search_completion_after_escape_is_ignored() -> None:
+def test_search_results_use_actor_scoped_dm_labels_without_exposing_queue_names() -> (
+    None
+):
+    from taut.client import SearchHit
     from taut_tui.screens import SearchScreen
 
-    pending: Future[list[object]] = Future()
+    labelled_thread = "dm.d_1234567890abcdef"
+    unknown_thread = "dm.d_fedcba0987654321"
+    completed: Future[list[SearchHit]] = Future()
+    completed.set_result(
+        [
+            SearchHit(
+                thread=labelled_thread,
+                ts=1,
+                from_id=None,
+                from_name="Alice",
+                kind="message",
+                text="known peer",
+                thread_kind="dm",
+                channel=None,
+                parent=None,
+                members=("member-a", "member-b"),
+            ),
+            SearchHit(
+                thread=unknown_thread,
+                ts=2,
+                from_id=None,
+                from_name="Bob",
+                kind="message",
+                text="unknown peer",
+                thread_kind="dm",
+                channel=None,
+                parent=None,
+                members=("member-a", "member-c"),
+            ),
+        ]
+    )
 
     class SearchHost(App[None]):
         def on_mount(self) -> None:
-            self.push_screen(SearchScreen(lambda _query: pending))
+            self.push_screen(
+                SearchScreen(
+                    lambda _query: completed,
+                    MappingProxyType({labelled_thread: "Alice"}),
+                )
+            )
+
+    async def exercise() -> None:
+        app = SearchHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("x", "enter")
+            for _ in range(100):
+                await pilot.pause(0.01)
+                options = app.screen.query_one("#search-results", OptionList)
+                if options.option_count == 2:
+                    break
+            assert options.option_count == 2
+            labelled = str(options.get_option_at_index(0).prompt)
+            unknown = str(options.get_option_at_index(1).prompt)
+            assert "Alice  Alice  known peer" in labelled
+            assert "Direct message  Bob  unknown peer" in unknown
+            assert "dm.d_" not in labelled
+            assert "dm.d_" not in unknown
+
+    asyncio.run(exercise())
+
+
+def test_search_completion_after_escape_is_ignored() -> None:
+    from taut.client import SearchHit
+    from taut_tui.screens import SearchScreen
+
+    pending: Future[list[SearchHit]] = Future()
+
+    class SearchHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(SearchScreen(lambda _query: pending, MappingProxyType({})))
 
     async def exercise() -> None:
         app = SearchHost()

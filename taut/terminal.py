@@ -10,6 +10,7 @@ import heapq
 import re
 import tomllib
 from collections.abc import Iterable, Iterator
+from datetime import datetime
 from functools import lru_cache
 from importlib import resources
 from io import StringIO
@@ -73,6 +74,11 @@ def escape_terminal_text_packaged(text: str) -> str:
 
     patterns = tuple((pattern, True) for pattern in _compiled_default_patterns())
     return _escape_with_patterns(text, patterns)
+
+
+def format_message_time(ts: int) -> str:
+    """Format a nanosecond message id as local ``HH:MM`` time."""
+    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")  # noqa: DTZ006 approved [DOM-10.2.1] [RUFF-SUP-078] exception
 
 
 def _escape_with_patterns(
@@ -268,4 +274,4 @@ def _write_escaped(output: StringIO, value: str) -> None:
             output.write(f"\\U{code_point:08x}")
 
 
-__all__ = ["escape_terminal_text"]
+__all__ = ["escape_terminal_text", "format_message_time"]

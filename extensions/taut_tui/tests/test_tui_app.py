@@ -24,17 +24,46 @@ from taut_tui.widgets import TautComposer
 pytestmark = pytest.mark.sqlite_only
 
 
-async def _pause_until(
+async def _eventually(
     pilot: Any,
     predicate: Callable[[], bool],
     *,
-    attempts: int = 100,
+    timeout: float = 5.0,
 ) -> None:
-    for _ in range(attempts):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         await pilot.pause(0.01)
         if predicate():
             return
     pytest.fail("condition did not become true")
+
+
+_pause_until = _eventually
+
+
+async def _perform_viewport_user_input(
+    user_input: str,
+    pilot: Any,
+    transcript: Any,
+) -> None:
+    from textual import events
+
+    if user_input == "wheel":
+        await pilot._post_mouse_events([events.MouseScrollDown], "#transcript")
+    elif user_input == "scrollbar":
+        assert await pilot.click(
+            transcript.vertical_scrollbar,
+            offset=(0, 10),
+        ) is True
+    elif user_input == "conventional-key":
+        transcript.focus()
+        await pilot.press("pagedown")
+    elif user_input == "vi-key":
+        transcript.focus()
+        await pilot.press("shift+g")
+    else:
+        assert await pilot.click("#transcript", offset=(2, 2)) is True
 
 
 async def _await_summon_confirmation(
@@ -515,20 +544,20 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             await asyncio.wait_for(scroll_applied.wait(), timeout=5)
             assert int(transcript.scroll_offset.y) == 18
             assert transcript.is_vertical_scroll_end is False
-            app._capture_scroll_anchor()
-            before = app.visual_state.scroll_anchor
+            app._capture_settled_transcript_viewport()
+            before = app.visual_state.viewport
             assert before.tail_pinned is False
             assert before.message_id is not None
 
             await pilot.resize_terminal(64, 24)
             await pilot.pause()
-            assert app.visual_state.scroll_anchor == before
+            assert app.visual_state.viewport == before
             assert await pilot.click("#pane-affordance") is True
             await pilot.pause()
-            app._capture_scroll_anchor()
-            after = app.visual_state.scroll_anchor
+            app._capture_settled_transcript_viewport()
+            after = app.visual_state.viewport
             assert after.message_id == before.message_id
-            assert after.intra_row_offset == before.intra_row_offset
+            assert after.offset == before.offset
 
             compact_width = max(1, transcript.scrollable_content_region.width)
             anchor_index = next(
@@ -546,8 +575,8 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
                 deep_offset,
             )
             await pilot.pause()
-            app._capture_scroll_anchor()
-            compact_anchor = app.visual_state.scroll_anchor
+            app._capture_settled_transcript_viewport()
+            compact_anchor = app.visual_state.viewport
             assert compact_anchor.message_id == after.message_id
 
             restored = asyncio.Event()
@@ -557,13 +586,14 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
                 messages: tuple[Any, ...],
                 anchor_index: int,
                 intra_row_offset: int,
-            ) -> None:
-                restore_anchor(messages, anchor_index, intra_row_offset)
+            ) -> int:
+                result = restore_anchor(messages, anchor_index, intra_row_offset)
                 if (
                     messages[anchor_index].ts == compact_anchor.message_id
                     and transcript.scrollable_content_region.width > compact_width
                 ):
                     app.call_after_refresh(restored.set)
+                return result
 
             with monkeypatch.context() as patch:
                 patch.setattr(
@@ -573,8 +603,8 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
                 )
                 await pilot.resize_terminal(100, 24)
                 await asyncio.wait_for(restored.wait(), timeout=5)
-            app._capture_scroll_anchor()
-            widened = app.visual_state.scroll_anchor
+            app._capture_settled_transcript_viewport()
+            widened = app.visual_state.viewport
             assert widened.message_id == compact_anchor.message_id
 
     try:
@@ -2979,7 +3009,7 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
                     and any(message.ts == hit.ts for message in app._message_rows)
                 ),
             )
-            assert app.visual_state.scroll_anchor.message_id == hit.ts
+            assert app.visual_state.viewport.message_id == hit.ts
             transcript = app.query_one("#transcript", TautOptionList)
             assert app._message_rows[transcript.highlighted or 0].ts == hit.ts
 
@@ -2989,15 +3019,16 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
         alice.close()
 
 
-@pytest.mark.parametrize("user_input", ["wheel", "scrollbar", "keyboard"])
+@pytest.mark.parametrize(
+    "user_input",
+    ["wheel", "scrollbar", "conventional-key", "vi-key", "click"],
+)
 def test_user_scroll_supersedes_pending_search_anchor_restore(
     user_input: str,
 ) -> None:
-    from textual import events
-    from textual.scrollbar import ScrollTo
-
     from taut.client import Message
     from taut_tui.app import TautApp
+    from taut_tui.viewport import ViewportEffect, ViewportEffectKind
     from taut_tui.widgets import TautOptionList
 
     messages = tuple(
@@ -3015,25 +3046,39 @@ def test_user_scroll_supersedes_pending_search_anchor_restore(
             await pilot.pause()
             initial_offset = transcript.scroll_offset.y
             app._arm_search_anchor(7, messages[24].ts)
+            search_generation = app.visual_state.viewport.generation
 
-            if user_input == "wheel":
-                await pilot._post_mouse_events(
-                    [events.MouseScrollDown],
-                    "#transcript",
-                )
-            elif user_input == "scrollbar":
-                transcript.vertical_scrollbar.post_message(
-                    ScrollTo(y=10, animate=False)
-                )
-                await pilot.pause()
-            else:
-                transcript.focus()
-                await pilot.press("pagedown")
+            await _perform_viewport_user_input(user_input, pilot, transcript)
+            await pilot.pause()
 
-            assert app._pending_search_anchor is None
-            assert transcript.scroll_offset.y != initial_offset
-            app._capture_scroll_anchor()
-            user_anchor = app.visual_state.scroll_anchor
+            def viewport_matches_widget() -> bool:
+                viewport = app.visual_state.viewport
+                target_y = int(transcript.scroll_target_y)
+                if target_y >= int(transcript.max_scroll_y):
+                    return viewport.tail_pinned
+                width = max(1, transcript.scrollable_content_region.width)
+                remaining = target_y
+                for item in messages:
+                    height = app._message_row_height(item, width)
+                    if remaining < height:
+                        return (
+                            viewport.message_id == item.ts
+                            and viewport.offset == remaining
+                        )
+                    remaining -= height
+                return False
+
+            await _eventually(pilot, viewport_matches_widget)
+            await _eventually(
+                pilot,
+                lambda: int(transcript.scroll_offset.y)
+                == int(transcript.scroll_target_y),
+            )
+
+            assert app.visual_state.viewport.search_owned is False
+            if user_input != "click":
+                assert transcript.scroll_offset.y != initial_offset
+            user_anchor = app.visual_state.viewport
             user_offset = transcript.scroll_offset.y
             assert user_anchor.message_id != messages[24].ts
 
@@ -3042,20 +3087,100 @@ def test_user_scroll_supersedes_pending_search_anchor_restore(
             app.call_after_refresh(rendered.set)
             await asyncio.wait_for(rendered.wait(), timeout=5)
             assert transcript.scroll_offset.y == user_offset
-            assert app.visual_state.scroll_anchor == user_anchor
+            assert app.visual_state.viewport.message_id == user_anchor.message_id
 
-            stale_generation = app._transcript_restore_generation - 1
-            restored: list[int] = []
-            app._apply_owned_search_anchor_restore(
-                stale_generation,
-                (7, messages[24].ts),
-                True,
-                lambda _messages, index, _offset: restored.append(index),
+            app._apply_viewport_effect(
+                ViewportEffect(
+                    search_generation,
+                    ViewportEffectKind.RESTORE,
+                    message_id=messages[24].ts,
+                ),
                 messages,
-                24,
-                0,
             )
-            assert restored == []
+            assert transcript.scroll_offset.y == user_offset
+
+    asyncio.run(exercise())
+
+
+def test_programmatic_scroll_does_not_claim_user_viewport_intent() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 50)
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 24)) as pilot:
+            transcript = app.query_one("#transcript", TautOptionList)
+            app._message_rows = messages
+            transcript.add_options(item.text for item in messages)
+            app._arm_search_anchor(7, messages[24].ts)
+            owner = app.visual_state.viewport
+
+            transcript.scroll_to(y=10, animate=False, force=True, immediate=True)
+            await pilot.pause()
+
+            assert app.visual_state.viewport == owner
+            assert app.visual_state.viewport.search_owned is True
+
+    asyncio.run(exercise())
+
+
+def test_wide_pane_focus_move_does_not_stale_queued_viewport_restore() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.models import FocusTarget, LogicalSurface
+    from taut_tui.viewport import TranscriptViewport
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(130, 34)):
+            planned, effect = TranscriptViewport.history(42).plan_render()
+            assert effect is not None
+            app.visual_state = replace(
+                app.visual_state,
+                focus=FocusTarget(LogicalSurface.NAVIGATION, "navigation-list"),
+                pane_choice=LogicalSurface.NAVIGATION,
+                viewport=planned,
+            )
+
+            app._move_surface(1)
+
+            assert app.visual_state.viewport == planned
+            assert app.visual_state.viewport.accepts(effect)
+
+    asyncio.run(exercise())
+
+
+def test_removed_history_anchor_recovers_to_tail() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.viewport import TranscriptViewport
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 30)
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 24)) as pilot:
+            app.visual_state = replace(
+                app.visual_state,
+                viewport=TranscriptViewport.history(999),
+            )
+            app._render_messages(messages)
+            transcript = app.query_one("#transcript", TautOptionList)
+
+            await _eventually(
+                pilot,
+                lambda: app.visual_state.viewport.tail_pinned
+                and transcript.is_vertical_scroll_end,
+            )
 
     asyncio.run(exercise())
 
@@ -3083,24 +3208,15 @@ def test_completed_search_restore_releases_viewport_ownership() -> None:
                 selected_message_id=message.ts,
             )
             app._arm_search_anchor(7, message.ts)
-            generation = app._transcript_restore_generation
-            app._apply_owned_search_anchor_restore(
-                generation,
-                (7, message.ts),
-                True,
-                lambda _messages, _index, _offset: None,
-                messages,
-                24,
-                0,
-            )
+            app._render_messages(messages, restore_owner_intent=7)
             await pilot.pause()
-            assert app._pending_search_anchor is None
+            assert app.visual_state.viewport.search_owned is False
 
-            transcript.scroll_to(y=5, animate=False, force=True)
+            transcript.scroll_to(y=5, animate=False, force=True, immediate=True)
             await pilot.pause()
-            app._capture_scroll_anchor()
-            assert app.visual_state.scroll_anchor.tail_pinned is False
-            assert app.visual_state.scroll_anchor.message_id != message.ts
+            app._capture_settled_transcript_viewport()
+            assert app.visual_state.viewport.tail_pinned is False
+            assert app.visual_state.viewport.message_id != message.ts
             assert app.visual_state.selected_message_id == message.ts
             user_offset = transcript.scroll_offset.y
 
@@ -3145,8 +3261,8 @@ def test_pending_search_anchor_rejects_stale_render_highlight() -> None:
             app.on_option_list_option_highlighted(stale)
 
             assert app.visual_state.selected_message_id == hit.ts
-            assert app.visual_state.scroll_anchor.message_id == hit.ts
-            assert app._pending_search_anchor == (7, hit.ts)
+            assert app.visual_state.viewport.message_id == hit.ts
+            assert app.visual_state.viewport.search_owned is True
 
             transcript.on_click(
                 SimpleNamespace(
@@ -3154,69 +3270,7 @@ def test_pending_search_anchor_rejects_stale_render_highlight() -> None:
                     chain=1,
                 )
             )
-            assert app._pending_search_anchor is None
-
-    asyncio.run(exercise())
-
-
-def test_search_anchor_restore_owner_is_intent_exact() -> None:
-    from taut.client import Message
-    from taut_tui.app import TautApp
-
-    message = Message("general", 42, "m_alice", "alice", "message", "hit")
-
-    async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            app._conversation_intent = 7
-            app._arm_search_anchor(7, message.ts)
-            generation = app._transcript_restore_generation
-            restored: list[int] = []
-
-            def restore(
-                _messages: tuple[Message, ...],
-                anchor_index: int,
-                _intra_row_offset: int,
-            ) -> None:
-                restored.append(anchor_index)
-
-            app._apply_owned_search_anchor_restore(
-                generation - 1,
-                (7, message.ts),
-                True,
-                restore,
-                (message,),
-                0,
-                0,
-            )
-            assert restored == []
-            assert app._pending_search_anchor == (7, message.ts)
-
-            app._apply_owned_search_anchor_restore(
-                generation,
-                (6, message.ts),
-                True,
-                restore,
-                (message,),
-                0,
-                0,
-            )
-            assert restored == []
-            assert app._pending_search_anchor == (7, message.ts)
-
-            app._apply_owned_search_anchor_restore(
-                generation,
-                (7, message.ts),
-                True,
-                restore,
-                (message,),
-                0,
-                0,
-            )
-            assert restored == [0]
-            assert app._pending_search_anchor == (7, message.ts)
-            await pilot.pause()
-            assert app._pending_search_anchor is None
+            assert app.visual_state.viewport.search_owned is False
 
     asyncio.run(exercise())
 
@@ -3253,62 +3307,17 @@ def test_search_context_sync_failure_invalidates_restore_owner() -> None:
         app._apply_search_context(7, future)
 
     assert caught.value is error
-    assert app._pending_search_anchor is None
-    assert app._transcript_restore_generation == 2
-
-
-def test_search_anchor_restore_failure_invalidates_owner() -> None:
-    from taut.client import Message
-    from taut_tui.app import TautApp
-
-    app = TautApp(db_path=None, as_name=None, continuity_token=None)
-    app._conversation_intent = 7
-    app._arm_search_anchor(7, 42)
-    generation = app._transcript_restore_generation
-    message = Message("general", 42, "m_alice", "alice", "message", "hit")
-    error = RuntimeError("physical restore failed")
-
-    def fail_restore(*_args: object) -> None:
-        raise error
-
-    with pytest.raises(RuntimeError) as caught:
-        app._apply_owned_search_anchor_restore(
-            generation,
-            (7, 42),
-            True,
-            fail_restore,
-            (message,),
-            0,
-            0,
-        )
-
-    assert caught.value is error
-    assert app._pending_search_anchor is None
-    assert app._transcript_restore_generation == generation + 1
+    assert app.visual_state.viewport.tail_pinned is True
 
 
 def test_superseding_intent_invalidates_pending_search_restore() -> None:
-    from taut.client import Message
     from taut_tui.app import TautApp
 
     app = TautApp(db_path=None, as_name=None, continuity_token=None)
     app._conversation_intent = 7
     app._arm_search_anchor(7, 42)
-    generation = app._transcript_restore_generation
     assert app._advance_conversation_intent() == 8
-    assert app._pending_search_anchor is None
-    restored: list[int] = []
-    message = Message("general", 42, "m_alice", "alice", "message", "hit")
-    app._apply_owned_search_anchor_restore(
-        generation,
-        (7, 42),
-        True,
-        lambda _messages, index, _offset: restored.append(index),
-        (message,),
-        0,
-        0,
-    )
-    assert restored == []
+    assert app.visual_state.viewport.search_owned is False
 
 
 @pytest.mark.parametrize(
@@ -3359,33 +3368,27 @@ def test_pending_search_anchor_clears_when_context_cannot_apply(
             if outcome == "rejected":
                 monkeypatch.setattr(app, "_apply_conversation", lambda _snapshot: False)
             app._apply_optional_conversation(7, future)
-            assert app._pending_search_anchor is None
+            assert app.visual_state.viewport.tail_pinned is True
 
     asyncio.run(exercise())
 
 
 def test_teardown_invalidates_pending_search_restore() -> None:
-    from taut.client import Message
     from taut_tui.app import TautApp
+    from taut_tui.viewport import ViewportEffect, ViewportEffectKind
 
     app = TautApp(db_path=None, as_name=None, continuity_token=None)
     app._conversation_intent = 7
     app._arm_search_anchor(7, 42)
-    generation = app._transcript_restore_generation
+    generation = app.visual_state.viewport.generation
     app.on_unmount()
-    assert app._pending_search_anchor is None
-    restored: list[int] = []
-    message = Message("general", 42, "m_alice", "alice", "message", "hit")
-    app._apply_owned_search_anchor_restore(
+    assert app.visual_state.viewport.search_owned is False
+    effect = ViewportEffect(
         generation,
-        (7, 42),
-        True,
-        lambda _messages, index, _offset: restored.append(index),
-        (message,),
-        0,
-        0,
+        ViewportEffectKind.RESTORE,
+        message_id=42,
     )
-    assert restored == []
+    assert app.visual_state.viewport.accepts(effect) is False
 
 
 def test_delete_refresh_cannot_supersede_newer_navigation_intent(
@@ -3570,6 +3573,7 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
 
 def test_transcript_preserves_whitespace_and_adds_message_gap() -> None:
     from taut.client import Message
+    from taut.terminal import format_message_time
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
 
@@ -3600,15 +3604,46 @@ def test_transcript_preserves_whitespace_and_adds_message_gap() -> None:
             first = str(transcript.get_option_at_index(0).prompt)
             second = str(transcript.get_option_at_index(1).prompt)
 
-            assert first == "1  alice  a   b\n\n  third  \n"
+            assert first == f"{format_message_time(1)}  alice  a   b\n\n  third  \n"
             # [TUI-5.3] (2026-08-18): literal escapes decode toward sender
             # intent — the body's \n becomes a break and \t a tab stop.
-            assert second == "2  bob  literal\n    \n"
+            assert second == f"{format_message_time(2)}  bob  literal\n    \n"
             assert transcript.option_count == len(app._message_rows) == 2
             assert app._message_rows[1] is messages[1]
             assert app._message_row_height(messages[0], 100) == 4
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("mode", "shows_time"),
+    [
+        (LayoutMode.WIDE, True),
+        (LayoutMode.MEDIUM, True),
+        (LayoutMode.COMPACT, True),
+        (LayoutMode.TOO_SMALL, False),
+    ],
+)
+def test_transcript_uses_core_time_and_never_exposes_message_id(
+    mode: LayoutMode,
+    shows_time: bool,
+) -> None:
+    from taut.client import Message
+    from taut.terminal import format_message_time
+    from taut_tui.app import TautApp
+
+    message_id = 1_723_400_002_000_000_000
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app.layout_mode = mode
+
+    row = str(
+        app._message_prompt(
+            Message("general", message_id, "m_alice", "alice", "message", "body")
+        )
+    )
+
+    assert (format_message_time(message_id) in row) is shows_time
+    assert str(message_id) not in row
 
 
 @pytest.mark.parametrize("mode", [LayoutMode.WIDE, LayoutMode.MEDIUM])
@@ -3617,6 +3652,7 @@ def test_transcript_wraps_wide_and_medium_bodies_with_hanging_indent(
 ) -> None:
     """[TUI-5.3]: wrapped bodies stay aligned under their first body cell."""
     from taut.client import Message
+    from taut.terminal import format_message_time
     from taut_tui.app import TautApp
 
     message = Message(
@@ -3633,8 +3669,9 @@ def test_transcript_wraps_wide_and_medium_bodies_with_hanging_indent(
     lines = app._message_prompt(message).wrap(app.console, 24)
 
     assert [str(line).rstrip() for line in lines] == [
-        "1  alice  one two three",
-        "          four five",
+        f"{format_message_time(1)}  alice  one two",
+        "              three four",
+        "              five",
         "",
     ]
     assert app._message_row_height(message, 24) == len(lines)
@@ -3643,6 +3680,7 @@ def test_transcript_wraps_wide_and_medium_bodies_with_hanging_indent(
 def test_transcript_compact_metadata_stacks_without_body_indent() -> None:
     """[TUI-5.3]: compact metadata owns its line and body uses full width."""
     from taut.client import Message
+    from taut.terminal import format_message_time
     from taut_tui.app import TautApp
 
     message = Message(
@@ -3659,7 +3697,7 @@ def test_transcript_compact_metadata_stacks_without_body_indent() -> None:
     lines = app._message_prompt(message).wrap(app.console, 14)
 
     assert [str(line).rstrip() for line in lines] == [
-        "alice  1",
+        f"alice  {format_message_time(1)}",
         "one two three",
         "four five",
         "",
@@ -3669,6 +3707,7 @@ def test_transcript_compact_metadata_stacks_without_body_indent() -> None:
 def test_transcript_option_render_keeps_hanging_indent_and_height_in_sync() -> None:
     """[TUI-5.3]: Textual renders and measures the owned hanging prompt."""
     from taut.client import Message
+    from taut.terminal import format_message_time
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
 
@@ -3694,8 +3733,11 @@ def test_transcript_option_render_keeps_hanging_indent_and_height_in_sync() -> N
             )
 
             rendered_lines = [strip.text.rstrip() for strip in strips]
-            assert rendered_lines[0].startswith("1  alice  word")
-            assert all(line.startswith(" " * 10) for line in rendered_lines[1:-1])
+            metadata = f"{format_message_time(1)}  alice  "
+            assert rendered_lines[0].startswith(f"{metadata}word")
+            assert all(
+                line.startswith(" " * len(metadata)) for line in rendered_lines[1:-1]
+            )
             assert rendered_lines[-1] == ""
             assert app._message_row_height(
                 message,
@@ -3707,6 +3749,7 @@ def test_transcript_option_render_keeps_hanging_indent_and_height_in_sync() -> N
 
 def test_message_body_structure_does_not_widen_metadata_controls() -> None:
     from taut.client import Message
+    from taut.terminal import format_message_time
     from taut_tui.app import TautApp
     from taut_tui.session import ConversationSnapshot
     from taut_tui.widgets import TautOptionList
@@ -3736,7 +3779,9 @@ def test_message_body_structure_does_not_widen_metadata_controls() -> None:
                 .get_option_at_index(0)
                 .prompt
             )
-            assert transcript.startswith(r"1  ali\nce\tname  body" + "\n")
+            assert transcript.startswith(
+                f"{format_message_time(1)}  " + r"ali\nce\tname  body" + "\n"
+            )
             assert "next    column\n" in transcript
 
             app._message_rows = (message,)
@@ -3946,6 +3991,149 @@ def test_command_line_open_keeps_live_deliveries_rendering(
     bob.close()
 
 
+def test_real_rapid_resize_burst_keeps_latest_state_and_live_delivery(
+    tmp_path: Path,
+) -> None:
+    """[TUI-9.2]/[TUI-13.2]: real resize and watcher callbacks are latest-wins."""
+
+    from taut_tui.app import TautApp
+    from taut_tui.models import LayoutMode, TerminalSize
+    from taut_tui.widgets import TautComposer, TautOptionList
+
+    db_path = tmp_path / "rapid-resize-live.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    for client in (alice, bob):
+        client.join("general")
+    for index in range(24):
+        alice.say("general", f"seed {index:02d} " + "wrapped row " * 5)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            await _eventually(pilot, lambda: "general" in app._navigation_targets)
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            navigation.highlighted = app._navigation_targets.index("general")
+            navigation.action_select()
+            await _eventually(
+                pilot,
+                lambda: app.visual_state.active_conversation == "general",
+            )
+            transcript = app.query_one("#transcript", TautOptionList)
+            await _eventually(pilot, lambda: transcript.option_count >= 24)
+            app._select_message(5)
+            await _eventually(pilot, lambda: app.visual_state.inspector is not None)
+            selected = app.visual_state.selected_message_id
+            app._capture_settled_transcript_viewport()
+            await pilot.press("i")
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "draft survives resize burst"
+            await pilot.pause()
+
+            async def resize_burst() -> None:
+                for size in ((119, 24), (79, 24), (49, 24), (80, 24)):
+                    await pilot.resize_terminal(*size)
+
+            async def worker_result() -> None:
+                domain = app._domain
+                assert domain is not None
+                app._run_action(domain.show_identity())
+                await _eventually(pilot, lambda: app._operation_state == "idle")
+
+            await asyncio.gather(
+                resize_burst(),
+                asyncio.to_thread(bob.say, "general", "delivery during resize burst"),
+                worker_result(),
+            )
+            await _eventually(
+                pilot,
+                lambda: any(
+                    message.text == "delivery during resize burst"
+                    for message in app._message_rows
+                ),
+            )
+            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+
+            assert app._accepted_size == TerminalSize(80, 24)
+            assert app.layout_mode is LayoutMode.MEDIUM
+            assert app.visual_state.active_conversation == "general"
+            assert app.visual_state.selected_message_id == selected
+            assert app.visual_state.inspector is not None
+            draft = app.visual_state.draft_for("general")
+            assert draft is not None and draft.text == "draft survives resize burst"
+            assert app.visual_state.viewport.tail_pinned is True
+            assert transcript.is_vertical_scroll_end is True
+            accepted = app._accepted_size
+            generation = app.visual_state.model_generation
+            await pilot.pause(0.2)
+            assert app._accepted_size == accepted
+            assert app.visual_state.model_generation == generation
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        alice.close()
+        bob.close()
+
+
+def test_tail_pin_survives_own_send_and_watcher_delivery(tmp_path: Path) -> None:
+    """[TUI-6.2]/[TUI-9.2]: both append paths retain sticky tail ownership."""
+
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautComposer, TautOptionList
+
+    db_path = tmp_path / "sticky-tail.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    for client in (alice, bob):
+        client.join("general")
+    for index in range(24):
+        alice.say("general", f"seed {index:02d} " + "wrapped row " * 5)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 24)) as pilot:
+            await _eventually(pilot, lambda: "general" in app._navigation_targets)
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            navigation.highlighted = app._navigation_targets.index("general")
+            navigation.action_select()
+            await _eventually(pilot, lambda: len(app._message_rows) >= 24)
+            transcript = app.query_one("#transcript", TautOptionList)
+            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            assert app.visual_state.viewport.tail_pinned is True
+
+            await pilot.press("i")
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "own send keeps tail"
+            await pilot.press("enter")
+            await _eventually(
+                pilot,
+                lambda: any(
+                    message.text == "own send keeps tail" for message in app._message_rows
+                ),
+            )
+            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            assert app.visual_state.viewport.tail_pinned is True
+
+            await asyncio.to_thread(bob.say, "general", "watcher keeps tail")
+            await _eventually(
+                pilot,
+                lambda: any(
+                    message.text == "watcher keeps tail" for message in app._message_rows
+                ),
+            )
+            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            assert app.visual_state.viewport.tail_pinned is True
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        alice.close()
+        bob.close()
+
+
 def test_action_browser_and_command_line_are_named_distinctly() -> None:
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautButton
@@ -3975,7 +4163,7 @@ def test_history_anchor_rerender_preserves_selected_message() -> None:
 
     from taut.client import Message
     from taut_tui.app import TautApp
-    from taut_tui.models import ScrollAnchor
+    from taut_tui.viewport import TranscriptViewport
 
     messages = tuple(
         Message("general", ts, "m_alice", "alice", "message", f"row {ts}")
@@ -3988,7 +4176,7 @@ def test_history_anchor_rerender_preserves_selected_message() -> None:
             app.visual_state = dc_replace(
                 app.visual_state,
                 selected_message_id=5,
-                scroll_anchor=ScrollAnchor.history(2),
+                viewport=TranscriptViewport.history(2),
             )
             app._render_messages(messages)
             await pilot.pause(0.1)

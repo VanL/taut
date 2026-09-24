@@ -11,6 +11,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar, TypeVar, cast
 
 from textual import events
@@ -48,6 +49,7 @@ from taut.commands.syntax import (
     format_command_syntax,
     merge_command_syntax,
 )
+from taut.terminal import format_message_time
 from taut_tui.actions import (
     ActionContext,
     ActionId,
@@ -86,7 +88,6 @@ from taut_tui.models import (
     InteractionMode,
     LayoutMode,
     LogicalSurface,
-    ScrollAnchor,
     TerminalSize,
     VisualState,
     remap_channel_target,
@@ -125,6 +126,7 @@ from taut_tui.summon import (
     _TerminalAttachNotice,
 )
 from taut_tui.system import TuiSystemOperations
+from taut_tui.viewport import ViewportEffect, ViewportEffectKind
 from taut_tui.widgets import (
     DisplayText,
     TautButton,
@@ -393,9 +395,6 @@ class TautApp(App[None]):
         self._pending_g = False
         self._operation_state = "idle"
         self._conversation_intent = 0
-        self._pending_search_anchor: tuple[int, int] | None = None
-        self._search_anchor_restore_applied = False
-        self._transcript_restore_generation = 0
         self._next_send_token = 0
         self._pending_sends: dict[int, tuple[str, int]] = {}
         self._search_hits_by_intent: dict[int, SearchHit] = {}
@@ -454,9 +453,11 @@ class TautApp(App[None]):
         self._accepted_size = size
         self._apply_placement(size)
         self._set_mode(InteractionMode.NORMAL)
-        self._query_base(
-            "#transcript", TautOptionList
-        ).user_viewport_intent = self._on_transcript_user_viewport_intent
+        transcript = self._query_base("#transcript", TautOptionList)
+        transcript.user_viewport_intent = self._on_transcript_user_viewport_intent
+        transcript.user_viewport_settled = (
+            self._on_transcript_user_viewport_settled
+        )
         self._query_base("#navigation-list", TautOptionList).focus()
         self._update_status()
         self._session = TuiSession(
@@ -540,7 +541,6 @@ class TautApp(App[None]):
         ):
             self._base_screen = self.screen
         self._capture_draft_cursor()
-        self._capture_scroll_anchor()
         prior_mode = self.layout_mode
         self._resize_generation += 1
         resize_generation = self._resize_generation
@@ -769,7 +769,7 @@ class TautApp(App[None]):
         elif event.option_list.id == "transcript" and 0 <= event.option_index < len(
             self._message_rows
         ):
-            if self._pending_search_anchor is not None:
+            if self.visual_state.viewport.search_owned:
                 # Rebuilding an OptionList posts highlight messages. One from
                 # the superseded render may arrive after a search jump has
                 # taken ownership of selection and viewport restoration. User
@@ -990,10 +990,13 @@ class TautApp(App[None]):
                 self._set_mode(InteractionMode.NORMAL)
                 return
 
-            def search(query: str) -> Future[list[object]]:
-                return cast(Future[list[object]], domain.search(query))
+            def search(query: str) -> Future[list[SearchHit]]:
+                return domain.search(query)
 
-            self.push_screen(SearchScreen(search), self._complete_search)
+            self.push_screen(
+                SearchScreen(search, MappingProxyType(dict(self._target_labels))),
+                self._complete_search,
+            )
 
     def action_open_help(self) -> None:
         self._render_inspector(
@@ -1640,10 +1643,6 @@ class TautApp(App[None]):
             target = self.visual_state.selected_navigation
             assert target is not None
             intent = self._advance_conversation_intent()
-            self.visual_state = replace(
-                self.visual_state,
-                scroll_anchor=ScrollAnchor.tail(),
-            )
             self._watch_future(
                 domain.open_conversation(target, intent_token=intent),
                 lambda done: self._apply_optional_conversation(intent, done),
@@ -1872,9 +1871,6 @@ class TautApp(App[None]):
         return False
 
     def _move_surface(self, direction: int) -> None:
-        # Capture while the transcript is still visible (leaving-capture);
-        # the guard inside makes this a no-op when it is already hidden.
-        self._capture_scroll_anchor()
         surfaces = [LogicalSurface.NAVIGATION, LogicalSurface.CONVERSATION]
         if self.visual_state.inspector is not None:
             surfaces.append(LogicalSurface.INSPECTOR)
@@ -1884,6 +1880,12 @@ class TautApp(App[None]):
         except ValueError:
             index = 1
         selected = surfaces[max(0, min(len(surfaces) - 1, index + direction))]
+        if (
+            self.layout_mode is LayoutMode.COMPACT
+            and current is LogicalSurface.CONVERSATION
+            and selected is not LogicalSurface.CONVERSATION
+        ):
+            self._capture_settled_transcript_viewport()
         widget_ids = {
             LogicalSurface.NAVIGATION: "navigation-list",
             LogicalSurface.CONVERSATION: "transcript",
@@ -1900,7 +1902,6 @@ class TautApp(App[None]):
             self.call_after_refresh(self._render_messages, self._message_rows)
 
     def _cycle_surface(self) -> None:
-        self._capture_scroll_anchor()
         surfaces = [LogicalSurface.NAVIGATION, LogicalSurface.CONVERSATION]
         if self.visual_state.inspector is not None:
             surfaces.append(LogicalSurface.INSPECTOR)
@@ -1915,6 +1916,12 @@ class TautApp(App[None]):
         except ValueError:
             index = 0
         selected = surfaces[(index + 1) % len(surfaces)]
+        if (
+            self.layout_mode is LayoutMode.COMPACT
+            and current is LogicalSurface.CONVERSATION
+            and selected is not LogicalSurface.CONVERSATION
+        ):
+            self._capture_settled_transcript_viewport()
         widget_ids = {
             LogicalSurface.NAVIGATION: "navigation-list",
             LogicalSurface.CONVERSATION: "transcript",
@@ -3015,7 +3022,6 @@ class TautApp(App[None]):
         self._reply_threads = reply_threads
         self._set_navigation_actions(tuple(targets), tuple(labels))
         if self._message_rows:
-            self._capture_scroll_anchor()
             self._render_messages(self._message_rows)
 
     def _set_navigation_actions(
@@ -3091,13 +3097,15 @@ class TautApp(App[None]):
         if result is None:
             self._clear_pending_search_anchor(intent=intent)
             return
-        pending = self._pending_search_anchor
+        viewport = self.visual_state.viewport
         if (
-            pending is not None
-            and pending[0] == intent
+            viewport.search_owned
+            and viewport.intent == intent
             and (
                 result.intent_token != intent
-                or not any(message.ts == pending[1] for message in result.messages)
+                or not any(
+                    message.ts == viewport.message_id for message in result.messages
+                )
             )
         ):
             self._clear_pending_search_anchor(intent=intent)
@@ -3177,12 +3185,17 @@ class TautApp(App[None]):
             message.ts == selected for message in snapshot.messages
         ):
             selected = None
+        target_changed = self.visual_state.active_conversation != snapshot.target
+        viewport = self.visual_state.viewport
+        if target_changed:
+            viewport = viewport.target_changed(search_intent=snapshot.intent_token)
         self.visual_state = replace(
             self.visual_state,
             active_conversation=snapshot.target,
             open_reply_thread=snapshot.reply_thread,
             selected_message_id=selected,
             model_generation=snapshot.generation,
+            viewport=viewport,
         )
         target_label = self._target_labels.get(snapshot.target, snapshot.target)
         self._query_base("#target-header", TautStatic).update(target_label)
@@ -3255,7 +3268,6 @@ class TautApp(App[None]):
         snapshot = session.conversation_snapshot() if session is not None else None
         if snapshot is None:
             return False
-        self._capture_scroll_anchor()
         self._render_messages(snapshot.messages)
         if snapshot.reply_thread is not None:
             self._render_reply_inspector(snapshot)
@@ -3273,7 +3285,6 @@ class TautApp(App[None]):
         for message in messages:
             transcript.add_option(self._message_prompt(message))
         if messages:
-            anchor = self.visual_state.scroll_anchor
             highlighted = next(
                 (
                     index
@@ -3283,181 +3294,178 @@ class TautApp(App[None]):
                 len(messages) - 1,
             )
             transcript.highlighted = highlighted
-            pending = self._pending_search_anchor
-            if pending is not None:
-                pending_index = next(
-                    (
-                        index
-                        for index, message in enumerate(messages)
-                        if message.ts == pending[1]
-                    ),
-                    None,
-                )
-                if pending_index is None:
-                    self._clear_pending_search_anchor(intent=pending[0])
-                elif (
-                    restore_owner_intent == pending[0]
-                    or self._search_anchor_restore_applied
-                ):
-                    generation = self._invalidate_transcript_restores()
-                    restore = self._restore_transcript_anchor
-                    self.call_after_refresh(
-                        self._apply_owned_search_anchor_restore,
-                        generation,
-                        pending,
-                        restore_owner_intent == pending[0],
-                        restore,
-                        messages,
-                        pending_index,
-                        anchor.intra_row_offset,
-                    )
-            elif anchor.tail_pinned:
-                self._invalidate_transcript_restores()
-                transcript.scroll_end(animate=False)
-            elif anchor.message_id is not None:
-                anchor_index = next(
-                    (
-                        index
-                        for index, message in enumerate(messages)
-                        if message.ts == anchor.message_id
-                    ),
-                    highlighted,
-                )
-                # Scroll restoration is position-only: rewriting the
-                # highlight here would rewrite selected_message_id through
-                # the OptionHighlighted handler and retarget an open
-                # reply/react/delete at the anchor row.
-                generation = self._invalidate_transcript_restores()
-                restore = self._restore_transcript_anchor
-                self.call_after_refresh(
-                    self._apply_transcript_anchor_restore,
-                    generation,
-                    restore,
-                    messages,
-                    anchor_index,
-                    anchor.intra_row_offset,
-                )
+            viewport, effect = self.visual_state.viewport.plan_render(
+                authorized_search_intent=restore_owner_intent,
+            )
+            self.visual_state = replace(self.visual_state, viewport=viewport)
+            if effect is not None:
+                self.call_after_refresh(self._apply_viewport_effect, effect, messages)
         self._update_context_affordances()
 
-    def _capture_scroll_anchor(self) -> None:
-        if self._pending_search_anchor is not None:
+    def _on_transcript_user_viewport_intent(self) -> None:
+        viewport = self.visual_state.viewport.user_intent_started()
+        self.visual_state = replace(self.visual_state, viewport=viewport)
+        self.call_after_refresh(
+            self._queue_transcript_user_viewport_settle,
+            viewport.generation,
+        )
+
+    def _queue_transcript_user_viewport_settle(self, generation: int) -> None:
+        """Observe geometry one refresh after Textual applies the user movement."""
+
+        if self.visual_state.viewport.generation != generation:
             return
+        self.call_after_refresh(self._settle_transcript_user_viewport, generation)
+
+    def _on_transcript_user_viewport_settled(self) -> None:
+        generation = self.visual_state.viewport.generation
+        self.call_after_refresh(self._settle_transcript_user_viewport, generation)
+
+    def _capture_settled_transcript_viewport(self) -> None:
+        """Capture visible geometry only at an explicit user-leaving boundary."""
+
+        viewport = self.visual_state.viewport.user_intent_started()
+        self.visual_state = replace(self.visual_state, viewport=viewport)
+        observation = self._read_transcript_viewport_observation()
+        if observation is not None:
+            self._commit_transcript_viewport_observation(observation)
+
+    def _settle_transcript_user_viewport(
+        self,
+        generation: int,
+        previous: tuple[bool, int | None, int] | None = None,
+    ) -> None:
+        if self.visual_state.viewport.generation != generation:
+            return
+        observation = self._read_transcript_viewport_observation()
+        if observation is None:
+            return
+        if observation != previous:
+            self.call_after_refresh(
+                self._settle_transcript_user_viewport,
+                generation,
+                observation,
+            )
+            return
+        self._commit_transcript_viewport_observation(observation)
+
+    def _read_transcript_viewport_observation(
+        self,
+    ) -> tuple[bool, int | None, int] | None:
         if not self._message_rows:
-            return
+            return None
         try:
             if not self._query_base("#conversation").display:
-                return
+                return None
         except NoMatches:
-            return
+            return None
         transcript = self._query_base("#transcript", TautOptionList)
-        if transcript.is_vertical_scroll_end:
-            anchor = ScrollAnchor.tail()
+        target_y = int(transcript.scroll_target_y)
+        if target_y >= int(transcript.max_scroll_y):
+            return (True, None, 0)
+        width = max(1, transcript.scrollable_content_region.width)
+        line = target_y
+        option_index = 0
+        intra_row = line
+        for index, message in enumerate(self._message_rows):
+            height = self._message_row_height(message, width)
+            if intra_row < height:
+                option_index = index
+                break
+            intra_row -= height
         else:
-            width = max(1, transcript.scrollable_content_region.width)
-            line = int(transcript.scroll_offset.y)
-            option_index = 0
-            intra_row = line
-            for index, message in enumerate(self._message_rows):
-                height = self._message_row_height(message, width)
-                if intra_row < height:
-                    option_index = index
-                    break
-                intra_row -= height
-            else:
-                option_index = len(self._message_rows) - 1
-                intra_row = 0
-            anchor = ScrollAnchor.history(
-                self._message_rows[option_index].ts,
-                intra_row_offset=intra_row,
-            )
-        self.visual_state = replace(self.visual_state, scroll_anchor=anchor)
+            option_index = len(self._message_rows) - 1
+            intra_row = 0
+        return (False, self._message_rows[option_index].ts, intra_row)
 
-    def _on_transcript_user_viewport_intent(self) -> None:
-        self._clear_pending_search_anchor()
+    def _commit_transcript_viewport_observation(
+        self,
+        observation: tuple[bool, int | None, int],
+    ) -> None:
+        at_tail, message_id, offset = observation
+        if at_tail:
+            viewport = self.visual_state.viewport.user_settled(at_tail=True)
+        else:
+            assert message_id is not None
+            viewport = self.visual_state.viewport.user_settled(
+                at_tail=False,
+                message_id=message_id,
+                offset=offset,
+            )
+        self.visual_state = replace(self.visual_state, viewport=viewport)
 
     def _arm_search_anchor(self, intent: int, message_id: int) -> None:
-        self._invalidate_transcript_restores()
-        self._pending_search_anchor = (intent, message_id)
-        self._search_anchor_restore_applied = False
         self.visual_state = replace(
             self.visual_state,
-            scroll_anchor=ScrollAnchor.history(message_id),
+            viewport=self.visual_state.viewport.search_armed(intent, message_id),
         )
 
     def _clear_pending_search_anchor(self, *, intent: int | None = None) -> bool:
-        pending = self._pending_search_anchor
-        if pending is None or (intent is not None and pending[0] != intent):
+        viewport = self.visual_state.viewport
+        cleared = viewport.cancel_search(intent=intent)
+        if cleared is viewport:
             return False
-        self._pending_search_anchor = None
-        self._search_anchor_restore_applied = False
-        self._invalidate_transcript_restores()
+        self.visual_state = replace(self.visual_state, viewport=cleared)
         return True
 
-    def _invalidate_transcript_restores(self) -> int:
-        self._transcript_restore_generation += 1
-        return self._transcript_restore_generation
-
-    def _apply_transcript_anchor_restore(
+    def _apply_viewport_effect(
         self,
-        generation: int,
-        restore: Callable[[tuple[Message, ...], int, int], None],
+        effect: ViewportEffect,
         messages: tuple[Message, ...],
-        anchor_index: int,
-        intra_row_offset: int,
     ) -> None:
-        if (
-            generation != self._transcript_restore_generation
-            or self._pending_search_anchor is not None
-            or self._shutting_down
-        ):
+        viewport = self.visual_state.viewport
+        if self._shutting_down or not viewport.accepts(effect):
             return
-        restore(messages, anchor_index, intra_row_offset)
-
-    def _apply_owned_search_anchor_restore(
-        self,
-        generation: int,
-        owner: tuple[int, int],
-        authorize: bool,
-        restore: Callable[[tuple[Message, ...], int, int], None],
-        messages: tuple[Message, ...],
-        anchor_index: int,
-        intra_row_offset: int,
-    ) -> None:
-        if (
-            generation != self._transcript_restore_generation
-            or owner != self._pending_search_anchor
-            or owner[0] != self._conversation_intent
-            or self._shutting_down
-        ):
+        transcript = self._query_base("#transcript", TautOptionList)
+        if effect.kind is ViewportEffectKind.SCROLL_END:
+            transcript.scroll_end(animate=False, force=True, immediate=True)
+            self.call_after_refresh(self._reapply_tail_effect, effect)
             return
-        try:
-            restore(messages, anchor_index, intra_row_offset)
-        except BaseException:
-            self._clear_pending_search_anchor(intent=owner[0])
-            raise
-        if authorize:
-            self._search_anchor_restore_applied = True
-        self.call_after_refresh(
-            self._finish_owned_search_anchor_restore,
-            generation,
-            owner,
+        anchor_index = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.ts == effect.message_id
+            ),
+            None,
+        )
+        if anchor_index is None:
+            recovered, recovery_effect = viewport.restore_failed(effect).plan_render()
+            self.visual_state = replace(
+                self.visual_state,
+                viewport=recovered,
+            )
+            if recovery_effect is not None:
+                self.call_after_refresh(
+                    self._apply_viewport_effect,
+                    recovery_effect,
+                    messages,
+                )
+            return
+        bounded_offset = self._restore_transcript_anchor(
+            messages,
+            anchor_index,
+            effect.offset,
+        )
+        self.visual_state = replace(
+            self.visual_state,
+            viewport=viewport.restore_done(
+                effect,
+                settled_offset=bounded_offset,
+            ),
         )
 
-    def _finish_owned_search_anchor_restore(
-        self,
-        generation: int,
-        owner: tuple[int, int],
-    ) -> None:
-        if (
-            generation != self._transcript_restore_generation
-            or owner != self._pending_search_anchor
-            or owner[0] != self._conversation_intent
-            or self.visual_state.scroll_anchor.message_id != owner[1]
-            or not self._search_anchor_restore_applied
-            or self._shutting_down
-        ):
+    def _reapply_tail_effect(self, effect: ViewportEffect) -> None:
+        """Apply the same fenced pin after OptionList finishes remeasuring rows."""
+
+        viewport = self.visual_state.viewport
+        if self._shutting_down or not viewport.accepts(effect) or not viewport.tail_pinned:
             return
-        self._clear_pending_search_anchor(intent=owner[0])
+        self._query_base("#transcript", TautOptionList).scroll_end(
+            animate=False,
+            force=True,
+            immediate=True,
+        )
 
     def _message_prompt(self, message: Message) -> DisplayText:
         target = self.visual_state.active_conversation
@@ -3470,7 +3478,7 @@ class TautApp(App[None]):
         if metadata_layout is TranscriptMetadataLayout.STACKED:
             return display_text(
                 (escape_inline_text(message.from_name), "bold"),
-                f"  {message.ts}",
+                f"  {format_message_time(message.ts)}",
                 (reply_marker, "italic"),
                 "\n",
                 escape_message_body(message.text),
@@ -3478,7 +3486,7 @@ class TautApp(App[None]):
             )
         if metadata_layout is TranscriptMetadataLayout.ALIGNED:
             metadata = display_text(
-                (str(message.ts), "dim"),
+                (format_message_time(message.ts), "dim"),
                 "  ",
                 (escape_inline_text(message.from_name), "bold"),
                 "  ",
@@ -3503,24 +3511,11 @@ class TautApp(App[None]):
         messages: tuple[Message, ...],
         anchor_index: int,
         intra_row_offset: int,
-    ) -> None:
+    ) -> int:
         transcript = self._query_base("#transcript", TautOptionList)
         width = max(1, transcript.scrollable_content_region.width)
         row_height = self._message_row_height(messages[anchor_index], width)
         bounded_offset = min(intra_row_offset, row_height - 1)
-        anchor = self.visual_state.scroll_anchor
-        if (
-            not anchor.tail_pinned
-            and anchor.message_id == messages[anchor_index].ts
-            and anchor.intra_row_offset != bounded_offset
-        ):
-            self.visual_state = replace(
-                self.visual_state,
-                scroll_anchor=ScrollAnchor.history(
-                    anchor.message_id,
-                    intra_row_offset=bounded_offset,
-                ),
-            )
         y = (
             sum(
                 self._message_row_height(message, width)
@@ -3528,7 +3523,8 @@ class TautApp(App[None]):
             )
             + bounded_offset
         )
-        transcript.scroll_to(y=y, animate=False, force=True)
+        transcript.scroll_to(y=y, animate=False, force=True, immediate=True)
+        return bounded_offset
 
     def _show_empty_action(self, action_id: ActionId) -> None:
         self._dispatch_tui_action(action_id, source=ActionRoute.NAVIGATION)

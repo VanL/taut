@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from taut_tui.layout import plan_latest_resize, transition_layout
+from taut_tui.layout import transition_layout
 from taut_tui.models import (
     DraftState,
     FocusTarget,
@@ -19,10 +19,10 @@ from taut_tui.models import (
     InteractionMode,
     LayoutMode,
     LogicalSurface,
-    ScrollAnchor,
     TerminalSize,
     VisualState,
 )
+from taut_tui.viewport import TranscriptViewport
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -50,10 +50,10 @@ def rich_state(*, tail_pinned: bool = False) -> VisualState:
             InspectorKind.REPLIES,
             selected_item="reply:1234567890123456799",
         ),
-        scroll_anchor=(
-            ScrollAnchor.tail()
+        viewport=(
+            TranscriptViewport.tail()
             if tail_pinned
-            else ScrollAnchor.history(1234567890123456789, intra_row_offset=3)
+            else TranscriptViewport.history(1234567890123456789, offset=3)
         ),
         folded_groups=frozenset({"author:bot"}),
         model_generation=7,
@@ -70,7 +70,7 @@ PRESERVED_FIELDS = (
     "search_input",
     "mode",
     "inspector",
-    "scroll_anchor",
+    "viewport",
     "folded_groups",
     "model_generation",
 )
@@ -145,7 +145,7 @@ def test_every_boundary_preserves_session_state_in_both_directions(
 
 
 @pytest.mark.parametrize("tail_pinned", [False, True])
-def test_scroll_anchor_semantics_survive_rewrap(tail_pinned: bool) -> None:
+def test_viewport_semantics_survive_rewrap(tail_pinned: bool) -> None:
     before = rich_state(tail_pinned=tail_pinned)
 
     transition = transition_layout(
@@ -154,8 +154,8 @@ def test_scroll_anchor_semantics_survive_rewrap(tail_pinned: bool) -> None:
         new_size=TerminalSize(64, 34),
     )
 
-    assert transition.state.scroll_anchor == before.scroll_anchor
-    assert transition.state.scroll_anchor.tail_pinned is tail_pinned
+    assert transition.state.viewport == before.viewport
+    assert transition.state.viewport.tail_pinned is tail_pinned
 
 
 def test_visible_focus_keeps_exact_widget_identity() -> None:
@@ -226,28 +226,6 @@ def test_too_small_focus_returns_to_exact_prior_widget() -> None:
 
     assert recovered.state.focus == before.focus
     assert recovered.state.return_focus is None
-
-
-def test_rapid_resize_burst_builds_one_plan_for_latest_size() -> None:
-    before = rich_state()
-    sizes = (
-        TerminalSize(119, 20),
-        TerminalSize(79, 20),
-        TerminalSize(49, 19),
-        TerminalSize(80, 20),
-        TerminalSize(64, 34),
-    )
-
-    transition = plan_latest_resize(
-        before,
-        current_size=TerminalSize(130, 34),
-        observed_sizes=sizes,
-    )
-
-    assert transition.accepted_size == sizes[-1]
-    assert transition.to_mode is LayoutMode.COMPACT
-    assert transition.observed_resize_count == len(sizes)
-    assert transition.layout_passes == 1
 
 
 def test_model_updates_accumulate_while_too_small_and_render_on_recovery() -> None:

@@ -30,6 +30,7 @@ from taut_tui.screens import (
 )
 from taut_tui.session import ConversationSnapshot, NavigationSnapshot
 from taut_tui.summon import TuiSummonInteraction, TuiSummonOperations
+from taut_tui.viewport import ViewportEffect
 from taut_tui.widgets import TautComposer, TautOptionList
 
 pytestmark = pytest.mark.sqlite_only
@@ -583,7 +584,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     completed_search_anchors: list[int | None] = []
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
-    finish_owned_search_anchor_restore = context.app._finish_owned_search_anchor_restore
+    apply_viewport_effect = context.app._apply_viewport_effect
     expected_intent = context.app._conversation_intent + 1
 
     def observe_search_context(
@@ -595,38 +596,26 @@ async def _search_open_result(context: HandlerContext) -> None:
         if intent == expected_intent:
             if snapshot is not None:
                 observed_snapshots.append(snapshot)
-            # Reproduce a live delivery/navigation refresh landing after
-            # the logical search anchor is committed but before its
-            # deferred physical viewport restore. The assertion below waits
-            # for the user-visible owner restore to clear the pending anchor.
+            # Reproduce navigation refresh landing after logical search
+            # ownership is committed but before deferred physical restore.
             navigation: Future[NavigationSnapshot] = Future()
             navigation.set_result(NavigationSnapshot((), (), ()))
             context.app._apply_navigation_result(navigation)
             navigation_refresh_applied.set()
         search_context_applied.set()
 
-    def observe_search_anchor_finish(
-        generation: int,
-        owner: tuple[int, int],
+    def observe_viewport_effect(
+        effect: ViewportEffect,
+        messages: tuple[Any, ...],
     ) -> None:
-        owned_transition_ready = (
-            generation == context.app._transcript_restore_generation
-            and owner == context.app._pending_search_anchor
-            and owner[0] == context.app._conversation_intent
-            and context.app.visual_state.scroll_anchor.message_id == owner[1]
-            and context.app._search_anchor_restore_applied
-            and not context.app._shutting_down
-        )
-        finish_owned_search_anchor_restore(generation, owner)
+        apply_viewport_effect(effect, messages)
+        viewport = context.app.visual_state.viewport
         if (
-            owned_transition_ready
-            and owner == (expected_intent, context.message_ts)
-            and context.app._pending_search_anchor is None
-            and context.app.visual_state.scroll_anchor.message_id == context.message_ts
+            effect.message_id == context.message_ts
+            and not viewport.search_owned
+            and viewport.message_id == context.message_ts
         ):
-            completed_search_anchors.append(
-                context.app.visual_state.scroll_anchor.message_id
-            )
+            completed_search_anchors.append(viewport.message_id)
             search_anchor_restore_finished.set()
 
     with context.monkeypatch.context() as patch:
@@ -637,14 +626,14 @@ async def _search_open_result(context: HandlerContext) -> None:
         )
         patch.setattr(
             context.app,
-            "_finish_owned_search_anchor_restore",
-            observe_search_anchor_finish,
+            "_apply_viewport_effect",
+            observe_viewport_effect,
         )
         await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
         await asyncio.wait_for(search_context_applied.wait(), timeout=5)
         await asyncio.wait_for(navigation_refresh_applied.wait(), timeout=5)
         await asyncio.wait_for(search_anchor_restore_finished.wait(), timeout=5)
-    assert context.app._pending_search_anchor is None
+    assert context.app.visual_state.viewport.search_owned is False
     assert completed_search_anchors == [context.message_ts]
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
@@ -658,7 +647,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     assert context.app.visual_state.selected_message_id == context.message_ts
     await context.pilot.pause()
     assert ActionId.NOTIFICATIONS_OPEN in context.app._navigation_targets
-    assert context.app._pending_search_anchor is None
+    assert context.app.visual_state.viewport.search_owned is False
     transcript = context.app.query_one("#transcript", TautOptionList)
     viewport_top = int(transcript.scroll_offset.y)
     viewport_bottom = viewport_top + transcript.scrollable_content_region.height
@@ -679,9 +668,9 @@ async def _search_open_result(context: HandlerContext) -> None:
         if tail_pinned
         else context.app._message_rows[rendered_lines[viewport_top][0]].ts
     )
-    context.app._capture_scroll_anchor()
-    assert context.app.visual_state.scroll_anchor.tail_pinned is tail_pinned
-    assert context.app.visual_state.scroll_anchor.message_id == expected_anchor
+    context.app._capture_settled_transcript_viewport()
+    assert context.app.visual_state.viewport.tail_pinned is tail_pinned
+    assert context.app.visual_state.viewport.message_id == expected_anchor
 
 
 async def _system_doctor(context: HandlerContext) -> None:

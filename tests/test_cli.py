@@ -99,6 +99,33 @@ def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
     assert legacy_output.encode("cp1252").decode("cp1252") == legacy_output
 
 
+def test_public_message_time_formatter_matches_cli_human_renderer() -> None:
+    """[TAUT-8.3] Public and CLI human message times have one owner."""
+    from taut import terminal
+
+    message = Message(
+        thread="general",
+        ts=1_785_000_000_000_000_000,
+        from_id="m_" + "a" * 26,
+        from_name="van",
+        kind="message",
+        text="one clock",
+    )
+
+    formatted = terminal.format_message_time(message.ts)
+    row = _human_message_row(
+        message,
+        timestamps=False,
+        sender_width=3,
+        stream=StringIO(),
+    )
+
+    assert "format_message_time" in terminal.__all__
+    assert re.fullmatch(r"\d{2}:\d{2}", formatted)
+    assert _format_message_time(message.ts) == formatted
+    assert row.startswith(f"  {formatted} ")
+
+
 def test_cli_json_renderers_format_timestamp_domain_only_at_external_boundary() -> None:
     from taut.client import (
         Channel,

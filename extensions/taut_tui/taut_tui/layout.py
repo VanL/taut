@@ -10,7 +10,6 @@ Spec references:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
@@ -57,8 +56,6 @@ class LayoutTransition:
     placement: LayoutPlacement
     state: VisualState
     focus_moved: bool
-    observed_resize_count: int = 1
-    layout_passes: int = 1
 
 
 def layout_mode(width: int, height: int) -> LayoutMode:
@@ -155,12 +152,9 @@ def transition_layout(
     *,
     current_size: TerminalSize,
     new_size: TerminalSize,
-    observed_resize_count: int = 1,
 ) -> LayoutTransition:
     """Build one state-preserving plan for the accepted terminal size."""
 
-    if observed_resize_count <= 0:
-        raise ValueError("observed_resize_count must be positive")
     from_mode = layout_mode(current_size.width, current_size.height)
     to_mode = layout_mode(new_size.width, new_size.height)
     next_state = state
@@ -199,25 +193,6 @@ def transition_layout(
         placement=placement,
         state=next_state,
         focus_moved=next_state.focus != state.focus,
-        observed_resize_count=observed_resize_count,
-    )
-
-
-def plan_latest_resize(
-    state: VisualState,
-    *,
-    current_size: TerminalSize,
-    observed_sizes: Sequence[TerminalSize],
-) -> LayoutTransition:
-    """Coalesce a burst into one synchronous plan for its latest size."""
-
-    if not observed_sizes:
-        raise ValueError("a resize burst must contain at least one size")
-    return transition_layout(
-        state,
-        current_size=current_size,
-        new_size=observed_sizes[-1],
-        observed_resize_count=len(observed_sizes),
     )
 
 
@@ -228,7 +203,6 @@ __all__ = [
     "TranscriptMetadataLayout",
     "layout_mode",
     "layout_placement",
-    "plan_latest_resize",
     "transcript_metadata_layout",
     "transition_layout",
 ]

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The TUI transcript now has one generation-fenced viewport owner. Sticky tail
+  follows sends, watcher delivery, navigation refresh, and resize until an
+  explicit wheel, scrollbar, key, or click action settles elsewhere; search
+  jumps retain exact-hit ownership without stale snap-back. Transcript rows use
+  the core local `HH:MM` formatter instead of raw ids, DM search hits use public
+  actor-scoped labels, rapid-resize coverage drives the real watcher and app,
+  and fatal Textual exits now return the application's nonzero code.
+
 - POSIX Summon PTY providers now acquire their slave as a controlling terminal
   through the shared process-domain spawn owner. A close-on-exec handshake
   keeps terminal-setup and final-exec failures synchronous and prevents partial

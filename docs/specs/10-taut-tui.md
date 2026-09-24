@@ -305,10 +305,13 @@ permanent keybar. `help.open` owns the complete discoverable gesture list.
 
 ### [TUI-5.3] Transcript rows
 
-At wide and medium widths, ordinary messages use aligned timestamp and author
-metadata with a hanging body indent. At compact widths, metadata stacks above
-the body. Notices, warnings, unread boundaries, selected messages, and thread
-origins remain structurally distinct without relying on color.
+At wide and medium widths, ordinary messages use aligned local wall-clock time
+and author metadata with a hanging body indent. The time uses the same public
+core formatter as the CLI human renderer (`HH:MM`). At compact widths,
+metadata stacks above the body. The exact 19-digit message id remains available
+through selection and the inspector; it never replaces the time in the row.
+Notices, warnings, unread boundaries, selected messages, and thread origins
+remain structurally distinct without relying on color.
 
 One empty terminal row separates adjacent transcript messages. Message bodies
 preserve actual LF as line breaks, including consecutive blank lines, and
@@ -341,7 +344,10 @@ surface makes.
 Direct messages use actor-scoped human labels. Internal queue names never
 replace those labels in ordinary navigation. The composer always shows the
 exact public target label so a send cannot be mistaken for a different channel,
-DM, or reply thread.
+DM, or reply thread. Search-result target metadata uses the same actor-scoped
+direct-message label as navigation. If that label is temporarily unavailable,
+it renders `Direct message`; an internal `dm.d_*` queue name never appears in
+the result row.
 
 ## 6. Conversation, Read, and Live Semantics [TUI-6]
 
@@ -646,11 +652,19 @@ Reflow preserves:
 - otherwise, the first visible message id and its intra-row offset as the
   scroll anchor.
 
-When wrapping changes, a tail-pinned view remains tail-pinned. A history view
-restores the same anchor message instead of jumping to newest content. If a
-wider layout makes the retained intra-row offset longer than that message's
-new wrapped height, the offset clamps to its last rendered row so the next
-message cannot replace the anchor.
+Tail pinning is sticky. A view pinned to the live tail remains pinned across
+wrapping changes, resize, the user's own send, watcher delivery, and re-render.
+System-driven arrival, layout, and restoration events never capture or change
+viewport ownership. Explicit user viewport intent does: keyboard or mouse
+movement whose settled position is away from the tail enters history at that
+position; movement whose settled position reaches the tail pins it again; and
+opening a search result enters search-owned history at that result.
+Search-owned restoration is retained across system-driven renders until it
+completes or newer user viewport intent supersedes it. When wrapping changes,
+a history view restores the same anchor message instead of jumping to newest
+content. If a wider layout makes the retained intra-row offset longer than
+that message's new wrapped height, the offset clamps to its last rendered row
+so the next message cannot replace the anchor.
 
 If the focused widget remains visible, it keeps focus. If reflow hides it,
 focus moves deterministically to the same logical surface in its new physical
@@ -885,6 +899,11 @@ produce concise TUI or pre-screen diagnostics with no traceback. Once the
 screen is active, recoverable failures stay attached to their action or target
 and preserve drafts and selection.
 
+The `taut tui` process exit code is the application's return code: 0 after a
+normal quit, 1 after a fatal error that Textual retained on the completed
+application, and the ordinary core dispatch codes for pre-screen failures.
+Capturing the fatal exception under [TAUT-13] does not change that code.
+
 A primary domain failure wins over cleanup, toast, focus, logging, or redraw
 failure. A successful domain mutation remains successful even if an auxiliary
 presentation update fails; the TUI refreshes from public state and reports the
@@ -987,7 +1006,12 @@ The following enumerable matrices have firing tests:
 - width boundaries 49/50, 79/80, 119/120 and height boundaries 19/20;
 - wide to medium to compact to too-small and reverse reflow with the preserved
   state named in [TUI-9.2];
-- rapid resize plus concurrent live delivery and stale worker completion;
+- rapid resize across 119, 79, 49, and 80 columns without an application-level
+  pause between requested sizes, plus concurrent real watcher delivery and a
+  worker result, while a draft, tail-pinned transcript, selected message, and
+  inspector remain open; after event-loop quiescence the rendered mode matches
+  80 columns, preserved state and tail pin remain, and later loop turns do not
+  revert to an earlier size;
 - absent extension, incomplete/broken extension dependency, non-TTY,
   help/version lazy-import floors, and source-tree plus paired core/TUI
   installed-wheel launch against the retained TUI lock; there is no separate
@@ -1048,6 +1072,11 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-tui-participation-loop-plan.md` — makes tail
+  pinning sticky under a named viewport owner, shows times instead of ids,
+  replaces the dead rapid-resize test with a real burst test, makes the process
+  exit code truthful, and labels DM search hits.
 
 - `docs/plans/2026-09-19-reactor-restoration-plan.md` — planned ownership audit;
   the active public watcher inherits the shared copied scheduler path. The

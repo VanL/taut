@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
+from taut_tui.viewport import TranscriptViewport
+
 
 class InteractionMode(StrEnum):
     """The four visible interaction modes from [TUI-4.3]."""
@@ -113,42 +115,6 @@ class RecoveredDraft:
 
 
 @dataclass(frozen=True, slots=True)
-class ScrollAnchor:
-    """Tail pin or stable message-and-row-offset history anchor."""
-
-    tail_pinned: bool
-    message_id: int | None = None
-    intra_row_offset: int = 0
-
-    def __post_init__(self) -> None:
-        if self.intra_row_offset < 0:
-            raise ValueError("scroll intra_row_offset must be non-negative")
-        if self.tail_pinned and (
-            self.message_id is not None or self.intra_row_offset != 0
-        ):
-            raise ValueError("a tail-pinned anchor cannot name a history row")
-        if self.message_id is not None and self.message_id <= 0:
-            raise ValueError("scroll message_id must be positive")
-
-    @classmethod
-    def tail(cls) -> ScrollAnchor:
-        return cls(tail_pinned=True)
-
-    @classmethod
-    def history(
-        cls,
-        message_id: int | None,
-        *,
-        intra_row_offset: int = 0,
-    ) -> ScrollAnchor:
-        return cls(
-            tail_pinned=False,
-            message_id=message_id,
-            intra_row_offset=intra_row_offset,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class InspectorState:
     """Open inspector kind and its optional stable selected-item key."""
 
@@ -174,7 +140,7 @@ class VisualState:
     focus: FocusTarget = FocusTarget(LogicalSurface.CONVERSATION, "transcript")
     return_focus: FocusTarget | None = None
     inspector: InspectorState | None = None
-    scroll_anchor: ScrollAnchor = field(default_factory=ScrollAnchor.tail)
+    viewport: TranscriptViewport = field(default_factory=TranscriptViewport.tail)
     folded_groups: frozenset[str] = frozenset()
     model_generation: int = 0
 
@@ -375,7 +341,6 @@ __all__ = [
     "LayoutMode",
     "LogicalSurface",
     "RecoveredDraft",
-    "ScrollAnchor",
     "TerminalSize",
     "VisualState",
     "remap_channel_target",

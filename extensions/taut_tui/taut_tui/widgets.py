@@ -13,6 +13,7 @@ from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.content import Content, ContentText
 from textual.message import Message
+from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.visual import RichVisual, Visual, VisualType
 from textual.widgets import (
     Button,
@@ -384,6 +385,7 @@ class TautOptionList(OptionList):
     def __init__(self, *content: Any, **kwargs: Any) -> None:
         kwargs["markup"] = False
         self.user_viewport_intent: Callable[[], None] | None = None
+        self.user_viewport_settled: Callable[[], None] | None = None
         super().__init__(*content, **kwargs)
         self._last_pointer_chain = 0
         self._pointer_pending = False
@@ -393,25 +395,65 @@ class TautOptionList(OptionList):
         if callback is not None:
             callback()
 
+    def _queue_user_viewport_settled(self) -> None:
+        callback = self.user_viewport_settled
+        if callback is not None:
+            self.call_after_refresh(callback)
+
+    def action_cursor_up(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_cursor_up()
+        self._queue_user_viewport_settled()
+
+    def action_cursor_down(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_cursor_down()
+        self._queue_user_viewport_settled()
+
+    def action_first(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_first()
+        self._queue_user_viewport_settled()
+
+    def action_last(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_last()
+        self._queue_user_viewport_settled()
+
+    def action_page_up(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_page_up()
+        self._queue_user_viewport_settled()
+
+    def action_page_down(self) -> None:
+        self._declare_user_viewport_intent()
+        super().action_page_down()
+        self._queue_user_viewport_settled()
+
     def on_mouse_scroll_down(self, event: object) -> None:
         del event
         self._declare_user_viewport_intent()
+        self._queue_user_viewport_settled()
 
     def on_mouse_scroll_up(self, event: object) -> None:
         del event
         self._declare_user_viewport_intent()
+        self._queue_user_viewport_settled()
 
-    def on_scroll_to(self, message: object) -> None:
+    def on_scroll_to(self, message: ScrollTo) -> None:
         del message
         self._declare_user_viewport_intent()
+        self._queue_user_viewport_settled()
 
-    def on_scroll_down(self, message: object) -> None:
+    def on_scroll_down(self, message: ScrollDown) -> None:
         del message
         self._declare_user_viewport_intent()
+        self._queue_user_viewport_settled()
 
-    def on_scroll_up(self, message: object) -> None:
+    def on_scroll_up(self, message: ScrollUp) -> None:
         del message
         self._declare_user_viewport_intent()
+        self._queue_user_viewport_settled()
 
     def on_key(self, event: object) -> None:
         if getattr(event, "key", None) in {
