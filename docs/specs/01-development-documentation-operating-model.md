@@ -281,6 +281,9 @@ fences indented by at most three spaces. A closing fence uses the opening
 character, is at least as long, and has no trailing content except whitespace.
 An unclosed fence extends to the end of the input. This helper owns fence
 exclusion only; each checker retains its existing claim or table grammar.
+Reference codes may nest to any depth (`[ABC-1]`, `[ABC-1.2]`,
+`[ABC-1.2.3]`); the documentation reference gate resolves every depth against
+the owning spec.
 
 ### [DOM-10.1] Executable CLI claims
 
@@ -619,6 +622,17 @@ Requirements:
   remains the best choice
 - prefer a different agent family or model than the original author when one is
   available
+- the review brief quotes every `docs/program-theory.md` [THEORY-5] adopted
+  alternative whose area the unit touches under `Rejected alternatives in
+  force`; a rejected path is not re-argued as a finding
+- when a reviewer believes a reconsider-when condition has fired or new
+  evidence bears on it, the reviewer raises a separately labeled
+  `RECONSIDERATION REQUESTED` note for the human owner that names the record,
+  condition, and evidence; the author does not disposition the note, and only
+  the owner answers it through a [THEORY-8] revision or a recorded decline
+- completion evidence for a P1-class defect includes one mutation line: the
+  production change was reverted or broken, the named test was observed
+  failing, and the production change was restored
 
 ## 12. Skills Lifecycle [DOM-12]
 
@@ -880,6 +894,7 @@ checker enforces presence, review enforces meaning.
 |---------|-------|
 | Answer an architecture question; survey a repo — nothing changes | 0 |
 | Fix a spelling error; repair a broken doc link — no behavior change, no normative force, no [DOM-5] trigger fires | 1 |
+| Fix a spelling error inside a README-owned promise — no behavior change; the claim's meaning is unchanged; the README counts as normative text only for README-owned promises and only for their meaning | 1 |
 | Behavior-preserving refactor, one module, following the established pattern — given: no [DOM-5] non-trivial or risky trigger fires (in particular, no zero-context ambiguity) | 1 |
 | Behavior-preserving refactor across two modules with unclear ownership — zero-context ambiguity, a [DOM-5] non-trivial trigger, fires | 3 |
 | Bug fix restoring validation that a cited spec section requires — the cited section is the intent evidence; reversible; given: no [DOM-5] trigger fires | 2 |
@@ -888,6 +903,7 @@ checker enforces presence, review enforces meaning.
 | Same shape, but both sides live inside one module — reversible, spec-cited intent, and no other [DOM-5] trigger fires | 2 |
 | Explicit user request is intent evidence for a routine release through unchanged `bin/release.py`; every [TAUT-12.5]-required normal gate remains enabled; the [DOM-15] routine-release exception overrides reversibility and [DOM-5] triggers for release execution only; no bypass, retag, manual publication, or recovery outside that unchanged path is involved; built-in resumable reinvocation under [TAUT-12.5] remains the same routine release | 2 |
 | Implement an already-specified CLI flag — CLI shape changes ([DOM-5] risky) | 4 |
+| Raise a runtime dependency floor stated in normative spec text — the floor is a compatibility surface ([DOM-5] risky) and the spec sentence changes | 5, with hardening |
 | Introduce background or deferred processing whose intended behavior an existing spec already governs — a [DOM-5] risky trigger fires; no [DOM-6] spec change is required | 4 |
 | Clarify normative spec wording, behavior unchanged — normative spec text edited; no risky trigger, so `hardening: N/A` | 5 (strategy D) |
 | New feature whose intended behavior is undocumented and [DOM-6]-material — a spec is required first | 5 |
@@ -908,6 +924,8 @@ edit; escalate loudly the moment a trigger fires.
 
 ## Related Plans
 
+- `docs/plans/2026-09-24-review-inputs-and-doc-gates-plan.md`: makes review
+  inputs and documentation-gate evidence structurally enforceable.
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: narrows duplicate Ruff snapshots and shares fenced-example exclusion.
 
 - retired: 2026-07-06-evaluation-findings-remediation-plan — source `663ff86`; see the ledger in `docs/plans/README.md`.

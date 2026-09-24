@@ -1,7 +1,7 @@
 # Review Inputs and Documentation Gates Plan
 
-Status: draft — gate blind spots verified by scratch mutation; awaiting
-owner ratification of the process changes and independent plan review.
+Status: completed — owner-ratified implementation, focused verification,
+and independent plan and completed-work reviews passed on 2026-09-24.
 
 Class: 3+P (effective 5). The work materially changes how future reviews
 are briefed (`skills/call-agent/SKILL.md`, the review-loops runbook) and
@@ -39,21 +39,21 @@ wrong proofs. Evidence: `docs/plans/artifacts/2026-09-23-deep-dive-review.md`
 
 ## Requested Outcomes
 
-- [ ] Every review brief carries a "rejected alternatives in force" bracket
+- [x] Every review brief carries a "rejected alternatives in force" bracket
   quoting each [THEORY-5] A-record whose area the delta touches, together
   with the instruction that a reviewer who believes circumstances have
   changed so that a rejected path should be reconsidered raises it for
   evaluation by the human owner, citing the record's reconsider-when
   clause, rather than filing it as a finding or dropping it (owner
   decision 2026-09-24).
-- [ ] `CITATION_RE` accepts codes of any depth; a test proves
+- [x] `CITATION_RE` accepts codes of any depth; a test proves
   `[DOM-10.2.1]` is checked.
-- [ ] `bin/coalesce-check` resolves every retired-ledger source SHA and
+- [x] `bin/coalesce-check` resolves every retired-ledger source SHA and
   verifies the plan exists at that SHA.
-- [ ] `bin/check-dom15-fixtures` rejects a class-1/2 fixture whose stated
+- [x] `bin/check-dom15-fixtures` rejects a class-1/2 fixture whose stated
   facts name a firing trigger (structural, not substring).
-- [ ] The three xdist lessons carry supersession markers.
-- [ ] The plan tier converges. Diagnosis (2026-09-24, from both run logs):
+- [x] The three xdist lessons carry supersession markers.
+- [x] The plan tier converges. Diagnosis (2026-09-24, from both run logs):
   taut's sweeps retire "the next four oldest" per run, a batch size no
   document mandates — the 2026-08-08 first batch was four and later sweeps
   copied it as a norm — while SimpleBroker's sweeps harvest every eligible
@@ -67,16 +67,16 @@ wrong proofs. Evidence: `docs/plans/artifacts/2026-09-23-deep-dive-review.md`
   apply to plans. One owner-authorized catch-up sweep clears the current
   backlog the way SimpleBroker's 2026-08-04 sweep did. Retire-at-
   completion remains available as a second lever if bulk sweeps still lag.
-- [ ] A mutation-check line is required in the completion evidence of any
+- [x] A mutation-check line is required in the completion evidence of any
   P1-class fix (break the production line, confirm the test fails).
-- [ ] [DOM-15] gains the README-typo and dependency-floor fixtures.
+- [x] [DOM-15] gains the README-typo and dependency-floor fixtures.
 
 ## Source Documents
 
 Source specs:
 
 - `docs/specs/01-development-documentation-operating-model.md` [DOM-5],
-  [DOM-10], [DOM-10.1], [DOM-11], [DOM-14], [DOM-15]
+  [DOM-10], [DOM-11], [DOM-14], [DOM-15]
 - `docs/program-theory.md` [THEORY-5] ([THEORY-5.A1]–[THEORY-5.A6]), [THEORY-8]
 
 Supporting context:
@@ -103,25 +103,27 @@ Supporting context:
   `docs/program-theory.md` at plan authoring time. Since `c0a4616` only one
   [RUFF-SUP-088] registry row changed (`1ad4630`), outside every section
   this plan touches.
-- Promotion baseline identifier: recorded after the spec-authoring slice.
+- Promotion baseline identifier: parent baseline `cee4b9a` plus this plan's
+  targeted completion commit; inspect the committed delta with
+  `git diff cee4b9a..HEAD -- docs/specs/01-development-documentation-operating-model.md docs/program-theory.md`.
 
 ## Proposed Spec Delta
 
 Promotion strategy: **D — spec-authoring / clarification** for [DOM-15]
-fixtures and [DOM-10.1]; the theory revision (A-record ids) is a
+fixtures and [DOM-10]; the theory revision (A-record ids) is a
 [THEORY-8] revision that gates on the owner.
 
 | Spec file | Strategy | Sections touched |
 |-----------|----------|------------------|
-| `docs/specs/01-development-documentation-operating-model.md` | D | [DOM-15] fixture table (two rows); [DOM-10.1] citation depth sentence; [DOM-11] review-brief requirement |
+| `docs/specs/01-development-documentation-operating-model.md` | D | [DOM-15] fixture table (two rows); [DOM-10] citation depth sentence; [DOM-11] review-brief requirement |
 | `docs/program-theory.md` | owner-gated [THEORY-8] revision | [THEORY-5] preamble (reconsideration routing); record count and ids |
 
 ### [DOM-15] — add two fixture rows
 
-> | Fix a spelling error inside a README-owned promise — the claim's meaning is unchanged; the README counts as normative text only for README-owned promises and only for their meaning | 1 |
+> | Fix a spelling error inside a README-owned promise — no behavior change; the claim's meaning is unchanged; the README counts as normative text only for README-owned promises and only for their meaning | 1 |
 > | Raise a runtime dependency floor stated in normative spec text — the floor is a compatibility surface ([DOM-5] risky) and the spec sentence changes | 5, with hardening |
 
-### [DOM-10.1] — append one sentence to the citation paragraph
+### [DOM-10] — append one sentence to the citation paragraph
 
 > Reference codes may nest to any depth (`[ABC-1]`, `[ABC-1.2]`,
 > `[ABC-1.2.3]`); the gate resolves every depth against the owning spec.
@@ -170,18 +172,19 @@ Files to modify:
   headings must accept the deeper form (check how `[DOM-10.2.1]` is
   headed in the spec: `### [DOM-10.1]`-style headings exist; confirm the
   third-level heading form before widening).
-- `bin/coalesce-check` — extend the cue scan to the retired-plans table in
-  `docs/plans/README.md`: for each row, `git cat-file -e <sha>` and `git
-  show <sha>:docs/plans/<name>.md | head -1`; report unreachable or
-  missing. Update the docstring's "plans tier stays with
-  check-plan-status-index" sentence.
+- `bin/coalesce-check` — parse the retired-plans table in
+  `docs/plans/README.md` into plan-name/source-SHA pairs: for each row,
+  `git cat-file -e <sha>` and `git show <sha>:docs/plans/<name>.md | head
+  -1`; report malformed, unreachable, or missing pairs. Update the
+  docstring's "plans tier stays with check-plan-status-index" sentence.
 - `bin/check-dom15-fixtures` — the negative-trigger check; replace the
   substring test with a structural one (a class-1/2 row must contain a
   negation phrase from a fixed list applied to "trigger", and must not
   contain "fires" without a preceding negation).
-- `docs/lessons.md` — three xdist entries gain `_(superseded by
-  2026-09-01 …)_` markers; the Topic Index line for `xdist` points at the
-  current rule.
+- `docs/lessons.md` — the 2026-07-08 "grouping is co-location" and
+  "narrower xdist topology" entries plus the 2026-07-13 "one xdist worker"
+  entry gain `_(superseded by 2026-09-01 …)_` markers; the Topic Index line
+  for `xdist` points at the current rule.
 - `docs/coalescing.md` — convergence expectation for the plan tier and,
   if adopted, the retire-at-completion rule.
 - `docs/specs/01-development-documentation-operating-model.md` and
@@ -252,8 +255,11 @@ Hidden couplings:
    ledger scan; run on the tree (all current SHAs resolve — the review
    checked eight by hand).
 5. **DOM-15 fixture negatives.** Red: a class-1 fixture reading "…a
-   [DOM-5] risky trigger fires" fails the checker. Implement the
-   structural check; keep every existing fixture passing.
+   [DOM-5] risky trigger fires" fails the checker even if it also contains
+   an unrelated negative marker. Implement the structural check so a
+   class-1/2 row must state the required absence of a firing trigger and
+   cannot also state that a [DOM-5]/[DOM-6] trigger fires; keep every
+   existing fixture passing.
 6. **Review-brief bracket and reconsideration route.** Edit the skill's
    required-shape list and the §4a template to add the bracket and the
    "reconsideration requested" note format; add the routing sentence to
@@ -262,8 +268,8 @@ Hidden couplings:
    every path named. Add to the review-output standard (§6 of the
    review-loops runbook) that a reconsideration note is neither a finding
    nor an observation: it is a third, owner-addressed section.
-7. **[DOM-11] and [DOM-15] spec-authoring slice**; record the promotion
-   identifier.
+7. **[DOM-10], [DOM-11], and [DOM-15] spec-authoring slice**; record the
+   promotion identifier.
 8. **Lessons supersession markers** and Topic Index pointer.
 9. **Coalescing policy.** Replace the implicit four-per-sweep practice with
    the all-eligible rule in `docs/coalescing.md` (plans tier row and the
@@ -340,7 +346,26 @@ rejecting any current citation, ledger row, or fixture?"
 
 ## Review Log
 
-(append-only)
+- 2026-09-24 — Independent pre-implementation review (Claude Opus 4.6,
+  read-only) verdict PASS. Accepted F1: citation-depth wording belongs in
+  [DOM-10], not CLI-specific [DOM-10.1]. Accepted F2: the README typo
+  fixture now says "no behavior change," and task 5 explicitly rejects a
+  firing trigger even when an unrelated negative marker is present.
+  Accepted F3: the three xdist entries are named. F4 (ledger table parser)
+  incorporated into the implementation boundary. F5 confirmed that P1
+  mutation evidence is review-enforced rather than a recursively gated gate.
+  No [THEORY-5] reconsideration condition fired.
+- 2026-09-24 — Independent completed-work review (Claude Opus 4.6,
+  read-only) verdict `no blocker`. The reviewer verified retired-ledger
+  source/path resolution, shallow-clone behavior, DOM-15 mutation
+  sensitivity, every review-brief form including round 2, owner-only
+  reconsideration routing, P1 evidence, traceability, and scoped xdist
+  supersession. F1 declined: the 16-character lookback covers the controlled
+  clause-local `no` / `no other` vocabulary and a false rejection is loud.
+  F2 declined: the shallow-clone branch already asserts its skip banner,
+  retrieval-cue count, and lesson count; the additional archive-pointer count
+  is informational in the same linear branch. No [THEORY-5] reconsideration
+  condition fired.
 
 ## Execution Log
 
@@ -362,10 +387,36 @@ rejecting any current citation, ledger row, or fixture?"
   sweeps harvest all eligible candidates with parallel audits about
   weekly. Recommendation changed from retire-at-completion to the
   all-eligible sweep rule plus one catch-up sweep.
+- 2026-09-24 — Owner instruction "Please implement per plan" ratified the
+  remaining owner-gated process changes. Comprehension gate recorded before
+  editing: reviewers receive applicable A-records because the brief is their
+  contractual frame and prior re-litigation came from reviewers; resolving a
+  retired-ledger archive pointer enforces [DOM-14] rather than gating another
+  gate; a P1 mutation line proves the named regression test can fail for the
+  production defect, which a green run alone cannot establish.
+- 2026-09-24 — Retired-ledger RED: the new `deadbee` source test failed
+  because the unchanged gate exited 0. GREEN: the ledger parser paired plan
+  names with source SHAs, checked both the commit and plan path, and all six
+  focused coalesce-check tests passed. DOM-15 RED: the self-test failed to
+  catch a firing [DOM-5] trigger hidden behind "no behavior change". GREEN:
+  clause-shaped negative and positive trigger patterns caught the mutation;
+  the self-test and live [DOM-15] fixture gate passed.
+- 2026-09-24 — Focused verification: 44 documentation/gate tests passed;
+  Ruff and format checks passed for both gate scripts and the coalesce test;
+  coalesce-check resolved 112 retired-plan pointers; plan-index, doc-path,
+  CLI-claim, and live DOM-15 gates passed. The full parallel suite produced
+  2,319 passes, 5 skips, and two failures: the watcher remaining-budget test
+  passed immediately in isolation (parallel timing flake), while the Ruff
+  suppression inventory remains mismatched by unrelated pre-existing dirty
+  product files (`BLE001` +3, `C901` -1). Raw Ruff over this plan's Python
+  files shows only the three already registered suppressions, so this change
+  does not own that mismatch.
 
 ## Fresh-Eyes Review
 
-Three of the eight outcomes are owner decisions and are separated into
-task 1 so the mechanical gate work (tasks 3–5) can proceed and be reviewed
-without them. Each gate change has a named red case drawn from the
-review's actual mutation, not an invented one.
+All eight outcomes have current-tree evidence. The two executable gate
+changes each failed first on the exact blind spot and passed after the
+minimal implementation. The spec, theory, skill, and runbook agree on the
+review-routing contract. The only incomplete repository-wide signal is the
+pre-existing Ruff suppression inventory drift in unrelated dirty product
+files; this plan's focused gates and registered suppressions remain green.

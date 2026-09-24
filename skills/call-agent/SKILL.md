@@ -76,7 +76,13 @@ decision and never arrive as blockers (severity is the reviewer's
 claim; blocking is a disposition-time decision); (5) **prefer removing
 unnecessary work**; (6) an **observations outlet** — a separate,
 non-actionable section for out-of-scope concerns, so broad looking is
-encouraged while narrow acting is enforced. A brief missing an element
+encouraged while narrow acting is enforced; (7) **rejected alternatives in
+force** — quote every `docs/program-theory.md` [THEORY-5] A-record whose area
+the unit touches, or state that none applies. A reviewer who believes a
+record's reconsider-when condition has fired writes a separately labeled
+`RECONSIDERATION REQUESTED` note naming the record, condition, and evidence
+for the human owner. It is neither a finding nor an observation, and it is
+never dropped or dispositioned by the author. A brief missing an element
 is malformed: fix the brief, not the reviewer's output. The
 fill-every-bracket template (and its round-2 variant) is
 `docs/agent-context/runbooks/review-loops-and-agent-bootstrap.md` §4a —

@@ -162,6 +162,10 @@ repository adopts a formal record grammar. Architecture- and contract-scope reco
 (per-call read limit, vendor-whole vs contract-copy, extension
 packaging, process-evidence mechanics, the `taut-chat` naming) are
 routed to their owning specs and implementation docs, not here.
+Any reviewer or author who believes a record's reconsider-when condition has
+fired routes a labeled reconsideration request to the human owner. The owner
+answers through a [THEORY-8] revision or a recorded decline; the request is
+neither filed as an ordinary review finding nor silently dropped.
 
 #### [THEORY-5.A1] Notification inboxes stay consumable pointers
 

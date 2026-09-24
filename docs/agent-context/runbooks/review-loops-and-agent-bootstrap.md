@@ -87,6 +87,9 @@ Always point the reviewer at:
 - the relevant implementation note
 - the current touched files
 - any important tests or verification commands
+- a `Rejected alternatives in force` bracket quoting every
+  `docs/program-theory.md` [THEORY-5] A-record whose area the unit touches,
+  or stating that none applies
 
 Do not ask the reviewer to implement. The point is to surface errors, bad
 ideas, latent ambiguities, and performative overengineering — process,
@@ -134,6 +137,13 @@ Use this or a close variant:
 > add ceremony without meaningfully addressing a real-world risk
 > identified in the code.
 >
+> **Rejected alternatives in force:** [quote each applicable
+> `docs/program-theory.md` [THEORY-5] A-record, including its reconsider-when
+> condition, or "none apply"]. Do not re-argue a rejected path as a finding.
+> If new evidence meets a reconsider-when condition, report it under a
+> separate `RECONSIDERATION REQUESTED` heading naming the record, condition,
+> and evidence for the human owner; do not omit or disposition it.
+>
 > Check specifically for invariants: what must not be changed (where
 > this repository keeps a standing-invariants registry, check the plan
 > against it). If you need to propose a new invariant, or there is a
@@ -173,6 +183,12 @@ scope decision.
 > **Goal of the change:** [one sentence].
 > **Explicitly accepted risks — do not re-litigate:** [list, or "none
 > declared"].
+> **Rejected alternatives in force:** [quote each applicable
+> `docs/program-theory.md` [THEORY-5] A-record, including its reconsider-when
+> condition, or "none apply"]. Do not re-argue a rejected path as a finding.
+> If new evidence meets a reconsider-when condition, report it under a
+> separate `RECONSIDERATION REQUESTED` heading naming the record, condition,
+> and evidence for the human owner; do not omit or disposition it.
 > **Standing constraints this change must not cross:** [key invariants,
 > or the repo's invariants registry path, or "none registered"].
 > **Pre-existing concerns** (concurrency, error shapes, validation,
@@ -192,7 +208,11 @@ Round-2 variant (after dispositions — never before):
 > Round-2 verification, scoped ONLY to these accepted findings and their
 > fixes: [IDs, one line each]. Verify each fix; report any NEW defect the
 > fixes introduced. Do not revisit declined or out-of-scope findings —
-> they are closed by their disposition rows. Verdict: PASS / FAIL.
+> they are closed by their disposition rows. **Rejected alternatives in
+> force:** [repeat the applicable [THEORY-5] records and reconsider-when
+> conditions from round 1, or "none apply"]. Route any changed-circumstances
+> case as `RECONSIDERATION REQUESTED`, never as a finding. Verdict: PASS /
+> FAIL.
 
 ## 5. Review Handoff Loop
 
@@ -254,6 +274,12 @@ Recommended structure:
 
 Avoid bland approval language. If there are no findings, say so explicitly and
 name any residual risk.
+
+A `RECONSIDERATION REQUESTED` note is a third, owner-addressed output section,
+not a finding or an observation. It names the [THEORY-5] record, the
+reconsider-when condition, and the new evidence. The author does not
+disposition it; only the human owner may answer it through a [THEORY-8]
+revision or a recorded decline.
 
 **Verdict vocabulary, by review type:**
 

@@ -100,6 +100,54 @@ def test_broken_retrieval_cue_fails(tmp_path: Path) -> None:
     assert "BROKEN (1)" in result.stdout
 
 
+def test_retired_plan_source_sha_must_resolve(tmp_path: Path) -> None:
+    script, _sha = _coalesce_repository(tmp_path)
+    (tmp_path / "docs" / "coalescing.md").write_text("", encoding="utf-8")
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir()
+    (plans / "README.md").write_text(
+        """## Retired Plans
+
+| Plan | Dates | Outcome | Absorbed into | Source SHA |
+|------|-------|---------|---------------|------------|
+| `retired-plan.md` | 2026-09-24 | done | current docs | `deadbee` |
+""",
+        encoding="utf-8",
+    )
+
+    result = _run_coalesce(script)
+
+    assert result.returncode == 1
+    assert (
+        "retired plan `retired-plan.md` source `deadbee` does not resolve"
+        in result.stdout
+    )
+    assert "BROKEN (1)" in result.stdout
+
+
+def test_retired_plan_must_exist_at_its_source_sha(tmp_path: Path) -> None:
+    script, sha = _coalesce_repository(tmp_path)
+    (tmp_path / "docs" / "coalescing.md").write_text("", encoding="utf-8")
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir()
+    (plans / "README.md").write_text(
+        f"""## Retired Plans
+
+| Plan | Dates | Outcome | Absorbed into | Source SHA |
+|------|-------|---------|---------------|------------|
+| `missing-plan.md` | 2026-09-24 | done | current docs | `{sha}` |
+""",
+        encoding="utf-8",
+    )
+
+    result = _run_coalesce(script)
+
+    assert result.returncode == 1
+    assert (
+        f"retired plan `missing-plan.md` is missing at source `{sha}`" in result.stdout
+    )
+
+
 def test_shallow_clone_skips_loudly(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

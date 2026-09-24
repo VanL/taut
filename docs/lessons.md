@@ -17,7 +17,8 @@ reclassify, move, summarize away, or archive any lesson.
 - **SQLite, SimpleBroker, queues, and watcher wakeups:** search for `SQLite`,
   `SimpleBroker`, `handle`, `WAL`, `cursor`, and `waiter`.
 - **Testing, CI, subprocesses, and release gates:** search for `CI`, `xdist`,
-  `subprocess`, `coverage`, `artifact`, and `release`.
+  `subprocess`, `coverage`, `artifact`, and `release`; the 2026-09-01 xdist
+  entry is the current worker-width rule.
 - **Specs, plans, reviews, and documentation:** search for `spec`, `plan`,
   `review`, `traceability`, and `agent`.
 - **Identity, membership, and notifications:** search for `identity`, `claim`,
@@ -370,6 +371,9 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   unrelated tests still run on other workers at the same time. Real
   multi-process SQLite/PTY tests that show corruption or load-sensitive
   failures need a separate command lane, not only a group marker.
+  _(Superseded by the 2026-09-01 rule as a prescription for a separate
+  serialized lane when every case owns its resources; the co-location fact
+  remains valid.)_
 
 - 2026-07-08 (3 entries): real-process lane topology, verified distilled —
   materially different real-process workloads run as fresh pytest
@@ -454,6 +458,8 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   reduce the worker count or maintenance-write pressure. Use a one-worker
   xdist lane and pin test-only SQLite maintenance settings instead of treating
   load-sensitive timeouts as expected slowness.
+  _(Superseded by the 2026-09-01 rule when every case owns its resources;
+  fixed width remains only for an explicit residual shared prerequisite.)_
 
 - 2026-07-08 (5 entries): superseded transient-retry guidance, folded to
   git — these entries prescribed wrapper-shape retries, substring-transient
@@ -600,6 +606,9 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   deterministic lane. External-live and local-LLM lanes retain their separate
   known-safe one-worker boundaries. Matrix jobs on isolated CI hosts do not
   need serialization for SQLite safety.
+  _(Superseded by the 2026-09-01 rule: owned resources use variable
+  `-n auto --dist load` pressure, while external shared prerequisites stay
+  explicit rather than imposing a fixed general width.)_
 
 - 2026-07-13 (2 entries): parser-backstop and cancellation-scope rules,
   verified distilled — global option hoisting preserves the parser's missing-

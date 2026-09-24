@@ -15,6 +15,8 @@ cues that resolve locally but not in published history. This tool:
   4. derives the lessons-tier counts with taut's **declared** derivation so
      a session-start check can quote real numbers rather than remembered
      ones.
+  5. resolves every retired-plan ledger source SHA and verifies that the
+     named plan exists at that source revision.
 
 Adopted from agent-guidance @ ``51626db`` via
 ``docs/plans/2026-07-28-agent-guidance-delta-wave-plan.md`` (adaptations
@@ -23,9 +25,9 @@ lessons regex takes the trailing colon of taut's declared derivation
 command; the count is additionally reported past the lessons watermark,
 because taut's threshold is denominated that way).
 
-This tool covers the lessons tier and the cue contract only. The plans tier
-stays with ``bin/check-plan-status-index``; promotion stays with the
-judgment clustering in ``skills/coalescing/SKILL.md``.
+This tool covers the lessons tier, the cue contract, and retired-plan archive
+pointers. Live plan status stays with ``bin/check-plan-status-index``;
+promotion stays with the judgment clustering in ``skills/coalescing/SKILL.md``.
 
 Read-only by construction. Exit 1 only on an unresolvable cue (a broken
 retrieval contract); ``local-only pin`` and count reports are informational
@@ -45,9 +47,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE = REPO_ROOT / "docs" / "coalescing.md"
 LESSONS = REPO_ROOT / "docs" / "lessons.md"
+PLANS_INDEX = REPO_ROOT / "docs" / "plans" / "README.md"
 
 SHA_RE = re.compile(r"`([0-9a-f]{7,40})`")
 CUE_RE = re.compile(r"git show ([0-9a-f]{7,40}):([A-Za-z0-9_./-]+)")
+RETIRED_PLAN_CELL_RE = re.compile(r"^`([^`/]+\.md)`$")
+RETIRED_SHA_CELL_RE = re.compile(r"^`([0-9a-f]{7,40})`$")
 
 # taut's declared lessons derivation (skills/coalescing/SKILL.md step 2):
 #   grep -E '^- 20[0-9]{2}-[0-9]{2}-[0-9]{2}:' docs/lessons.md
@@ -84,6 +89,55 @@ class ClaimClassification:
     broken: tuple[str, ...]
     local_only: tuple[str, ...]
     foreign: tuple[str, ...]
+
+
+def retired_plan_claims() -> tuple[list[tuple[str, str]], list[str]]:
+    """Return paired plan/SHA ledger claims and structural problems."""
+    if not PLANS_INDEX.is_file():
+        return [], []
+    lines = PLANS_INDEX.read_text(encoding="utf-8").splitlines()
+    try:
+        start = lines.index("## Retired Plans")
+    except ValueError:
+        return [], ["docs/plans/README.md has no Retired Plans section"]
+
+    header = "| Plan | Dates | Outcome | Absorbed into | Source SHA |"
+    try:
+        table_start = lines.index(header, start + 1)
+    except ValueError:
+        return [], ["retired-plans ledger table header is missing"]
+
+    claims: list[tuple[str, str]] = []
+    problems: list[str] = []
+    for line in lines[table_start + 2 :]:
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 5:
+            problems.append(f"malformed retired-plan ledger row: {line}")
+            continue
+        plan_match = RETIRED_PLAN_CELL_RE.fullmatch(cells[0])
+        sha_match = RETIRED_SHA_CELL_RE.fullmatch(cells[4])
+        if not plan_match or not sha_match:
+            problems.append(f"malformed retired-plan plan/SHA pair: {line}")
+            continue
+        claims.append((plan_match.group(1), sha_match.group(1)))
+    return claims, problems
+
+
+def retired_plan_problems(claims: list[tuple[str, str]]) -> list[str]:
+    """Resolve every ledger source and its named archived plan."""
+    problems: list[str] = []
+    for plan, sha in claims:
+        if not resolves_locally(sha):
+            problems.append(f"retired plan `{plan}` source `{sha}` does not resolve")
+            continue
+        path = f"docs/plans/{plan}"
+        if git("cat-file", "-e", f"{sha}:{path}").returncode != 0:
+            problems.append(
+                f"retired plan `{plan}` is missing at source `{sha}` ({path})"
+            )
+    return problems
 
 
 def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
@@ -194,6 +248,7 @@ def main() -> int:
         print("coalesce-check: no docs/coalescing.md — nothing to check")
         return 0
     text = STATE.read_text()
+    retired_claims, retired_structure_problems = retired_plan_claims()
 
     if git("rev-parse", "--is-shallow-repository").stdout.strip() == "true":
         # History-dependent legs cannot be truthful here; skip loudly.
@@ -207,6 +262,10 @@ def main() -> int:
             "(fetch-depth: 0)."
         )
         print(f"  retrieval cues found (syntax only, unverified here): {len(cues)}")
+        print(
+            "  retired-plan archive pointers found (syntax only, unverified "
+            f"here): {len(retired_claims)}"
+        )
         total, past, watermark = lessons_counts()
         print(
             f"  lessons dated entries: {total} total, {past} past the "
@@ -231,13 +290,15 @@ def main() -> int:
         text,
         remote_ok=remote_ok,
     )
+    retired_broken = retired_structure_problems + retired_plan_problems(retired_claims)
 
     total, past, watermark = lessons_counts()
 
     print(
         f"coalesce-check: {classification.sha_count} SHA claim(s) "
         f"({len(classification.foreign)} foreign claim(s)), "
-        f"{classification.cue_count} retrieval cue(s)"
+        f"{classification.cue_count} retrieval cue(s), "
+        f"{len(retired_claims)} retired-plan archive pointer(s)"
     )
     if watermark is None:
         print(f"  lessons dated entries: {total} (no lessons watermark found)")
@@ -258,9 +319,10 @@ def main() -> int:
             + ", ".join(classification.local_only)
             + "  [not in origin/main — published history cannot verify these]"
         )
-    if classification.broken:
-        print(f"  BROKEN ({len(classification.broken)}):")
-        for item in classification.broken:
+    broken = [*classification.broken, *retired_broken]
+    if broken:
+        print(f"  BROKEN ({len(broken)}):")
+        for item in broken:
             print(f"    {item}")
         return 1
     print(
