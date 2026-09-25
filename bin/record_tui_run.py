@@ -163,7 +163,9 @@ def _phase_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def _required_phases(records: list[dict[str, Any]], kind: str) -> None:
+def _required_phases(
+    records: list[dict[str, Any]], kind: str, runtime_platform: str
+) -> None:
     successes = [record for record in records if record["outcome"] == "success"]
     if kind == "navigation":
         sources = {
@@ -186,6 +188,10 @@ def _required_phases(records: list[dict[str, Any]], kind: str) -> None:
         confirmed = any(row["phase"] == "confirmation.resolved" for row in successes)
         if not leases or len(adapters) < 2 or not confirmed:
             raise ValueError("recovery phase identities do not prove both runs")
+        if runtime_platform.split("-", 1)[0] == "Windows" and not any(
+            row["phase"] == "attach.retired" for row in successes
+        ):
+            raise ValueError("Windows recovery phase lacks successful attach.retired")
 
 
 def _completed_owners(
@@ -244,7 +250,7 @@ def phase_evidence(directory: Path) -> dict[str, Any]:
         try:
             records = _phase_records(path)
             summary = _phase_summary(records)
-            _required_phases(records, summary["test_kind"])
+            _required_phases(records, summary["test_kind"], summary["platform"])
             _validate_phase_order(records, summary["test_kind"])
         except (OSError, ValueError, TypeError) as exc:
             raise ValueError(f"invalid phase evidence in {path.name}: {exc}") from exc
@@ -258,6 +264,13 @@ def phase_evidence(directory: Path) -> dict[str, Any]:
         "pytest_python": python_version,
         "pytest_platform": runtime_platform,
     }
+
+
+def _validate_phase_coverage(counts: dict[str, Any], phases: dict[str, Any]) -> None:
+    # The retained suite's autouse observer covers every executed test. Only
+    # collection marks skip it; runtime skips/xfails require a contract change.
+    if phases["phase_files"] != counts["tests"] - counts["skipped"]:
+        raise ValueError("phase file count does not match executed test count")
 
 
 def run_repetition(command: list[str] | None, output_dir: Path, ordinal: int) -> int:
@@ -319,6 +332,7 @@ def _record_repetition(
         if record["failures"] or record["errors"]:
             evidence_error = "JUnit reports failing tests"
         record.update(phase_evidence(directory / "phases"))
+        _validate_phase_coverage(record, record)
     except ValueError as exc:
         evidence_error = str(exc)
     exit_code = code or int(evidence_error is not None)
@@ -352,6 +366,7 @@ def verify_repetitions(output_dir: Path, expected: int) -> None:
             phases = phase_evidence(directory / "phases")
             if any(result.get(key) != value for key, value in phases.items()):
                 raise ValueError("recorded phase metadata differs from phase files")
+            _validate_phase_coverage(counts, phases)
             fields = (
                 "sha",
                 "lock_sha256",

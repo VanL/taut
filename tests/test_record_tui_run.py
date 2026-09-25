@@ -203,11 +203,27 @@ def _phase_fixture(kind: str) -> list[dict[str, object]]:
     return records
 
 
-def _successful_run(tmp_path: Path, ordinal: int = 1) -> None:
+def _run_evidence(
+    tmp_path: Path,
+    ordinal: int = 1,
+    *,
+    executed: int = 2,
+    skipped: int = 1,
+    child_code: int = 0,
+) -> int:
+    failed = int(child_code != 0)
+    cases = "".join(
+        f'<testcase name="ok-{index}" time="0.5">'
+        + ("<failure/>" if failed and index == 0 else "")
+        + "</testcase>"
+        for index in range(executed)
+    ) + "".join(
+        f'<testcase name="skip-{index}" time="0.75"><skipped/></testcase>'
+        for index in range(skipped)
+    )
     xml = (
-        '<testsuites><testsuite tests="2" skipped="1" failures="0" errors="0" '
-        'time="1.25"><testcase name="ok" time="0.5"/>'
-        '<testcase name="skip" time="0.75"><skipped/></testcase>'
+        f'<testsuites><testsuite tests="{executed + skipped}" skipped="{skipped}" '
+        f'failures="{failed}" errors="0" time="1.25">{cases}'
         "</testsuite></testsuites>"
     )
     files = {
@@ -219,24 +235,130 @@ def _successful_run(tmp_path: Path, ordinal: int = 1) -> None:
         "phase = Path(os.environ['TAUT_TUI_PHASE_DIR']); "
         "phase.mkdir(); "
         f"[(phase / name).write_text(text) for name, text in {files!r}.items()]; "
-        f"Path(os.environ['TAUT_TUI_JUNIT_PATH']).write_text({xml!r})"
+        f"Path(os.environ['TAUT_TUI_JUNIT_PATH']).write_text({xml!r}); "
+        f"raise SystemExit({child_code})"
     )
-    assert (
-        _recorder().run_repetition([sys.executable, "-c", source], tmp_path, ordinal)
-        == 0
+    result = _recorder().run_repetition(
+        [sys.executable, "-c", source], tmp_path, ordinal
     )
+    assert isinstance(result, int)
+    return result
+
+
+def _successful_run(tmp_path: Path, ordinal: int = 1) -> None:
+    assert _run_evidence(tmp_path, ordinal) == 0
 
 
 def test_success_records_counts_durations_and_phase_directory(tmp_path: Path) -> None:
     _successful_run(tmp_path)
     result = json.loads((tmp_path / "run-1/result.json").read_text())
-    assert result["tests"] == 2
+    assert result["tests"] == 3
     assert result["skipped"] == 1
     assert result["junit_seconds"] == 1.25
     assert result["failures"] == result["errors"] == 0
     assert result["evidence_error"] is None
     assert (tmp_path / "run-1/phases/navigation.jsonl").is_file()
     _recorder().verify_repetitions(tmp_path, 1)
+
+
+@pytest.mark.parametrize("executed", [1, 3])
+@pytest.mark.parametrize("child_code", [0, 7])
+def test_capture_reconciles_phase_files_with_executed_tests(
+    tmp_path: Path, executed: int, child_code: int
+) -> None:
+    code = _run_evidence(tmp_path, executed=executed, child_code=child_code)
+    assert code == (child_code or 1), "partial phase coverage cannot qualify"
+    result = json.loads((tmp_path / "run-1/result.json").read_text())
+    assert result["child_exit_code"] == child_code
+    assert result["tests"] == executed + 1
+    assert result["skipped"] == 1
+    assert result["failures"] == int(child_code != 0)
+    assert result["phase_files"] == 2, "retain available diagnostics on failure"
+    assert "phase file count" in result["evidence_error"]
+
+
+@pytest.mark.parametrize("executed", [1, 3])
+def test_verify_reconciles_phase_files_with_executed_tests(
+    tmp_path: Path, executed: int
+) -> None:
+    _successful_run(tmp_path)
+    directory = tmp_path / "run-1"
+    junit = directory / "junit.xml"
+    tree = ET.parse(junit)
+    suite = tree.getroot()[0]
+    if executed == 1:
+        suite.remove(suite.findall("testcase")[0])
+    else:
+        ET.SubElement(suite, "testcase", name="unobserved", time="0")
+    suite.set("tests", str(executed + 1))
+    tree.write(junit)
+    result_path = directory / "result.json"
+    result = json.loads(result_path.read_text())
+    result["tests"] = executed + 1
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="phase file count"):
+        _recorder().verify_repetitions(tmp_path, 1)
+
+
+@pytest.mark.parametrize("skipped", [0, 1, 3])
+def test_mark_only_skips_do_not_require_phase_files(
+    tmp_path: Path, skipped: int
+) -> None:
+    assert _run_evidence(tmp_path, skipped=skipped) == 0
+    _recorder().verify_repetitions(tmp_path, 1)
+
+
+@pytest.mark.parametrize(
+    ("recorded_platform", "retirement", "valid"),
+    [
+        ("Windows-2025Server-10.0.26100-SP0", None, False),
+        ("Windows-11-10.0.26100-SP0", "error", False),
+        ("Windows-2025Server-10.0.26100-SP0", "success", True),
+        ("Linux-6.11.0-x86_64-with-glibc2.39", None, True),
+        ("macOS-15.6-arm64-arm-64bit", None, True),
+    ],
+)
+def test_native_retirement_is_required_by_recorded_runtime_not_verifier_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_platform: str,
+    retirement: str | None,
+    valid: bool,
+) -> None:
+    recorder = _recorder()
+    local_platform = (
+        "Linux-verifier"
+        if recorded_platform.startswith("Windows")
+        else "Windows-verifier"
+    )
+    monkeypatch.setattr(
+        recorder, "platform", SimpleNamespace(platform=lambda: local_platform)
+    )
+    for kind in ("navigation", "recovery"):
+        records = _phase_fixture(kind)
+        records[-1]["platform"] = recorded_platform
+        if kind == "recovery" and retirement is not None:
+            records.insert(
+                -1,
+                {
+                    "request": 4,
+                    "phase": "attach.retired",
+                    "outcome": retirement,
+                    "elapsed_s": 1.0,
+                },
+            )
+        for sequence, record in enumerate(records, 1):
+            record["sequence"] = sequence
+        (tmp_path / f"{kind}.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records)
+        )
+    if valid:
+        result = recorder.phase_evidence(tmp_path)
+        assert result["pytest_platform"] == recorded_platform
+        assert result["phase_files"] == 2
+    else:
+        with pytest.raises(ValueError, match="attach.retired"):
+            recorder.phase_evidence(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -396,6 +518,11 @@ def test_skip_reduction_cannot_qualify_a_repetition(tmp_path: Path) -> None:
     result_path = directory / "result.json"
     result = json.loads(result_path.read_text())
     result["skipped"] = 0
+    # Give the formerly skipped case valid evidence, so this fires the distinct
+    # cross-repetition skip-identity guard rather than the coverage guard.
+    summary = {**_phase_fixture("navigation")[-1], "sequence": 1, "test_kind": "other"}
+    (directory / "phases/formerly-skipped.jsonl").write_text(json.dumps(summary) + "\n")
+    result["phase_files"] = 3
     result_path.write_text(json.dumps(result))
     with pytest.raises(ValueError, match="skips changed"):
         _recorder().verify_repetitions(tmp_path, 2)
@@ -404,18 +531,22 @@ def test_skip_reduction_cannot_qualify_a_repetition(tmp_path: Path) -> None:
 def test_test_count_reduction_cannot_qualify_a_repetition(tmp_path: Path) -> None:
     _successful_run(tmp_path, 1)
     _successful_run(tmp_path, 2)
-    directory = tmp_path / "run-2"
+    # Both samples remain individually complete. Only their collection differs.
+    directory = tmp_path / "run-1"
     junit = directory / "junit.xml"
     tree = ET.parse(junit)
     suite = tree.getroot()[0]
-    suite.set("tests", "1")
-    suite.remove(suite.findall("testcase")[0])
+    suite.set("tests", "4")
+    ET.SubElement(suite, "testcase", name="extra", time="0")
     tree.write(junit)
     result_path = directory / "result.json"
     result = json.loads(result_path.read_text())
-    result["tests"] = 1
+    result["tests"] = 4
+    summary = {**_phase_fixture("navigation")[-1], "sequence": 1, "test_kind": "other"}
+    (directory / "phases/extra.jsonl").write_text(json.dumps(summary) + "\n")
+    result["phase_files"] = 3
     result_path.write_text(json.dumps(result))
-    with pytest.raises(ValueError, match="test count"):
+    with pytest.raises(ValueError, match="repetition identity, test count"):
         _recorder().verify_repetitions(tmp_path, 2)
 
 

@@ -770,6 +770,19 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Integrated review found two false-green evidence gaps.
+  INT-CI-1: three passing JUnit cases with only two phase files passed both
+  capture and verification. Both now require exactly `tests - skipped`
+  records under the current mark-only-skip fixture contract, retaining
+  available diagnostics and the actual child exit code on failure.
+  INT-CI-2: the reader accepted recorded Windows recovery without successful
+  `attach.retired`, although the writer required it. Reader validation now
+  uses the recorded runtime, not the verifier's host OS. Eight firing reds
+  precede the fixes; 71 recorder cases pass, and independent recorder/workflow
+  review passes 99 cases (6.39 s). Balanced samples keep the separate
+  cross-repetition count-identity guard independently firing. Diagnostic-4
+  artifacts still validate as expected: four green lanes, known-red Windows.
+
 - 2026-09-25 — Native-probe generation correction is causal over the real
   recovery driver: the first detached provider is retired before the second
   is spawned; orientation consumption belongs to that exact second handle.

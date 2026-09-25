@@ -562,6 +562,11 @@ Windows invocation retains its 20-minute step cap; the job cap is
 `bin/record_tui_run.py` owns invocation and retained evidence. It writes start
 metadata before pytest, preserves its actual status, and rejects missing final
 results, inconsistent SHA/lock/runtime/counts, or malformed phase evidence.
+Capture and verification reconcile one phase file per executed non-skipped
+test. The current suite uses collection marks for skips; runtime skips or
+xfails would require revisiting this explicit coverage contract. Native
+recovery retirement is required according to the artifact's recorded Windows
+runtime, even when verification runs elsewhere.
 Raw JUnit stays outside the uploaded tree; published XML keeps only test
 identity/count/status/duration. Artifacts upload even after failure or timeout.
 Five passing Windows repetitions at one immutable SHA are a bounded acceptance
@@ -631,6 +636,7 @@ state, schedules a competing driver, or cancels shared producer futures.
 | Worker action and application | Named domain method, exact Future and original `_watch_future` callback | `_action_completion.py` retains source, refusal and callback return separately. App send completion additionally retains its pending-send token; inspector/action assertions remain after actual owner application. |
 | Conversation and live delivery | Session generation/thread/message, then Textual conversation intent | `_chat_completion.py` retains accepted delivery; `_app_completion.py` distinguishes stale/superseded intent from current application. |
 | Watcher initial drain | Actual watcher and its existing ready Event | `_chat_completion.py` installs `InitialDrainEvent` before watcher start and retains the first real `set()` timestamp. Open-result completion does not prove initial drain. |
+| Search results | Exact `SearchScreen` query generation and source Future | The screen probe observes real `_apply_results` acceptance/rejection. The real SQLite ordering probe holds callbacks and proves an older query cannot replace newer results. This generation guard is distinct from navigation's unguarded snapshots. |
 | Transcript render and search jump | Named viewport owner, intent, model generation and effect identity | Rows are not settled geometry. Observe the accepted restore effect or final measured tail reapplication; a newer unrelated effect cannot satisfy the old request. |
 | Resize | Textual resize generation and its viewport owner | Latest `_render_latest_resize` return plus the corresponding accepted viewport effect. The rapid burst keeps a negative late-work window only after these real completions. |
 | Input, presentation and focus | Exact posted message, named action or screen-push lifecycle | Actual handler return, mount and committed focus are distinct. Initial queued highlights must run before real widget activation; direct private selection is not a queue fence. |
