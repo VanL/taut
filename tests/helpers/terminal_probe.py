@@ -7,14 +7,11 @@ they cannot accidentally become part of either wheel.
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
-import pty
 import re
 import select
 import signal
 import sys
-import termios
 import threading
 import time
 from contextlib import ExitStack
@@ -77,6 +74,10 @@ class PosixHostShell:
     ) -> Self:
         if os.name == "nt":
             raise RuntimeError("PosixHostShell requires POSIX")
+        import fcntl
+        import pty
+        import termios
+
         master_fd, slave_fd = pty.openpty()
         child_pid = os.fork()
         if child_pid == 0:  # pragma: no cover - behavior observed by parent
@@ -207,6 +208,8 @@ class PosixHostShell:
         self.write(command.encode("utf-8") + b"\n")
 
     def termios_snapshot(self) -> list[Any]:
+        import termios
+
         return termios.tcgetattr(self.slave_fd)
 
     def foreground_pgid(self) -> int:
@@ -351,6 +354,8 @@ class HostTerminal:
                 lease_input_fd=lease_input_fd,
                 lease_output_fd=lease_output_fd,
             )
+        import pty
+
         user_fd, lease_fd = pty.openpty()
         return cls(
             user_read_fd=user_fd,
