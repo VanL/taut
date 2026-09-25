@@ -131,15 +131,16 @@ CASES = (
         ),
     ),
     _case(
-        "search-owner-guard",
+        "search-input-invalidation",
         _PROBES,
         "test_queued_old_highlight_cannot_replace_new_search_owner",
         "AssertionError",
         "assert app.visual_state.selected_message_id == hit.ts",
         Edit(
             "taut_tui/app.py",
-            "            if self.visual_state.viewport.search_owned:\n",
-            "            if False:\n",
+            "    def _arm_search_anchor(self, intent: int, message_id: int) -> None:\n"
+            "        self._invalidate_transcript_selection()\n",
+            "    def _arm_search_anchor(self, intent: int, message_id: int) -> None:\n",
         ),
     ),
     _case(
@@ -235,6 +236,69 @@ CASES = (
             "taut_tui/screens.py",
             "        if generation != self._generation:\n            return\n",
             "        # Causal mutant: accept the stale real search result.\n",
+        ),
+    ),
+    _case(
+        "transcript-render-feedback",
+        "tests/test_tui_app.py",
+        "test_pending_search_anchor_survives_render_without_its_hit",
+        "AssertionError",
+        "assert admitted_highlights == []",
+        Edit(
+            "taut_tui/app.py",
+            "        with transcript.prevent(TautOptionList.OptionHighlighted):\n"
+            "            transcript.clear_options()",
+            "        with transcript.prevent():\n"
+            "            transcript.clear_options()",
+        ),
+    ),
+    _case(
+        "transcript-pending-input-projection",
+        "tests/test_tui_app.py",
+        "test_older_highlight_does_not_rewind_newer_keyboard_input[True]",
+        "AssertionError",
+        "pending selection must survive render before next key",
+        Edit(
+            "taut_tui/app.py",
+            "            if pending_index is not None:\n"
+            "                highlighted = pending_index",
+            "            if False:\n                highlighted = pending_index",
+        ),
+    ),
+    _case(
+        "transcript-input-row-index",
+        "tests/test_tui_app.py",
+        "test_queued_transcript_input_resolves_message_identity[shifted-highlight]",
+        "AssertionError",
+        "assert app.visual_state.selected_message_id == expected_id",
+        Edit(
+            "taut_tui/app.py",
+            '                if option.id == f"{message.thread}:{message.ts}"',
+            "                if index == 0",
+        ),
+    ),
+    _case(
+        "transcript-input-thread-identity",
+        "tests/test_tui_app.py",
+        "test_queued_transcript_input_resolves_message_identity[other-thread-activation]",
+        "AssertionError",
+        "assert app.visual_state.selected_message_id == expected_id",
+        Edit(
+            "taut_tui/app.py",
+            '                if option.id == f"{message.thread}:{message.ts}"',
+            '                if option.id.rsplit(":", 1)[-1] == str(message.ts)',
+        ),
+    ),
+    _case(
+        "transcript-render-search-owner",
+        "tests/test_tui_app.py",
+        "test_pending_search_anchor_survives_render_without_its_hit",
+        "AssertionError",
+        "assert app.visual_state.selected_message_id == 42",
+        Edit(
+            "taut_tui/app.py",
+            "        if not self.visual_state.viewport.search_owned:\n",
+            "        if True:\n",
         ),
     ),
     _case(

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Transcript redraws no longer overwrite newer user selections. Queued input
+  follows the original message across row changes and cannot select a different
+  message at a reused row index.
+
 - Retained TUI CI can collect up to five sequential Windows repetitions at
   one SHA, retaining bounded owner-phase diagnostics and content-free result
   summaries without changing test behavior deadlines. Missing, conflicting,

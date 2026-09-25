@@ -305,8 +305,7 @@ def test_queued_old_highlight_cannot_replace_new_search_owner(
                     )
                     for index in range(1, 4)
                 )
-                app._message_rows = messages
-                transcript.add_options(item.text for item in messages)
+                app._render_messages(messages)
                 stale = transcript.OptionHighlighted(
                     transcript, transcript.get_option_at_index(2), 2
                 )
@@ -323,7 +322,7 @@ def test_queued_old_highlight_cannot_replace_new_search_owner(
                 # This is a real queued Textual message, not a direct handler
                 # call. No yield separates queuing it from arming newer search.
                 monkeypatch.setattr(app, "_on_message", observe)
-                app.post_message(stale)
+                transcript.post_message(stale)
                 app._conversation_intent = 7
                 hit = messages[1]
                 app.visual_state = replace(app.visual_state, selected_message_id=hit.ts)

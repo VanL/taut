@@ -1,10 +1,11 @@
 # TUI determinism elicitation results
 
-Status: slice-2 portable proof checkpoint; native qualification and S4 closure
-remain open. Owner: Windows TUI determinism plan implementer. Boundary:
+Status: slice-2 proof register; five-run qualification and S4 closure remain
+open. Native diagnostic execution is recorded below. Owner: Windows TUI
+determinism plan implementer. Boundary:
 source-owned test observations over real app/session/framework/lease work.
-Required action: complete native execution and integration review,
-then run the unchanged full retained suite five times on one Windows job/SHA.
+Required action: finish current-tree integration, then run the unchanged full
+retained suite five times on one Windows job/SHA.
 
 ## Portable proof register
 
@@ -15,7 +16,8 @@ then run the unchanged full retained suite five times on one Windows job/SHA.
 | (c), counted liveness | Hold real SQLite navigation worker return, then hold real owner application. Run the retired 200-attempt `Pilot.pause(0.01)` observer with only this Pilot's yield seam controlled. | Its original “condition did not become true” failure occurs while the same five-second absolute deadline is still live. | Release real application and await its pre-registered completion under that same deadline; committed DM and real option label render. This proves a harness class, not historical S4. |
 | (d), deadline origin/reset | Real serialized client bootstrap and navigation read are held at separate barriers; only the observer clock advances. | Charging behavior from setup origin fails at `navigation.read`; resetting the deadline after progress lets late behavior through and fails the required timeout assertion. | Timely behavior after slow setup passes; late behavior fails without cancelling its real future. Actual session cleanup still retires the worker. |
 | (e), mount/focus | Real Textual mount and focus policy handlers are held while the screen/widget already exists. | Publishing mount at object creation fails the pending-mount assertion. Looking up lifecycle after an old held focus handler wrongly completes a repushed screen's new generation. | Ten framework tests cover actual input after readiness, pop-before-ready, generation reuse, errors, and cleanup. Separate result/removal mutation fails the held-retirement assertion (M3). |
-| (g), stale UI event | Queue a real old `OptionHighlighted`, arm search ownership before yielding, then let the actual Textual dispatcher deliver it. | Remove the current `viewport.search_owned` guard in a copied product package: selected message becomes 3 instead of exact hit 2. | Current guard preserves selected hit, viewport anchor and search owner. |
+| (g), stale UI event | Queue a real old `OptionHighlighted`, arm search ownership before yielding, then let the actual Textual dispatcher deliver it. | Originally, removing the `viewport.search_owned` guard changed selected message from hit 2 to 3. Class (i) replaces that narrow guard with source invalidation; the retained `search-input-invalidation` mutant now removes invalidation at search arming and produces the same semantic failure. | The current source owner preserves selected hit, viewport anchor and search owner. No obsolete renderer path is reintroduced merely to keep the old hunk mutant. |
+| (i), render/input selection ownership | Release a held real resize after actual activation is posted; drive Home and single-click. Hold real key application across newer input and an intervening render. Admit queued message input before holding application across shifted, removed and other-thread rows. | Original render feedback overwrites the clicked row. The first reconciliation fix lost a third Down action (SEL-1). Current scratch mutants re-enable actual render input admission, discard pending source projection, use row index or omit thread identity, or overwrite an absent search hit with a default. | Real input and rendering remain on Textual. Nineteen portable semantic mutants include these five new corrections and the replaced (g) mutation. Activation commands still execute; default and empty rendering have explicit tests. |
 | S4 boundary diagnostics | DM is committed using real `TautClient` before the real session snapshot. Source read, future return, queued callback, owner application and actual widget option are separately observed. | Drop source membership: “source missing committed DM”. Raise after real read: original `ValueError` from the source future. Drop owner application: `navigation.applied` timeout. Clear actual options after apply: “rendered DM row missing”. | Two held-order variants pass. Navigation has no generation field or rejection guard; conversation/search own those contracts. These mutations distinguish diagnostic boundaries but do not establish S4's historical schedule or cause. |
 | S4 ordering / real generation boundary | Hold the real older SQLite navigation worker, then submit a newer read. Separately hold older/newer real navigation UI callbacks and apply newer first. Commit the DM before both reads. At the actual search generation boundary, hold two real SQLite search callbacks and deliver old after new. | Increasing the actual session executor to two workers breaks the assertion that the newer request cannot run while the older worker is held. Removing the real search-generation guard replaces the newest DM result with the old channel hit. | Three real-source tests pass in `test_tui_navigation_ordering.py`. Navigation workers are serialized and navigation callbacks have no generation guard: both snapshots contain the committed DM, which survives both callback orders. Actual search generation rejection preserves the newest DM and its rendered label. These exercised schedules do not identify historical S4. |
 
@@ -79,7 +81,7 @@ acceptance attempt.
 The portable mutants are now committed-source pytest gates in
 `extensions/taut_tui/tests/test_tui_mutation_gates.py` and
 `extensions/taut_tui/tests/_mutation_probe_child.py`, so every retained
-platform executes the same fourteen semantic reds. Each child copies the
+platform executes the same nineteen semantic reds. Each child copies the
 current selected tests/helpers and product package into scratch space, applies
 exactly matched source edits, and runs one declared node. The parent accepts
 only exit 1, that exact node, passing setup/teardown, and the expected call
@@ -94,7 +96,8 @@ The serialization mutant uses an actual second-worker entry handshake, not
 a scheduler race. The portable host-reuse mutant writes tagged bytes to real
 `HostTerminal` instances and reads through their existing source-owned reader;
 it proves unread-output ownership, not native cancelled-I/O behavior. Negative
-children cannot emit parent phase artifacts. All 24 parent cases pass, with
+children cannot emit parent phase artifacts. At the initial fourteen-mutant
+checkpoint, all 24 parent cases passed, with
 exactly 24 instrumented phase files; all eleven unique isolated targets also
 pass unmutated. Independent review reran the 24 gates (14.22 s) and found no
 blocker. Hosted execution and the native probe remain separate requirements.
@@ -113,3 +116,28 @@ No production behavior correction is justified by these synthetic S4
 mutations. Native cancelled-I/O/ConPTY evidence and the complete five-run
 acceptance attempt are still required. A green soak cannot manufacture the
 missing cause or owner acceptance.
+
+Current selection-slice verification: all 29 parent cases pass, including the
+five new mutants and replaced search invalidation case. An independent
+review reran all six new/rebound cases successfully. The pending-projection
+probe releases its held app handler even when the next key is wrong, so its
+mutant fails the exact lost-input assertion with successful teardown, not a
+masked cleanup timeout. All fifteen unique isolated targets also pass with
+mutation disabled. Full current-tree retained verification and the new
+immutable-SHA hosted attempt are recorded in the active plan.
+
+## Diagnostic 5 update (2026-09-25)
+
+The native-pending statements above describe their checkpoint, not the latest
+execution. Run `36153148123` at `5d495db` passed all 741 Windows cases with
+741 validated phase files, including real successful cancellation followed by
+matching `ERROR_OPERATION_ABORTED`, reader retirement, the reused-host semantic
+failure, and quiet ConPTY exit publication before output drain. This supplies
+native evidence for the exercised (f)/(h) schedules. See the exact identities,
+timings and proof limits in
+`docs/plans/artifacts/2026-09-25-windows-tui-evidence.md`.
+
+It was one diagnostic repetition, not the five-run acceptance gate. All three
+Linux lanes passed; macOS exposed the transcript render/input race now recorded
+as class (i) in the active plan. That correction needs its own causal mutants
+and a new immutable-SHA qualification. Historical S4 remains unresolved.

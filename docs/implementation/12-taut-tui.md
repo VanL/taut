@@ -639,7 +639,7 @@ state, schedules a competing driver, or cancels shared producer futures.
 | Search results | Exact `SearchScreen` query generation and source Future | The screen probe observes real `_apply_results` acceptance/rejection. The real SQLite ordering probe holds callbacks and proves an older query cannot replace newer results. This generation guard is distinct from navigation's unguarded snapshots. |
 | Transcript render and search jump | Named viewport owner, intent, model generation and effect identity | Rows are not settled geometry. Observe the accepted restore effect or final measured tail reapplication; a newer unrelated effect cannot satisfy the old request. |
 | Resize | Textual resize generation and its viewport owner | Latest `_render_latest_resize` return plus the corresponding accepted viewport effect. The rapid burst keeps a negative late-work window only after these real completions. |
-| Input, presentation and focus | Exact posted message, named action or screen-push lifecycle | Actual handler return, mount and committed focus are distinct. Initial queued highlights must run before real widget activation; direct private selection is not a queue fence. |
+| Input, presentation and focus | Exact posted message, named action or screen-push lifecycle | Actual handler return, mount and committed focus are distinct. Transcript input carries stable message identity across reflow; rendering does not publish selection input. Direct private selection is not a queue fence. |
 | Confirmation and recovery offer | Exact Summon request and existing resolution callback | `_summon_completion.py` preserves the production callback and records only the first real decision, including competing resolution attempts. |
 | Terminal lease | Exact operation/request and existing lease owner | Acquisition, restoration and real hold return are separate. Headless tests retain the established lease-thread seam; production suspension remains blocking. |
 | Orientation consumption and readiness | Actual adapter at orientation handoff, then app-owned run token | Match bounded fixture echo on the existing provider output reader, after its input log closes. Injection return alone is not consumption; app-ready and foreground return are separate exact-token callbacks. |
@@ -653,6 +653,24 @@ has its own five-second initial-drain budget. Framework bootstrap, native
 terminal reads and cleanup retain their separate source-owned containment.
 The inventory records every preserved exception and finite input sequence.
 Progress cannot reset a deadline, and no Windows-wide multiplier is used.
+
+Transcript selection is applied by the existing Textual app owner. Option IDs
+retain the full thread/message identity, so queued highlights and activations
+resolve against current messages instead of a row index from an older render.
+Missing identities are ignored. The transcript retains the latest admitted
+source option and whether its application is pending. Rebuilding projects
+that pending identity, or otherwise the committed model, and suppresses
+`OptionHighlighted` publication while preserving Textual's actual reactive
+layout work. The app never replays an older highlight into the widget: doing
+so would rewind newer input before a relative key action. Current highlights
+commit and acknowledge their source; activation still executes its original
+command. This prevents a pending resize from generating a newer selection
+decision that overwrites a user's already-posted input. Normal default/empty
+selection is set explicitly; a pending search-owned selection survives an
+unrelated render whose rows do not yet contain its hit. New conversation and
+search ownership invalidate retained source input, replacing the narrower
+search-only highlight guard. The source record is bounded to one option; no
+extra event loop or selection controller is introduced.
 
 `test_tui_mutation_gates.py` runs the portable causal mutants on every retained
 platform. Its scratch-only child runner accepts only a declared test's exact

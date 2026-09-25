@@ -21,6 +21,7 @@ from textual.containers import Grid, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.timer import Timer
+from textual.widgets.option_list import Option
 
 from taut import (
     IdentityError,
@@ -736,11 +737,18 @@ class TautApp(App[None]):
 
     def on_taut_option_list_activated(self, event: TautOptionList.Activated) -> None:
         if event.chain == 1:
+            if event.option_list.id == "transcript":
+                self._query_base("#transcript", TautTranscript).acknowledge_selection(
+                    event.option
+                )
             return
         if event.option_list.id == "transcript":
-            if 0 <= event.option_index < len(self._message_rows):
-                self._select_message(event.option_index)
+            transcript = self._query_base("#transcript", TautTranscript)
+            index = self._transcript_message_index(event.option)
+            if index is not None:
+                self._select_message(index)
                 self._toggle_reply_surface()
+            transcript.acknowledge_selection(event.option)
             return
         if event.option_list.id != "navigation-list":
             return
@@ -774,17 +782,15 @@ class TautApp(App[None]):
                 self.visual_state,
                 selected_navigation=selected if isinstance(selected, str) else None,
             )
-        elif event.option_list.id == "transcript" and 0 <= event.option_index < len(
-            self._message_rows
-        ):
-            if self.visual_state.viewport.search_owned:
-                # Rebuilding an OptionList posts highlight messages. One from
-                # the superseded render may arrive after a search jump has
-                # taken ownership of selection and viewport restoration. User
-                # viewport input clears that ownership before its highlight is
-                # posted; only render-driven or stale messages reach this arm.
+        elif event.option_list.id == "transcript":
+            transcript = self._query_base("#transcript", TautTranscript)
+            if not transcript.selection_is_current(event.option):
                 return
-            message = self._message_rows[event.option_index]
+            index = self._transcript_message_index(event.option)
+            transcript.acknowledge_selection(event.option)
+            if index is None:
+                return
+            message = self._message_rows[index]
             self.visual_state = replace(
                 self.visual_state,
                 selected_message_id=message.ts,
@@ -2013,6 +2019,18 @@ class TautApp(App[None]):
         if selected is LogicalSurface.CONVERSATION and self._message_rows:
             self.call_after_refresh(self._render_messages, self._message_rows)
 
+    def _transcript_message_index(self, option: Option) -> int | None:
+        """Resolve queued input by message identity, not a superseded row index."""
+
+        return next(
+            (
+                index
+                for index, message in enumerate(self._message_rows)
+                if option.id == f"{message.thread}:{message.ts}"
+            ),
+            None,
+        )
+
     def _select_message(self, index: int) -> None:
         if not 0 <= index < len(self._message_rows):
             return
@@ -2962,6 +2980,7 @@ class TautApp(App[None]):
         )
 
     def _advance_conversation_intent(self, *, reset_search: bool = True) -> int:
+        self._invalidate_transcript_selection()
         self._clear_pending_search_anchor()
         self._conversation_intent += 1
         if reset_search and self._operation_state == "searching":
@@ -3374,21 +3393,44 @@ class TautApp(App[None]):
         restore_owner_intent: int | None = None,
     ) -> None:
         self._cancel_pending_selection_copy()
-        transcript = self._query_base("#transcript", TautOptionList)
-        transcript.clear_options()
+        transcript = self._query_base("#transcript", TautTranscript)
         self._message_rows = messages
-        for message in messages:
-            transcript.add_option(self._message_prompt(message))
-        if messages:
+        pending = transcript.pending_selection
+        pending_index = (
+            self._transcript_message_index(pending)
+            if pending is not None and not self.visual_state.viewport.search_owned
+            else None
+        )
+        # Reflow projects selection; it is not a new selection producer. A
+        # render may run while genuine input still bubbles to the app owner.
+        with transcript.prevent(TautOptionList.OptionHighlighted):
+            transcript.clear_options()
+            for message in messages:
+                transcript.add_option(
+                    Option(
+                        self._message_prompt(message),
+                        id=f"{message.thread}:{message.ts}",
+                    )
+                )
             highlighted = next(
                 (
                     index
                     for index, message in enumerate(messages)
                     if message.ts == self.visual_state.selected_message_id
                 ),
-                len(messages) - 1,
+                len(messages) - 1 if messages else None,
             )
+            if pending_index is not None:
+                highlighted = pending_index
             transcript.highlighted = highlighted
+        if not self.visual_state.viewport.search_owned:
+            self.visual_state = replace(
+                self.visual_state,
+                selected_message_id=(
+                    messages[highlighted].ts if highlighted is not None else None
+                ),
+            )
+        if messages:
             viewport, effect = self.visual_state.viewport.plan_render(
                 authorized_search_intent=restore_owner_intent,
             )
@@ -3490,10 +3532,15 @@ class TautApp(App[None]):
         self.visual_state = replace(self.visual_state, viewport=viewport)
 
     def _arm_search_anchor(self, intent: int, message_id: int) -> None:
+        self._invalidate_transcript_selection()
         self.visual_state = replace(
             self.visual_state,
             viewport=self.visual_state.viewport.search_armed(intent, message_id),
         )
+
+    def _invalidate_transcript_selection(self) -> None:
+        if self._base_screen is not None and self._base_screen.is_attached:
+            self._query_base("#transcript", TautTranscript).invalidate_selection()
 
     def _clear_pending_search_anchor(self, *, intent: int | None = None) -> bool:
         viewport = self.visual_state.viewport

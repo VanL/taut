@@ -285,3 +285,47 @@ The Windows result preserves exit 1 and `JUnit reports failing tests`; it is
 not accepted by the repetition verifier.
 [Windows artifact](https://github.com/VanL/taut/actions/runs/36150401173/artifacts/10871467361).
 Local copy: `/tmp/taut-tui-native-diagnostic4.ihMLdY`.
+
+## Diagnostic 5: native elicitation passes; macOS setup remains red
+
+[Run 36153148123](https://github.com/VanL/taut/actions/runs/36153148123),
+attempt 1 at `5d495dbbe00713b8bfd8bc02b434fb5377f4889f`, ran one
+repetition. Windows passed all 741 cases with zero skips in 364.398 JUnit
+seconds (367.675 s launcher duration). All 741 phase files and the whole
+repetition validate under the subsequently strengthened recorder as well.
+The runtime is Windows Server 2025 build 26100, Python 3.13.15; retained lock
+hash is `489cb1c034c41c0aaeb1a1312f1c31ce9b1d4b706a51e12a17e320658c549093`.
+
+All twelve native-module cases passed. In particular, quiet ConPTY exit
+passed in 0.059 s, cancelled attach with isolated hosts in 17.454 s, and the
+reused-host mutant in 16.936 s. Each has its exact complete phase file; both
+attach cases record two successful retirements. The first reader's actual
+successful cancellation and matching `ERROR_OPERATION_ABORTED` (995) are
+asserted before the expected-failure block. The reused host then exposes
+the first run's unread tagged output; separate hosts do not. Quiet exit
+publication precedes starting the output drain and yields exactly one exit
+event, with actual owners retired. This is native proof for the exercised
+(f)/(h) schedules, not identification of their historical occurrence.
+
+Ubuntu 3.11/3.13/3.14 each passed 738 with three native-only skips in
+212.844/205.729/212.123 s. macOS passed 737, failed one, and skipped three in
+232.941 s. Its failure is the rapid-resize test's seed-selection assertion
+immediately after real activation, **before the resize burst**. The existing
+held-initial-highlight regression passed in that same job, so the first
+setup correction is insufficient. Investigation must force the additional
+render/message ordering, not rely on another green replay. All 738 phase
+files in each non-Windows lane validate; macOS's full result remains red.
+
+Single Windows samples (`n=1`): S4 navigation requested→source 0.077972 s,
+source→applied 0.002627 s; recovery confirmation requested→resolved
+0.095469 s, lease requested→acquired 0.000683 s, acquired→restored
+0.044197 s. Injection-return→consumed is 0.001357/0.000959 s for the two
+providers, not full orientation duration. These are descriptive timings,
+not statistical bounds or authority to change caps.
+
+[Windows artifact](https://github.com/VanL/taut/actions/runs/36153148123/artifacts/10872900968),
+[macOS artifact](https://github.com/VanL/taut/actions/runs/36153148123/artifacts/10873175455).
+Local copy: `/tmp/taut-tui-native-diagnostic5.4xlke6`.
+The later selection/lease-writer changes at `b817c8e` are not included in
+this hosted SHA. Neither this one-pass native evidence nor the three green
+Linux jobs meets the five-run/five-lane qualification criterion or closes S4.

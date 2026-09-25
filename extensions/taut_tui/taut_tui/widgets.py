@@ -556,8 +556,36 @@ class TautTranscript(TautOptionList):
     ALLOW_SELECT = True
 
     def __init__(self, *content: Any, **kwargs: Any) -> None:
+        self._selection_source: Option | None = None
+        self._selection_pending = False
         super().__init__(*content, **kwargs)
         self.selection_changed: Callable[[Selection | None], None] | None = None
+
+    def post_message(self, message: Message) -> bool:
+        admitted = super().post_message(message)
+        if admitted and isinstance(
+            message, (self.OptionHighlighted, self.OptionSelected)
+        ):
+            # Retain the actual input option across presentation rebuilds. The
+            # later Activated wrapper is not another user selection source.
+            self._selection_source = message.option
+            self._selection_pending = True
+        return admitted
+
+    @property
+    def pending_selection(self) -> Option | None:
+        return self._selection_source if self._selection_pending else None
+
+    def selection_is_current(self, option: Option) -> bool:
+        return option is self._selection_source
+
+    def acknowledge_selection(self, option: Option) -> None:
+        if self.selection_is_current(option):
+            self._selection_pending = False
+
+    def invalidate_selection(self) -> None:
+        self._selection_source = None
+        self._selection_pending = False
 
     def render_line(self, y: int) -> Strip:
         """Attach virtual coordinates used by Textual's selection compositor."""

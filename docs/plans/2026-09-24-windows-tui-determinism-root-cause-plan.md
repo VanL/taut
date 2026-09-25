@@ -1,7 +1,8 @@
 # Windows TUI Determinism Root-Cause Plan
 
 Status: active — implementation authorized 2026-09-25; slice 1 diagnostic,
-model and cap gates passed. Slice 2 implementation is in progress. S4 remains open.
+model and cap gates passed. Slice 2 implementation and local gates pass;
+slice 3 immutable-SHA hosted qualification is next. S4 remains open.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -61,11 +62,11 @@ not independently revalidate the historical hosted runs.
   recovery offer, orientation injection, navigation apply, transcript
   render, search jump, focus transition, resize), the event that completes
   it, who publishes it, and how a test observes it.
-- [ ] Every confirmed root-cause class has a firing test and a failing
+- [x] Every confirmed root-cause class has a firing test and a failing
   mutation of the specific fix. Portable ownership/ordering proofs run on
   all retained platforms; Windows I/O and ConPTY proof runs natively on
   Windows. Unconfirmed hypotheses stay labeled as such.
-- [ ] No attempt-counted liveness wait remains in the TUI suite. Tests use
+- [x] No attempt-counted liveness wait remains in the TUI suite. Tests use
   one TUI completion-observation interface over actual owner events, with
   infrastructure and behavior budgets separated. Legitimate finite action
   sequences and source adapters are classified, not mechanically rewritten.
@@ -461,6 +462,7 @@ observed defect. Reuse an existing firing test when it already proves the row.
 | (f) Cross-run Windows I/O leakage, E6(a) | Wire one provider, leave a tagged reset/output tail pending at detach, await reader cancellation/retirement, then start the recovery run. Assert distinct retained host-terminal objects, log paths, provider creation identities, no old marker in run two, and successful run-two input/output. Do not assert fd/PID integers never recycle. | Reuse the first host-terminal session and require the isolation assertion to fail. Portable fixture-ownership proof; native Windows test must additionally exercise real cancelled I/O and assert the captured bytes/retirement evidence. A structural red alone does not prove the Windows mechanism. |
 | (g) Superseded UI event, E5 | Queue a real old-generation selection/highlight event, establish the newer search ownership, then deliver the old event. Assert the exact hit/selection and viewport owner survive. Choose the current transcript adapter, preserving the participation-loop contracts. | Remove the active stale-event guard at that adapter. Portable. If later code eliminated the path, document that removal and its replacement firing proof rather than resurrecting obsolete widgets. |
 | (h) ConPTY delivery hypothesis | On native Windows, hold provider readiness, release it, observe the fixture's consumption acknowledgement through the production adapter, then assert the existing log and final readiness. Exercise quiet child exit versus output EOF, detach/cancel, and complete adapter retirement without a second reader. | Existing native lifecycle tests may supply these cases. If a delivery defect is discovered, name and mutate its correction; otherwise record native qualification, no confirmed new cause. POSIX counterpart tests qualify only their own PTY path. |
+| (i) Render feedback overwrites user selection, diagnostic 5 | Hold the real resize callback until real transcript activation is posted. Release it through Textual, then await actual admitted input handlers. Real Home plus single-click must retain the clicked message in both model and widget. Queued input must follow its message across row shifts and be ignored when that message is absent or belongs to another thread. Three relative key actions must survive older application and an intervening render. | Re-enable render highlight publication; separately remove pending-input projection or replace stable identity with the old row index. Each must fail its semantic assertion. Preserve pending search selection across an unrelated old-row render. Portable product regression under [TUI-9.2]–[TUI-9.3]. |
 | S4: source → callback → generation → widget | Keep real SQLite/session/app. Commit the DM before requesting its snapshot; hold worker return and owner application separately; retain source membership, future outcome, callback delivery, stale decision, and rendered DM. Exercise an older request returning after a newer request and verify the latest valid DM is applied. | Mutations at each boundary must produce distinct phase diagnostics and retain final-state assertions. Green candidate probes eliminate only the exercised schedules. A red synthetic mutant is not evidence that the historical incident used that schedule. |
 
 ### Slice 3 — Hosted qualification and honest closure
@@ -769,6 +771,81 @@ the one additional M2 case passed afterward. Scoped Ruff/mypy pass. Native
 Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
+
+- 2026-09-25 — Current selection candidate passes full instrumented local
+  integration: **760 passed, three native-only skips, 763 total, 160.26 s**.
+  All 760 phase files and the complete-result verifier pass at
+  `/tmp/taut-tui-selection-final.gseGjX`. This is working-tree verification,
+  not immutable-SHA hosted qualification. All fifteen unique mutation targets
+  also pass unmutated in isolated scratch runs; all nineteen mutants produce
+  their required semantic red through the 29 passing parent gates. Source,
+  fixture, budgets and retained scheduler are frozen for the targeted commit
+  and five-repetition hosted attempt. Any subsequent code/fixture/workflow/
+  lock correction restarts that attempt. S4 remains open.
+
+- 2026-09-25 — Selection correction independent round 2: PASS, SEL-1
+  resolved, no new scoped defect. The reviewer reran 23 focused cases.
+  Integration review also returned no blocker and independently reran all
+  six new/rebound mutation cases. GA-1 (stale native-pending checkpoint) and
+  GA-2 (fourteen-mutant count and retired search-guard description) were
+  accepted and corrected in the elicitation artifact without rewriting the
+  historical results. Main verification: 29 mutation gates, 71 recorder
+  cases, 28 workflow cases, 15 documentation cases, full TUI Ruff and
+  56-file mypy pass; formatting, path and plan-index gates pass. The full
+  instrumented 763-case suite is running; no hosted qualification is yet
+  claimed. Debugging/TDD skill use exposed a reusable projection-versus-input
+  lesson, recorded in the existing ledger; no new skill or runbook rule is
+  needed. Coalescing retrieval gates resolve; new lessons are hot entries,
+  not a new cold-entry threshold trip.
+
+- 2026-09-25 — Independent selection review found SEL-1 (P2):
+  "Unconditional widget reconciliation can rewind newer user input. With two
+  Down events posted before H1 applies, widget index is 2. Applying H1 resets
+  it to 1; a third Down then computes 2 instead of 3. After queued handlers
+  complete, model and widget agree on the wrong selection." Accepted after
+  a real bound-key regression reproduced it (0.38 s). The correction removes
+  app-side highlight replay entirely. The widget retains one admitted source
+  option plus a pending bit; renders project that pending identity, and
+  current app handlers commit/acknowledge it. New search/conversation intent
+  invalidates it. Activation commands are not dropped merely because newer
+  selection input exists. This remains on the existing Textual owner, with
+  no peer loop. The historical search-only guard is superseded by source
+  invalidation; its semantic test remains, with the mutation moved to the
+  new ownership boundary. Final verification/review remains pending.
+
+- 2026-09-25 — Diagnostic 5's macOS selection failure now has a causal
+  product reproduction. Hold the real initial resize callback, then release
+  it through Textual's queue after row activation is posted. The renderer
+  rebuilds options using the still-old applied selection and posts another
+  highlight. Textual applies the user's row 5, then the render's old row
+  overwrites it. Real Home followed by a single mouse click reproduces the
+  same failure with row 0 and history ownership; the mechanism is not
+  specific to tail pinning or the test's activation helper. Both cases fail
+  at the semantic selection assertion before any product edit. Traces:
+  `/tmp/taut-rapid-home-click-red.log` and
+  `/tmp/taut-rapid-late-render-trace-red.log`. This is new causal evidence,
+  not another replay of the earlier held-highlight test. Under [TUI-9.2]
+  and [TUI-9.3], rendering cannot introduce a newer selection decision.
+  Slice 2 now includes an independently reviewed correction at the
+  transcript rendering/input boundary, with stable queued-message identity
+  and widget/model agreement. The existing Textual reactor remains the
+  only owner. No new loop, longer cap, or extra fixture wait is authorized
+  as the correction. The five-run gate restarts after this product slice.
+
+- 2026-09-25 — Full local instrumented integration passed 742 cases with
+  three declared Windows-only skips (745 total, 156.29 s). All 742 phase
+  files and the strengthened whole-result verifier pass. Logs:
+  `/tmp/taut-tui-candidate-local.QLCxiX`. This was working-tree integration
+  whose code was subsequently committed through `b817c8e`, not an immutable
+  hosted qualification. Ruff, extension mypy (56 files), recorder mypy,
+  formatting, 15 documentation cases, path and plan-index gates pass.
+  Diagnostic 5 then passed all 741 Windows cases, including actual cancelled
+  ReadFile/995, reused-host semantic failure and quiet ConPTY exit. Three
+  Linux lanes passed; macOS failed rapid-resize setup selection before the
+  burst despite the previous held-highlight regression passing. Freeze is
+  therefore lifted for a new forced-order diagnosis; the first setup fix
+  is not sufficient. No five-run qualification has started. The evidence
+  artifact records exact hosted identities, timings and native proof limits.
 
 - 2026-09-25 — Final selection/native wait sweep is implemented and reviewed.
   Sixteen selection and three textual-contract pauses are replaced by exact

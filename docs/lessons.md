@@ -1004,6 +1004,17 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   receipts from those hooks, and keep real input/exit evidence independent.
   Fixing that observation does not establish why a historical frame was lost.
 
+- 2026-09-25: A renderer must not publish input authority as a side effect of
+  projecting state. A pending Textual resize rebuilt rows and emitted an old
+  highlight after the user's newer click was posted; that synthetic event
+  later undid the click. Waiting for the click's handler did not fix the
+  product race. Suppress render feedback and retain stable item identity in
+  queued input. Reflow must preserve still-pending source input, not replay an
+  older applied highlight over newer widget input: that rewind loses the next
+  relative key movement even if the final model and widget agree.
+  Force the real render between input publication and application in the
+  regression; an earlier queue-drain test does not cover newly created work.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

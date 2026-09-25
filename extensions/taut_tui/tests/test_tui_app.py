@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import pytest
 from _app_completion import AppCompletions, observed
+from _completion import Completion, CompletionKey
 from textual.widgets import Button, Input, Select
 
 from taut.client import TautClient
@@ -78,6 +79,94 @@ async def _activate_transcript_message(app: Any, transcript: Any, index: int) ->
     transcript.highlighted = index
     transcript.action_select()
     await applied.wait(deadline=deadline, description="transcript activation applied")
+
+
+class _ResizeAfterTranscriptActivation:
+    """Retain one real resize until user input is already in the widget queue."""
+
+    def __init__(self, app: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.app = app
+        self.monkeypatch = monkeypatch
+        self.original_resize = app._render_latest_resize
+        self.pending: list[int] = []
+        self.receipts: dict[int, tuple[Any, Completion[Any]]] = {}
+        self.rendered = observed(app).scope.expect(
+            CompletionKey(app, "held_resize.returned", request=self)
+        )
+        self.released = False
+        monkeypatch.setattr(app, "_render_latest_resize", self.pending.append)
+
+    def arm(self, transcript: Any) -> None:
+        from taut_tui.widgets import TautOptionList
+
+        assert self.pending and self.pending[-1] == self.app._resize_generation
+        original_post = transcript.post_message
+        self.original_dispatch = self.app._on_message
+
+        def post(event: Any) -> bool:
+            receipt = None
+            if isinstance(
+                event, (TautOptionList.OptionHighlighted, TautOptionList.Activated)
+            ):
+                receipt = observed(self.app).scope.expect(
+                    CompletionKey(self.app, "selection_message.applied", request=event)
+                )
+            admitted = bool(original_post(event))
+            if receipt is not None:
+                if admitted:
+                    self.receipts[id(event)] = (event, receipt)
+                else:
+                    receipt.dispose()
+            if admitted and isinstance(event, TautOptionList.Activated):
+                self._release()
+            return admitted
+
+        self.monkeypatch.setattr(transcript, "post_message", post)
+        self.monkeypatch.setattr(self.app, "_on_message", self._dispatch)
+
+    async def _dispatch(self, event: Any) -> None:
+        retained = self.receipts.get(id(event))
+        receipt = retained[1] if retained is not None else None
+        try:
+            await self.original_dispatch(event)
+        except BaseException as error:
+            if receipt is not None:
+                receipt.fail(receipt.key, error)
+            raise
+        else:
+            if receipt is not None:
+                receipt.succeed(receipt.key, event)
+
+    def _release(self) -> None:
+        if not self.released:
+            self.released = True
+            # Activated still has to bubble through the widget's ancestors.
+            # The actual resize callback can therefore run first on the app.
+            assert self.app.call_later(self._render) is True
+
+    def _render(self) -> None:
+        try:
+            self.original_resize(self.pending[-1])
+        except BaseException as error:
+            self.rendered.fail(self.rendered.key, error)
+            raise
+        else:
+            self.rendered.succeed(self.rendered.key, None)
+
+    async def settled(self, *, deadline: float) -> None:
+        await self.rendered.wait(deadline=deadline, description="held resize returned")
+        # Input production and the synchronous render have both returned. Wait
+        # only for their admitted messages, not an assumed render highlight.
+        # Each receipt is published after the original app handler completes.
+        for _event, receipt in tuple(self.receipts.values()):
+            await receipt.wait(
+                deadline=deadline, description="selection handler applied"
+            )
+        fence = observed(self.app).scope.expect(
+            CompletionKey(self.app, "selection_queue.fenced", request=self)
+        )
+        assert self.app.call_later(fence.succeed, fence.key, None) is True
+        await fence.wait(deadline=deadline, description="selection app queue fenced")
 
 
 async def _await_summon_confirmation(
@@ -3450,17 +3539,16 @@ def test_pending_search_anchor_rejects_stale_render_highlight() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             transcript = app.query_one("#transcript", TautOptionList)
-            app._message_rows = messages
-            transcript.add_options(item.text for item in messages)
+            app._render_messages(messages)
             app._conversation_intent = 7
-            app.visual_state = replace(app.visual_state, selected_message_id=hit.ts)
-            app._arm_search_anchor(7, hit.ts)
-
             stale = transcript.OptionHighlighted(
                 transcript,
                 transcript.get_option_at_index(2),
                 2,
             )
+            assert transcript.post_message(stale)
+            app.visual_state = replace(app.visual_state, selected_message_id=hit.ts)
+            app._arm_search_anchor(7, hit.ts)
             app.on_option_list_option_highlighted(stale)
 
             assert app.visual_state.selected_message_id == hit.ts
@@ -3474,6 +3562,308 @@ def test_pending_search_anchor_rejects_stale_render_highlight() -> None:
                 )
             )
             assert app.visual_state.viewport.search_owned is False
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("event_kind", ("highlight", "activation"))
+@pytest.mark.parametrize("replacement", ("shifted", "removed", "other-thread"))
+def test_queued_transcript_input_resolves_message_identity(
+    event_kind: str,
+    replacement: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 4)
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._render_messages(messages)
+            transcript = app.query_one("#transcript", TautOptionList)
+            event_type = (
+                TautOptionList.OptionHighlighted
+                if event_kind == "highlight"
+                else TautOptionList.Activated
+            )
+            captured = observed(app).scope.expect(
+                CompletionKey(app, "queued_input.captured", request=object())
+            )
+            released = observed(app).scope.expect(
+                CompletionKey(app, "queued_input.released", request=object())
+            )
+            applied = observed(app).scope.expect(
+                CompletionKey(app, "queued_input.applied", request=captured)
+            )
+            original_dispatch = app._on_message
+            deadline = observed(app).scope.now() + 5
+
+            async def dispatch(event: Any) -> None:
+                if not isinstance(event, event_type):
+                    await original_dispatch(event)
+                    return
+                try:
+                    captured.succeed(captured.key, event)
+                    await released.wait(
+                        deadline=deadline, description="release real input"
+                    )
+                    await original_dispatch(event)
+                except BaseException as error:
+                    applied.fail(applied.key, error)
+                    raise
+                else:
+                    applied.succeed(applied.key, event)
+
+            monkeypatch.setattr(app, "_on_message", dispatch)
+            if event_kind == "highlight":
+                transcript.action_first()
+            else:
+                with transcript.prevent(TautOptionList.OptionHighlighted):
+                    transcript.highlighted = 0
+                transcript.action_select()
+            await captured.wait(
+                deadline=deadline, description="real widget input captured"
+            )
+            rows = {
+                "shifted": (messages[1], messages[0], messages[2]),
+                "removed": messages[1:],
+                "other-thread": tuple(
+                    replace(message, thread="other") for message in messages
+                ),
+            }[replacement]
+            app._render_messages(rows)
+            before_inspector = app.visual_state.inspector
+            released.succeed(released.key, None)
+            await applied.wait(deadline=deadline, description="queued input applied")
+            expected_id = 1 if replacement == "shifted" else 3
+            expected_index = 1 if replacement != "other-thread" else 2
+            assert app.visual_state.selected_message_id == expected_id
+            assert transcript.highlighted == expected_index
+            if replacement != "shifted":
+                assert app.visual_state.inspector == before_inspector
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("render_before_second", (False, True))
+def test_older_highlight_does_not_rewind_newer_keyboard_input(
+    render_before_second: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual import events
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._render_messages(
+                tuple(
+                    Message("general", index, "m_alice", "alice", "message", "row")
+                    for index in range(1, 6)
+                )
+            )
+            transcript = app.query_one("#transcript", TautOptionList)
+            deadline = observed(app).scope.now() + 5
+            transcript.focus()
+            await observed(app).focus(transcript, deadline=deadline)
+            transcript.action_first()
+            await observed(app).highlighted(transcript, 0, deadline=deadline)
+            scope = observed(app).scope
+            entered = scope.expect(
+                CompletionKey(app, "first_key.held", request=object())
+            )
+            release = scope.expect(
+                CompletionKey(app, "first_key.release", request=object())
+            )
+            third = scope.expect(
+                CompletionKey(app, "third_key.produced", request=object())
+            )
+            receipts: dict[int, Completion[Any]] = {}
+            first_event: Any = None
+            original_post = transcript.post_message
+            original_dispatch = app._on_message
+
+            def post(event: Any) -> bool:
+                nonlocal first_event
+                admitted = bool(original_post(event))
+                if admitted and isinstance(event, TautOptionList.OptionHighlighted):
+                    first_event = first_event or event
+                    receipts[id(event)] = scope.expect(
+                        CompletionKey(app, "key_highlight.applied", request=event)
+                    )
+                return admitted
+
+            async def dispatch(event: Any) -> None:
+                receipt = receipts.get(id(event))
+                if receipt is None:
+                    await original_dispatch(event)
+                    return
+                try:
+                    if event is first_event:
+                        entered.succeed(entered.key, None)
+                        await release.wait(
+                            deadline=deadline, description="release first key"
+                        )
+                        await original_dispatch(event)
+                        # A raw key reaches this actual binding handler after
+                        # bubbling. Admit the third key between old/new highlights.
+                        await app._on_key(events.Key("down", None))
+                        third.succeed(third.key, None)
+                    else:
+                        await original_dispatch(event)
+                except BaseException as error:
+                    receipt.fail(receipt.key, error)
+                    raise
+                else:
+                    receipt.succeed(receipt.key, event)
+
+            monkeypatch.setattr(transcript, "post_message", post)
+            monkeypatch.setattr(app, "_on_message", dispatch)
+            await app._on_key(events.Key("down", None))
+            await entered.wait(deadline=deadline, description="first highlight held")
+            try:
+                if render_before_second:
+                    app._render_messages(app._message_rows)
+                await app._on_key(events.Key("down", None))
+                second_index = transcript.highlighted
+            finally:
+                release.succeed(release.key, None)
+            await third.wait(deadline=deadline, description="third key produced")
+            await asyncio.gather(
+                *(
+                    receipt.wait(deadline=deadline, description="key highlight applied")
+                    for receipt in tuple(receipts.values())
+                )
+            )
+            assert second_index == 2, (
+                "pending selection must survive render before next key"
+            )
+            assert transcript.highlighted == 3
+            assert app.visual_state.selected_message_id == 4
+
+    asyncio.run(exercise())
+
+
+def test_queued_activation_opens_original_inspector_without_rewinding_newer_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual import events
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.models import InspectorKind
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._render_messages(
+                tuple(
+                    Message("general", index, "m_alice", "alice", "message", "row")
+                    for index in range(1, 4)
+                )
+            )
+            transcript = app.query_one("#transcript", TautOptionList)
+            deadline = observed(app).scope.now() + 5
+            transcript.focus()
+            await observed(app).focus(transcript, deadline=deadline)
+            transcript.action_first()
+            await observed(app).highlighted(transcript, 0, deadline=deadline)
+            captured = observed(app).scope.expect(
+                CompletionKey(app, "activation.held", request=object())
+            )
+            original_post = transcript.post_message
+
+            def post(event: Any) -> bool:
+                if isinstance(event, TautOptionList.Activated):
+                    captured.succeed(captured.key, event)
+                    return True
+                return bool(original_post(event))
+
+            monkeypatch.setattr(transcript, "post_message", post)
+            applied = observed(app).option_activation(transcript)
+            await app._on_key(events.Key("enter", None))
+            event = await captured.wait(deadline=deadline, description="Enter held")
+            await app._on_key(events.Key("down", None))
+            await observed(app).highlighted(transcript, 1, deadline=deadline)
+            monkeypatch.setattr(transcript, "post_message", original_post)
+            assert original_post(event)
+            await applied.wait(deadline=deadline, description="held Enter applied")
+            assert app.visual_state.inspector is not None
+            assert app.visual_state.inspector.kind is InspectorKind.MESSAGE
+            assert app.visual_state.inspector.selected_item == "1"
+            assert transcript.highlighted == 1
+
+    asyncio.run(exercise())
+
+
+def test_pending_search_anchor_survives_render_without_its_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            transcript = app.query_one("#transcript", TautOptionList)
+            original_post = transcript.post_message
+            admitted_highlights: list[Any] = []
+
+            def post(event: Any) -> bool:
+                admitted = bool(original_post(event))
+                if admitted and isinstance(event, TautOptionList.OptionHighlighted):
+                    admitted_highlights.append(event)
+                return admitted
+
+            monkeypatch.setattr(transcript, "post_message", post)
+            app._conversation_intent = 7
+            app.visual_state = replace(app.visual_state, selected_message_id=42)
+            app._arm_search_anchor(7, 42)
+            app._render_messages(
+                (Message("general", 1, "m_alice", "alice", "message", "old row"),)
+            )
+            assert app.visual_state.selected_message_id == 42
+            assert app.visual_state.viewport.message_id == 42
+            assert app.visual_state.viewport.search_owned
+            assert transcript.highlighted == 0
+            # Rendering synchronously projects state. It must not admit a new
+            # selection producer, even if another guard would ignore it later.
+            assert admitted_highlights == []
+
+    asyncio.run(exercise())
+
+
+def test_transcript_render_selects_default_and_clears_empty_selection() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            transcript = app.query_one("#transcript", TautOptionList)
+            app._render_messages(
+                tuple(
+                    Message("general", index, "m_alice", "alice", "message", "row")
+                    for index in range(1, 4)
+                )
+            )
+            assert app.visual_state.selected_message_id == 3
+            assert transcript.highlighted == 2
+            app._render_messages(())
+            assert app.visual_state.selected_message_id is None
+            assert transcript.highlighted is None
 
     asyncio.run(exercise())
 
@@ -4184,7 +4574,7 @@ def test_command_line_open_keeps_live_deliveries_rendering(
     bob.close()
 
 
-def test_rapid_resize_setup_selection_survives_pending_initial_highlights(
+def test_rapid_resize_setup_selection_survives_prior_user_highlight(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4223,18 +4613,19 @@ def test_rapid_resize_setup_selection_survives_pending_initial_highlights(
                     return True
                 return bool(original_post(event))
 
-            monkeypatch.setattr(transcript, "post_message", post)
             navigation = app.query_one("#navigation-list", TautOptionList)
             navigation.highlighted = app._navigation_targets.index("general")
             opened = observed(app).opening()
             navigation.action_select()
             await observed(app).conversation(opened)
             await observed(app).viewport()
+            monkeypatch.setattr(transcript, "post_message", post)
+            transcript.action_first()
             assert held
             selected = app._message_rows[5].ts
             last = held[-1]
             applied = observed(app).scope.expect(
-                CompletionKey(app, "held_initial_highlight.applied", request=last)
+                CompletionKey(app, "prior_user_highlight.applied", request=last)
             )
             original_dispatch = app._on_message
 
@@ -4243,7 +4634,7 @@ def test_rapid_resize_setup_selection_survives_pending_initial_highlights(
                 if event is last:
                     trace.append(
                         (
-                            "last_initial_applied",
+                            "prior_user_applied",
                             event.option_index,
                             app.visual_state.selected_message_id,
                         )
@@ -4257,7 +4648,7 @@ def test_rapid_resize_setup_selection_survives_pending_initial_highlights(
                 original_post(event)
             await _activate_transcript_message(app, transcript, 5)
             await applied.wait(
-                deadline=deadline, description="held initial highlight applied"
+                deadline=deadline, description="prior user highlight applied"
             )
             trace.append(
                 (
@@ -4315,6 +4706,54 @@ def test_transcript_activation_observer_preserves_the_real_handler_error(
                     deadline=deadline, description="selection handler error"
                 )
             assert observed_error.value is error
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("producer", ("setup-helper", "single-click"))
+def test_rapid_resize_setup_selection_survives_resize_render_after_activation_post(
+    producer: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    path = tmp_path / "late-initial-resize-highlight.db"
+    TautClient.init(db_path=path)
+    client = TautClient(db_path=path, as_name="alice")
+    client.join("general")
+    for index in range(24):
+        client.say("general", f"seed {index}")
+    client.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(path), as_name="alice", continuity_token=None)
+        resize = _ResizeAfterTranscriptActivation(app, monkeypatch)
+        async with app.run_test(size=(130, 34)) as pilot:
+            await observed(app).navigation()
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            navigation.highlighted = app._navigation_targets.index("general")
+            opened = observed(app).opening()
+            navigation.action_select()
+            await observed(app).conversation(opened)
+            await observed(app).viewport()
+            transcript = app.query_one("#transcript", TautOptionList)
+            selected = app._message_rows[5].ts
+            if producer == "single-click":
+                transcript.focus()
+                await pilot.press("home")
+            resize.arm(transcript)
+            deadline = observed(app).scope.now() + 5
+            if producer == "setup-helper":
+                await _activate_transcript_message(app, transcript, 5)
+            else:
+                assert await pilot.click(
+                    transcript, offset=(5, transcript._index_to_line[5] + 1)
+                )
+            await resize.settled(deadline=deadline)
+            assert app.visual_state.selected_message_id == selected
+            assert transcript.highlighted == 5
 
     asyncio.run(exercise())
 
