@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from concurrent.futures import Future
+from functools import wraps
 from types import MappingProxyType
+from typing import Any, cast
 
 import pytest
+from _completion import Completion, CompletionKey, CompletionScope
+from _screen_completion import ScreenCompletions
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 
@@ -14,6 +19,124 @@ from taut_tui.actions import ActionId, action_spec
 from taut_tui.forms import form_spec
 
 pytestmark = pytest.mark.sqlite_only
+
+
+class _ScreenProbe:
+    def __init__(self, app: App[Any], patch: pytest.MonkeyPatch) -> None:
+        self.scope = CompletionScope()
+        self.screens = ScreenCompletions(app, self.scope, patch)
+        self.patch = patch
+
+    def called(
+        self, owner: Any, method: str, *, arguments: tuple[Any, ...] | None = None
+    ) -> Completion[Any]:
+        completion = self.scope.expect(CompletionKey(owner, method, request=object()))
+        original = getattr(owner, method)
+
+        @wraps(original)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            matches = arguments is None or args == arguments
+            try:
+                value = original(*args, **kwargs)
+            except BaseException as error:
+                if matches and completion.snapshot() is None:
+                    completion.fail(completion.key, error)
+                raise
+            if matches and completion.snapshot() is None:
+                completion.succeed(completion.key, value)
+            return value
+
+        self.patch.setattr(owner, method, call)
+        return completion
+
+    def message(self, owner: Any, kind: type[Any], **fields: Any) -> Completion[Any]:
+        record = self.scope.expect(
+            CompletionKey(owner, f"{kind.__name__}.handled", request=object())
+        )
+        original = owner._on_message
+
+        async def handle(event: Any) -> None:
+            matches = isinstance(event, kind) and all(
+                getattr(event, field) == value for field, value in fields.items()
+            )
+            try:
+                await original(event)
+            except BaseException as error:
+                if matches and record.snapshot() is None:
+                    record.fail(record.key, error)
+                raise
+            if matches and record.snapshot() is None:
+                record.succeed(record.key, event)
+
+        self.patch.setattr(owner, "_on_message", handle)
+        return record
+
+    async def result(self, screen: Any, *, deadline: float) -> Any:
+        value = await self.screens.result_applied(screen).wait(
+            deadline=deadline, description="screen result applied"
+        )
+        await self.screens.retired(screen).wait(
+            deadline=deadline, description="screen retired"
+        )
+        return value
+
+    def search(self, screen: Any, future: Future[Any]) -> Completion[Any]:
+        generation = screen._generation + 1
+        record = self.scope.expect(
+            CompletionKey(screen, "search.applied", future, generation)
+        )
+        original = screen._apply_results
+
+        def apply(actual_generation: int, actual_future: Future[Any]) -> None:
+            accepted = actual_generation == screen._generation and screen.is_mounted
+            matches = actual_generation == generation and actual_future is future
+            try:
+                original(actual_generation, actual_future)
+            except BaseException as error:
+                if matches:
+                    record.fail(record.key, error)
+                raise
+            if not matches:
+                return
+            if not accepted:
+                record.supersede(record.key)
+            elif future.cancelled():
+                record.cancel(record.key)
+            elif (source_error := future.exception()) is not None:
+                record.fail(record.key, source_error)
+            else:
+                record.succeed(record.key, tuple(screen._results))
+
+        self.patch.setattr(screen, "_apply_results", apply)
+        return record
+
+    def close(self) -> None:
+        self.screens.close()
+        self.scope.close()
+        self.scope.raise_if_invalid()
+
+
+def _observed(app: App[Any]) -> _ScreenProbe:
+    return cast(_ScreenProbe, cast(Any, app)._screen_test_completions)
+
+
+@pytest.fixture(autouse=True)
+def _observe_screen_hosts(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    original = App.__init__
+    probes: list[_ScreenProbe] = []
+
+    def initialize(app: Any, *args: Any, **kwargs: Any) -> None:
+        original(app, *args, **kwargs)
+        probe = _ScreenProbe(app, monkeypatch)
+        app._screen_test_completions = probe
+        probes.append(probe)
+
+    monkeypatch.setattr(App, "__init__", initialize)
+    try:
+        yield
+    finally:
+        for probe in probes:
+            probe.close()
 
 
 def test_draft_recovery_screen_previews_multiline_and_escape_retains() -> None:
@@ -35,13 +158,16 @@ def test_draft_recovery_screen_previews_multiline_and_escape_retains() -> None:
     async def exercise() -> None:
         app = RecoveryHost()
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
+            probe = _observed(app)
+            screen = app.screen
+            await probe.screens.ready(screen, deadline=probe.scope.now() + 30)
             preview = str(app.screen.query_one("#recovery-preview", Static).render())
             assert "Original: old" in preview
             assert "Intended: ops" in preview
             assert "first line\n[bold]literal[/bold]\n[" in preview
+            deadline = probe.scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert selected == [None]
@@ -80,9 +206,11 @@ def test_native_form_is_labelled_masked_clickable_and_validates_visually() -> No
             name = app.screen.query_one("#field-name-or-alias", Input)
             name.value = "alice"
             assert token.value == "secret"
-            await pilot.pause()
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             app.screen.query_one("#form-submit", Button).press()
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
             assert results
 
     asyncio.run(exercise())
@@ -121,8 +249,11 @@ def test_native_form_enter_and_tab_follow_field_submit_cancel_order() -> None:
             assert app.screen.query_one("#form-cancel", Button).has_focus
             await pilot.press("shift+tab")
             assert app.screen.query_one("#form-submit", Button).has_focus
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert results == [FormSubmission(ActionId.IDENTITY_SET_NAME, {"name": "alice"})]
@@ -146,10 +277,21 @@ def test_native_form_ignores_duplicate_submit_while_domain_work_is_pending() -> 
     async def exercise() -> None:
         app = FormHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            submitted = probe.message(
+                app, NativeFormScreen.Submitted, screen=app.screen
+            )
+            deadline = probe.scope.now() + 5
             await pilot.press(*"alice", "enter")
-            await pilot.pause()
+            await submitted.wait(
+                deadline=deadline, description="host applied submission"
+            )
+            refused = probe.called(app.screen, "_submit")
+            deadline = probe.scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await refused.wait(
+                deadline=deadline, description="duplicate submit refused"
+            )
             assert app.screen.query_one("#form-submit", Button).disabled is True
 
     asyncio.run(exercise())
@@ -166,10 +308,17 @@ def test_native_form_escape_waits_for_pending_domain_work() -> None:
     async def exercise() -> None:
         app = FormHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            submitted = probe.called(app.screen, "_submit")
+            deadline = probe.scope.now() + 5
             await pilot.press(*"alice", "enter")
-            await pilot.pause()
+            await submitted.wait(
+                deadline=deadline, description="pending submit applied"
+            )
+            refused = probe.called(app.screen, "action_cancel")
+            deadline = probe.scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause()
+            await refused.wait(deadline=deadline, description="pending cancel refused")
 
             assert isinstance(app.screen, NativeFormScreen)
             assert app.screen.query_one("#field-name", Input).value == "alice"
@@ -209,8 +358,11 @@ def test_command_palette_filters_and_returns_the_same_action_id() -> None:
             options = app.screen.query_one("#palette-results", OptionList)
             assert options.option_count == 1
             assert "Run system doctor" in str(options.get_option_at_index(0).prompt)
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             await pilot.press("down", "enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert selected == [ActionId.SYSTEM_DOCTOR]
@@ -233,8 +385,11 @@ def test_command_line_screen_shows_colon_affordance_and_returns_typed_input() ->
             field = app.screen.query_one("#command-line", Input)
             await pilot.click(field)
             await pilot.press(*"channel topic general focus")
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert results[0] is not None
@@ -258,8 +413,11 @@ def test_command_line_screen_accepts_summon_provider_syntax() -> None:
     async def exercise() -> None:
         app = CommandHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             await pilot.press(*"summon grok", "enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert results[0] is not None
@@ -335,7 +493,7 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
 
     async def exercise() -> None:
         app = SummonHost()
-        async with app.run_test(size=(100, 40)) as pilot:
+        async with app.run_test(size=(100, 40)):
             app.screen.query_one("#summon-name", Input).value = "reviewer"
             app.screen.query_one("#summon-threads", Input).value = "dev, ops"
             app.screen.query_one("#summon-provider", Select).value = "codex"
@@ -347,8 +505,11 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
                 "#summon-takeover",
             ):
                 app.screen.query_one(selector, Checkbox).value = True
+            probe = _observed(app)
+            screen = app.screen
+            deadline = probe.scope.now() + 5
             app.screen.query_one("#summon-submit", Button).press()
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert results == [
@@ -378,12 +539,16 @@ def test_summon_start_screen_reports_invalid_rate_inline(rate_text: str) -> None
 
     async def exercise() -> None:
         app = SummonHost()
-        async with app.run_test(size=(100, 40)) as pilot:
+        async with app.run_test(size=(100, 40)):
             app.screen.query_one("#summon-name", Input).value = "reviewer"
             rate = app.screen.query_one("#summon-rate-limit", Input)
             rate.value = rate_text
+            probe = _observed(app)
+            submitted = probe.called(app.screen, "_submit")
+            deadline = probe.scope.now() + 5
             app.screen.query_one("#summon-submit", Button).press()
-            await pilot.pause()
+            await submitted.wait(deadline=deadline, description="invalid rate rejected")
+            await probe.screens.ready(app.screen, deadline=deadline, focus=rate)
 
             assert isinstance(app.screen, SummonStartScreen)
             assert "whole number" in str(
@@ -427,12 +592,12 @@ def test_search_result_terminal_controls_are_escaped_even_for_fast_completion() 
     async def exercise() -> None:
         app = SearchHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            applied = probe.search(app.screen, completed)
+            deadline = probe.scope.now() + 5
             await pilot.press("x", "enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                options = app.screen.query_one("#search-results", OptionList)
-                if options.option_count:
-                    break
+            await applied.wait(deadline=deadline, description="search result rendered")
+            options = app.screen.query_one("#search-results", OptionList)
             assert options.option_count == 1
             rendered = str(options.get_option_at_index(0).prompt)
             assert "\x1b" not in rendered
@@ -493,12 +658,12 @@ def test_search_results_use_actor_scoped_dm_labels_without_exposing_queue_names(
     async def exercise() -> None:
         app = SearchHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            applied = probe.search(app.screen, completed)
+            deadline = probe.scope.now() + 5
             await pilot.press("x", "enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                options = app.screen.query_one("#search-results", OptionList)
-                if options.option_count == 2:
-                    break
+            await applied.wait(deadline=deadline, description="search results rendered")
+            options = app.screen.query_one("#search-results", OptionList)
             assert options.option_count == 2
             labelled = str(options.get_option_at_index(0).prompt)
             unknown = str(options.get_option_at_index(1).prompt)
@@ -511,6 +676,8 @@ def test_search_results_use_actor_scoped_dm_labels_without_exposing_queue_names(
 
 
 def test_search_completion_after_escape_is_ignored() -> None:
+    from _completion import CompletionSuperseded
+
     from taut.client import SearchHit
     from taut_tui.screens import SearchScreen
 
@@ -523,13 +690,56 @@ def test_search_completion_after_escape_is_ignored() -> None:
     async def exercise() -> None:
         app = SearchHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = app.screen
+            applied = probe.search(screen, pending)
+            deadline = probe.scope.now() + 5
             await pilot.press("x", "enter", "escape")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
             assert not isinstance(app.screen, SearchScreen)
 
+            deadline = probe.scope.now() + 5
             pending.set_result([])
-            await pilot.pause(0.1)
+            with pytest.raises(CompletionSuperseded):
+                await applied.wait(
+                    deadline=deadline, description="late search rejected"
+                )
             assert not isinstance(app.screen, SearchScreen)
+
+    asyncio.run(exercise())
+
+
+def test_search_observation_rejects_another_future_and_old_generation() -> None:
+    from taut.client import SearchHit
+    from taut_tui.screens import SearchScreen
+
+    pending: Future[list[SearchHit]] = Future()
+    unrelated: Future[list[SearchHit]] = Future()
+    unrelated.set_result([])
+
+    class SearchHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(SearchScreen(lambda _query: pending, MappingProxyType({})))
+
+    async def exercise() -> None:
+        app = SearchHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = cast(SearchScreen, app.screen)
+            applied = probe.search(screen, pending)
+            deadline = probe.scope.now() + 5
+            await pilot.press("x", "enter")
+            screen._apply_results(screen._generation, unrelated)
+            screen._apply_results(screen._generation - 1, pending)
+            assert applied.snapshot() is None
+            pending.set_result([])
+            result = await applied.wait(
+                deadline=deadline, description="exact search applied"
+            )
+            assert result == ()
+            assert "No matches" in str(
+                screen.query_one("#search-errors", Static).render()
+            )
 
     asyncio.run(exercise())
 
@@ -556,7 +766,9 @@ def test_palette_confirmation_and_form_errors_escape_terminal_controls() -> None
 
     async def exercise() -> None:
         palette = ModalHost()
-        async with palette.run_test(size=(80, 24)) as pilot:
+        async with palette.run_test(size=(80, 24)):
+            probe = _observed(palette)
+            deadline = probe.scope.now() + 5
             palette.push_screen(
                 CommandPaletteScreen(
                     (
@@ -568,14 +780,16 @@ def test_palette_confirmation_and_form_errors_escape_terminal_controls() -> None
                     )
                 )
             )
-            await pilot.pause()
+            await probe.screens.ready(palette.screen, deadline=deadline)
             options = palette.screen.query_one("#palette-results", OptionList)
             assert_safe(options.get_option_at_index(0).prompt)
 
         confirmation = ModalHost()
-        async with confirmation.run_test(size=(80, 24)) as pilot:
+        async with confirmation.run_test(size=(80, 24)):
+            probe = _observed(confirmation)
+            deadline = probe.scope.now() + 5
             confirmation.push_screen(ConfirmationScreen(payload))
-            await pilot.pause()
+            await probe.screens.ready(confirmation.screen, deadline=deadline)
             projected = [
                 widget.render()
                 for widget in confirmation.screen.query(Static)
@@ -585,10 +799,12 @@ def test_palette_confirmation_and_form_errors_escape_terminal_controls() -> None
             assert_safe(projected[0])
 
         form_host = ModalHost()
-        async with form_host.run_test(size=(80, 24)) as pilot:
+        async with form_host.run_test(size=(80, 24)):
+            probe = _observed(form_host)
+            deadline = probe.scope.now() + 5
             screen = NativeFormScreen(form_spec(ActionId.IDENTITY_SET_NAME))
             form_host.push_screen(screen)
-            await pilot.pause()
+            await probe.screens.ready(screen, deadline=deadline)
             screen.show_domain_error(payload)
             assert_safe(screen.query_one("#form-errors", Static).render())
 
@@ -606,10 +822,15 @@ def test_summon_provider_projection_escapes_terminal_controls() -> None:
 
     async def exercise() -> None:
         app = SummonHost()
-        async with app.run_test(size=(100, 40)) as pilot:
+        async with app.run_test(size=(100, 40)):
             select = app.screen.query_one("#summon-provider", Select)
+            probe = _observed(app)
+            changed = probe.called(select, "_watch_value", arguments=(payload,))
+            deadline = probe.scope.now() + 5
             select.value = payload
-            await pilot.pause()
+            await changed.wait(
+                deadline=deadline, description="provider projection applied"
+            )
             projected = "\n".join(str(widget.render()) for widget in select.query("*"))
             assert "\x1b" not in projected
             assert "\x07" not in projected
@@ -645,13 +866,16 @@ def test_palette_opens_highlighted_and_updown_select_from_query() -> None:
     async def exercise() -> None:
         app = PaletteHost()
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
+            probe = _observed(app)
+            screen = app.screen
+            await probe.screens.ready(screen, deadline=probe.scope.now() + 30)
             options = app.screen.query_one("#palette-results", OptionList)
             assert options.highlighted is not None
             first = options.get_option_at_index(options.highlighted)
             assert not first.disabled
+            deadline = probe.scope.now() + 5
             await pilot.press("down", "enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     # Down moved past the first enabled entry to the second one.
@@ -671,19 +895,31 @@ def test_palette_no_match_shows_empty_state_and_enter_stays_inert() -> None:
     async def exercise() -> None:
         app = PaletteHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = app.screen
+            rendered = probe.called(screen, "_render_results", arguments=("zzz zzz",))
+            deadline = probe.scope.now() + 5
             await pilot.press(*"zzz zzz")
-            await pilot.pause()
+            await rendered.wait(deadline=deadline, description="empty palette rendered")
             options = app.screen.query_one("#palette-results", OptionList)
             assert options.option_count == 1
             empty_state = options.get_option_at_index(0)
             assert empty_state.disabled
             assert ":" in str(empty_state.prompt)
+            refused = probe.message(
+                screen,
+                Input.Submitted,
+                input=screen.query_one("#palette-query", Input),
+                value="zzz zzz",
+            )
+            deadline = probe.scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause(0.05)
+            await refused.wait(deadline=deadline, description="inert enter handled")
             assert isinstance(app.screen, CommandPaletteScreen)
             assert selected == []
+            deadline = probe.scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert selected == [None]
@@ -712,16 +948,25 @@ def test_palette_offers_run_as_command_handoff_for_known_root() -> None:
     async def exercise() -> None:
         app = PaletteHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = app.screen
+            rendered = probe.called(
+                screen, "_render_results", arguments=("summon kimi",)
+            )
+            deadline = probe.scope.now() + 5
             await pilot.press(*"summon kimi")
-            await pilot.pause()
+            await rendered.wait(
+                deadline=deadline, description="command handoff rendered"
+            )
             options = app.screen.query_one("#palette-results", OptionList)
             prompts = [
                 str(options.get_option_at_index(i).prompt)
                 for i in range(options.option_count)
             ]
             assert any("Run as command" in prompt for prompt in prompts)
+            deadline = probe.scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await probe.result(screen, deadline=deadline)
 
     asyncio.run(exercise())
     assert selected == [PaletteCommandHandoff("summon kimi")]
@@ -745,8 +990,9 @@ def test_command_line_has_no_completion_list_and_reconciles_on_mount() -> None:
 
     async def exercise() -> None:
         app = CommandHost()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(80, 24)):
+            probe = _observed(app)
+            await probe.screens.ready(app.screen, deadline=probe.scope.now() + 30)
             assert not app.screen.query(OptionList)
             field = app.screen.query_one("#command-line", Input)
             assert field.value == "say general raced"
@@ -756,6 +1002,7 @@ def test_command_line_has_no_completion_list_and_reconciles_on_mount() -> None:
 
 def test_command_line_shadow_cycles_and_tab_accepts() -> None:
     from taut_summon.command_syntax import provide_syntax
+    from textual.suggester import SuggestionReady
 
     from taut.commands.syntax import core_command_syntax, merge_command_syntax
     from taut_tui.screens import CommandLineScreen
@@ -768,17 +1015,25 @@ def test_command_line_shadow_cycles_and_tab_accepts() -> None:
     async def exercise() -> None:
         app = CommandHost()
         async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            screen = app.screen
+            field = screen.query_one("#command-line", Input)
+            suggestion = probe.message(field, SuggestionReady, value="s")
+            deadline = probe.scope.now() + 5
             await pilot.press(*"s")
-            await pilot.pause(0.05)
-            field = app.screen.query_one("#command-line", Input)
+            await suggestion.wait(deadline=deadline, description="exact shadow applied")
             first_shadow = field._suggestion
             assert first_shadow.startswith("s") and len(first_shadow) > 1
+            cycled = probe.called(screen, "_cycle_shadow", arguments=(1,))
+            deadline = probe.scope.now() + 5
             await pilot.press("down")
-            await pilot.pause(0.05)
+            await cycled.wait(deadline=deadline, description="shadow cycle applied")
             second_shadow = field._suggestion
             assert second_shadow != first_shadow
+            accepted = probe.called(screen, "action_accept_shadow")
+            deadline = probe.scope.now() + 5
             await pilot.press("tab")
-            await pilot.pause()
+            await accepted.wait(deadline=deadline, description="shadow accepted")
             assert field.value == second_shadow.rstrip() + " "
             assert field.has_focus
             assert isinstance(app.screen, CommandLineScreen)

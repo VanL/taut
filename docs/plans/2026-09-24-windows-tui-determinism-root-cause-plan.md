@@ -770,6 +770,22 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Final app/chat/screen migration review passed after three
+  observer corrections: presentation deadlines start at the named producer;
+  watcher readiness is timestamped at actual initial-drain publication under
+  its separate five-second budget; notification restore requires its exact
+  effect and pre-dispatch authority. No extra controller or product loop was
+  introduced. Independent review ran 198 neighbors and eight final targeted
+  cases. The later rapid-resize failure is now causal: held real initial
+  highlight messages overwrite the test's private direct selection before
+  resize. Shared setup now uses real widget activation and its exact handler
+  completion, then restores the intended tail geometry. Reinstating direct
+  selection fires the exact seed-5 versus last-seed assertion. All 150 app
+  cases pass (43.42 s), and independent three-case review passes (2.36 s).
+  Original resize sizes, real worker/live delivery, selection, inspector,
+  draft, tail and latest-size assertions remain. This is a harness ordering
+  correction, not a demonstrated product resize defect or S4 cause.
+
 - 2026-09-25 — First full instrumented local integration ran 703 cases:
   698 passed, two failed, three native skips (95.53 s). Complete log and
   phase files: `/tmp/taut-tui-integrated-local.jft0Ia`. The resize failure

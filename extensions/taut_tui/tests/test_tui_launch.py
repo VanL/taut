@@ -116,6 +116,7 @@ def test_tui_help_loads_adapter_but_not_textual_runtime(
 
 def test_lazy_import_probe_restores_loaded_runtime_identity() -> None:
     import textual
+
     import taut_tui.app as runtime
 
     with pytest.MonkeyPatch.context() as probe:

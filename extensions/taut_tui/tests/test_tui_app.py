@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _app_completion import AppCompletions, observed
 from textual.widgets import Button, Input, Select
 
 from taut.client import TautClient
@@ -24,22 +25,23 @@ from taut_tui.widgets import TautComposer
 pytestmark = pytest.mark.sqlite_only
 
 
-async def _eventually(
-    pilot: Any,
-    predicate: Callable[[], bool],
-    *,
-    timeout: float = 5.0,
-) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        await pilot.pause(0.01)
-        if predicate():
-            return
-    pytest.fail("condition did not become true")
+@pytest.fixture(autouse=True)
+def _app_completion_observers(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from taut_tui.app import TautApp
 
+    original_init = TautApp.__init__
+    observers: list[AppCompletions] = []
 
-_pause_until = _eventually
+    def initialize(app: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(app, *args, **kwargs)
+        observer = AppCompletions(app, monkeypatch)
+        app._test_completions = observer
+        observers.append(observer)
+
+    monkeypatch.setattr(TautApp, "__init__", initialize)
+    yield
+    for observer in observers:
+        observer.close()
 
 
 async def _perform_viewport_user_input(
@@ -52,10 +54,13 @@ async def _perform_viewport_user_input(
     if user_input == "wheel":
         await pilot._post_mouse_events([events.MouseScrollDown], "#transcript")
     elif user_input == "scrollbar":
-        assert await pilot.click(
-            transcript.vertical_scrollbar,
-            offset=(0, 10),
-        ) is True
+        assert (
+            await pilot.click(
+                transcript.vertical_scrollbar,
+                offset=(0, 10),
+            )
+            is True
+        )
     elif user_input == "conventional-key":
         transcript.focus()
         await pilot.press("pagedown")
@@ -64,6 +69,15 @@ async def _perform_viewport_user_input(
         await pilot.press("shift+g")
     else:
         assert await pilot.click("#transcript", offset=(2, 2)) is True
+
+
+async def _activate_transcript_message(app: Any, transcript: Any, index: int) -> None:
+    """Use the real widget queue, so older highlight events precede selection."""
+    applied = observed(app).option_activation(transcript)
+    deadline = observed(app).scope.now() + 5
+    transcript.highlighted = index
+    transcript.action_select()
+    await applied.wait(deadline=deadline, description="transcript activation applied")
 
 
 async def _await_summon_confirmation(
@@ -149,8 +163,8 @@ def test_real_app_exposes_low_chrome_surfaces_and_mode_status() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name="van", continuity_token=None)
-        async with app.run_test(size=(130, 34)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(130, 34)):
+            # run_test returns after the initial screen mount and layout fence.
             assert app.layout_mode is LayoutMode.WIDE
             assert app.query_one("#navigation").display is True
             assert app.query_one("#conversation").display is True
@@ -316,8 +330,9 @@ def test_real_empty_search_renders_no_matches_in_the_native_screen(
                 return future
 
             monkeypatch.setattr(app._domain, "search", record_search)
+            deadline = observed(app).scope.now() + 5
             app.action_open_search()
-            await pilot.pause()
+            await observed(app).screens.ready(app.screen, deadline=deadline)
             query = app.screen.query_one("#search-query", Input)
             query.value = "nothing-can-match-this"
             await pilot.press("enter")
@@ -464,14 +479,19 @@ def test_too_small_shields_a_nested_modal_stack_and_restores_exact_focus(
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             form = NativeFormScreen(form_spec(ActionId.IDENTITY_SET_NAME))
+            deadline = observed(app).scope.now() + 5
             app.push_screen(form)
-            await pilot.pause()
+            await observed(app).screens.ready(form, deadline=deadline)
             field = form.query_one("#field-name", Input)
             field.value = "kept"
             confirmation = ConfirmationScreen("Rename exact target?")
+            deadline = observed(app).scope.now() + 5
             app.push_screen(confirmation)
-            await pilot.pause()
-            confirmation.query_one("#confirmation-confirm", Button).focus()
+            await observed(app).screens.ready(confirmation, deadline=deadline)
+            confirm = confirmation.query_one("#confirmation-confirm", Button)
+            deadline = observed(app).scope.now() + 5
+            confirm.focus()
+            await observed(app).focus(confirm, deadline=deadline)
 
             await pilot.resize_terminal(40, 15)
             assert app.focused is not None
@@ -525,10 +545,8 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
 
             monkeypatch.setattr(app, "_render_messages", observe_transcript_render)
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: _has_option_containing(navigation, "#general"),
-            )
+            await observed(app).navigation()
+            assert _has_option_containing(navigation, "#general")
             navigation.highlighted = _option_index_containing(navigation, "#general")
             navigation.focus()
             await pilot.press("enter")
@@ -549,11 +567,30 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             assert before.tail_pinned is False
             assert before.message_id is not None
 
+            deadline = observed(app).scope.now() + 5
             await pilot.resize_terminal(64, 24)
-            await pilot.pause()
+            await observed(app).resize_render(deadline=deadline)
             assert app.visual_state.viewport == before
+            pane_rows: list[Any] = []
+            cycle_surface = app._cycle_surface
+
+            def observe_pane_cycle() -> None:
+                assert not pane_rows, "unexpected extra pane cycle"
+                # Subscribe at this named producer, not to an earlier resize's
+                # retained measurement or viewport completion.
+                pane_rows.append(observed(app).rows_measured(transcript))
+                cycle_surface()
+
+            monkeypatch.setattr(app, "_cycle_surface", observe_pane_cycle)
+            pressed = observed(app).button_press(
+                app.query_one("#pane-affordance", Button)
+            )
+            deadline = observed(app).scope.now() + 5
             assert await pilot.click("#pane-affordance") is True
-            await pilot.pause()
+            await pressed.wait(deadline=deadline, description="pane cycle applied")
+            assert len(pane_rows) == 1
+            await pane_rows[0].wait(deadline=deadline, description="pane rows measured")
+            await observed(app).viewport(deadline=deadline)
             app._capture_settled_transcript_viewport()
             after = app.visual_state.viewport
             assert after.message_id == before.message_id
@@ -574,7 +611,8 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
                 anchor_index,
                 deep_offset,
             )
-            await pilot.pause()
+            # This exact restore uses scroll_to(immediate=True), so its return
+            # is the applied-scroll boundary; no deferred effect is outstanding.
             app._capture_settled_transcript_viewport()
             compact_anchor = app.visual_state.viewport
             assert compact_anchor.message_id == after.message_id
@@ -647,8 +685,9 @@ def test_known_command_prefix_in_composer_promotes_to_argument_input() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
             await pilot.press(*":summon")
             assert composer.text == ":summon"
             assert app.screen is app._base_screen
@@ -676,12 +715,14 @@ def test_direct_command_shadow_tab_keeps_argument_input_active() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            opened = observed(app).command_line()
             await pilot.press(":", *"sum")
-            await pilot.pause()
+            await observed(app).pushed(opened, focus="#command-line")
 
             assert isinstance(app.screen, CommandLineScreen)
             await pilot.press("tab")
-            await pilot.pause()
+            # Tab's action_accept_shadow updates the field synchronously inside
+            # this dispatched key. It does not depend on a suggestion worker.
 
             command = app.screen.query_one("#command-line", Input)
             assert command.value == "summon "
@@ -703,8 +744,9 @@ def test_direct_command_typing_stays_field_owned_without_a_list() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            opened = observed(app).command_line()
             await pilot.press(":", *"summon")
-            await pilot.pause()
+            await observed(app).pushed(opened, focus="#command-line")
 
             assert isinstance(app.screen, CommandLineScreen)
             command = app.screen.query_one("#command-line", Input)
@@ -732,8 +774,13 @@ def test_text_command_quit_alias_uses_guarded_tui_quit(alias: str) -> None:
             assert command.value == alias
             assert command.has_focus
 
+            assert app._task is not None
+            exited = observed(app).scope.observe_future(
+                app._task, owner=app, phase="app.exited"
+            )
+            deadline = observed(app).scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await exited.wait(deadline=deadline, description="guarded quit exited")
             assert not app.is_running
 
     asyncio.run(exercise())
@@ -748,8 +795,9 @@ def test_composer_quit_alias_promotes_before_guarded_execution(alias: str) -> No
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
 
             await pilot.press(":", *alias, "enter")
             assert app.is_running
@@ -758,14 +806,23 @@ def test_composer_quit_alias_promotes_before_guarded_execution(alias: str) -> No
             assert command.value == alias
             assert command.has_focus
 
+            assert app._task is not None
+            exited = observed(app).scope.observe_future(
+                app._task, owner=app, phase="app.exited"
+            )
+            deadline = observed(app).scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await exited.wait(deadline=deadline, description="guarded quit exited")
             assert not app.is_running
 
     asyncio.run(exercise())
 
 
-def test_text_quit_alias_preserves_guarded_quit_blocker() -> None:
+def test_text_quit_alias_preserves_guarded_quit_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionKey
+
     from taut_tui.app import TautApp
 
     class BlockingSystem:
@@ -781,9 +838,20 @@ def test_text_quit_alias_preserves_guarded_quit_blocker() -> None:
             assert app._system is not None
             app._system.close()
             app._system = BlockingSystem()  # type: ignore[assignment]
+            quit_applied = observed(app).scope.expect(
+                CompletionKey(app, "guarded_quit.applied", request=object())
+            )
+            original_quit = app.action_quit_tui
 
+            def quit_tui() -> None:
+                original_quit()
+                quit_applied.succeed(quit_applied.key, None)
+
+            monkeypatch.setattr(app, "action_quit_tui", quit_tui)
+
+            deadline = observed(app).scope.now() + 5
             await pilot.press(":", *"quit", "enter")
-            await pilot.pause()
+            await quit_applied.wait(deadline=deadline, description="quit guard applied")
 
             assert app.is_running
             assert (
@@ -795,8 +863,13 @@ def test_text_quit_alias_preserves_guarded_quit_blocker() -> None:
 
 
 @pytest.mark.parametrize("chord", ("ctrl+c", "ctrl+d"))
-def test_global_quit_chords_use_guarded_owner_from_compose(chord: str) -> None:
+def test_global_quit_chords_use_guarded_owner_from_compose(
+    chord: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from dataclasses import replace
+
+    from _completion import CompletionKey
 
     from taut_tui.app import TautApp
 
@@ -820,9 +893,20 @@ def test_global_quit_chords_use_guarded_owner_from_compose(chord: str) -> None:
             await pilot.press("i")
             composer = app.query_one("#composer", TautComposer)
             assert composer.has_focus
+            quit_applied = observed(app).scope.expect(
+                CompletionKey(app, "guarded_quit.applied", request=object())
+            )
+            original_quit = app.action_quit_tui
 
+            def quit_tui() -> None:
+                original_quit()
+                quit_applied.succeed(quit_applied.key, None)
+
+            monkeypatch.setattr(app, "action_quit_tui", quit_tui)
+
+            deadline = observed(app).scope.now() + 5
             await pilot.press(chord)
-            await pilot.pause()
+            await quit_applied.wait(deadline=deadline, description="quit guard applied")
 
             assert app.is_running
             assert composer.has_focus
@@ -872,22 +956,41 @@ def test_global_quit_chords_exit_from_every_tui_owned_surface(
             elif surface == "search":
                 await pilot.press("ctrl+f")
                 assert app.visual_state.mode is InteractionMode.SEARCH
+            elif surface == "terminal-too-small":
+                # A manually pushed shield at 100x34 is immediately retired by
+                # the size owner. Exercise the actual shield-producing resize.
+                from taut_tui.app import TerminalTooSmallScreen
+
+                deadline = observed(app).scope.now() + 5
+                await pilot.resize_terminal(40, 15)
+                assert isinstance(app.screen, TerminalTooSmallScreen)
+                await observed(app).screens.ready(app.screen, deadline=deadline)
             elif surface != "normal":
                 screen = _quit_test_screen(surface, app)
+                deadline = observed(app).scope.now() + 5
                 app.push_screen(screen)
-                await pilot.pause()
+                await observed(app).screens.ready(screen, deadline=deadline)
             else:
                 assert app.visual_state.mode is InteractionMode.NORMAL
 
             assert app.is_running
+            assert app._task is not None
+            exited = observed(app).scope.observe_future(
+                app._task, owner=app, phase="app.exited"
+            )
+            deadline = observed(app).scope.now() + 5
             await pilot.press(chord)
-            await pilot.pause()
+            await exited.wait(deadline=deadline, description="guarded quit exited")
             assert not app.is_running
 
     asyncio.run(exercise())
 
 
-def test_repeated_global_quit_does_not_stack_owned_run_confirmation() -> None:
+def test_repeated_global_quit_does_not_stack_owned_run_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionKey
+
     from taut_tui.actions import ActionId
     from taut_tui.app import TautApp
     from taut_tui.forms import FORM_SPECS
@@ -910,29 +1013,66 @@ def test_repeated_global_quit_does_not_stack_owned_run_confirmation() -> None:
                 app._summon.close()
             app._summon = OwnedRunSummon()  # type: ignore[assignment]
             underlying = NativeFormScreen(FORM_SPECS[ActionId.CHANNEL_JOIN])
+            deadline = observed(app).scope.now() + 5
             app.push_screen(underlying)
-            await pilot.pause()
+            await observed(app).screens.ready(underlying, deadline=deadline)
+            first_quit, repeated_quit = (
+                observed(app).scope.expect(
+                    CompletionKey(app, "guarded_quit.applied", request=object())
+                )
+                for _ in range(2)
+            )
+            attempts = iter((first_quit, repeated_quit))
+            original_quit = app.action_quit_tui
 
+            def quit_tui() -> None:
+                attempt = next(attempts)
+                original_quit()
+                attempt.succeed(attempt.key, app.screen)
+
+            monkeypatch.setattr(app, "action_quit_tui", quit_tui)
+
+            deadline = observed(app).scope.now() + 5
             await pilot.press("ctrl+c")
-            await pilot.pause()
-            confirmation = app.screen
+            confirmation = await first_quit.wait(
+                deadline=deadline, description="owned quit confirmation requested"
+            )
             assert isinstance(confirmation, ConfirmationScreen)
+            await observed(app).screens.ready(confirmation, deadline=deadline)
             stack_depth = len(app.screen_stack)
 
+            deadline = observed(app).scope.now() + 5
             await pilot.press("ctrl+d")
-            await pilot.pause()
+            await repeated_quit.wait(
+                deadline=deadline, description="repeated quit guard applied"
+            )
             assert app.screen is confirmation
             assert len(app.screen_stack) == stack_depth
 
+            deadline = observed(app).scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.result_applied(confirmation)
+                .wait(deadline=deadline, description="owned quit declined")
+            )
+            await (
+                observed(app)
+                .screens.retired(confirmation)
+                .wait(deadline=deadline, description="owned quit confirmation retired")
+            )
             assert app.screen is underlying
 
     asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("chord", ("ctrl+c", "ctrl+d"))
-def test_blocked_global_quit_preserves_active_modal(chord: str) -> None:
+def test_blocked_global_quit_preserves_active_modal(
+    chord: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionKey
+
     from taut_tui.actions import ActionId
     from taut_tui.app import TautApp
     from taut_tui.forms import FORM_SPECS
@@ -952,11 +1092,23 @@ def test_blocked_global_quit_preserves_active_modal(chord: str) -> None:
             app._system.close()
             app._system = BlockingSystem()  # type: ignore[assignment]
             modal = NativeFormScreen(FORM_SPECS[ActionId.CHANNEL_JOIN])
+            deadline = observed(app).scope.now() + 5
             app.push_screen(modal)
-            await pilot.pause()
+            await observed(app).screens.ready(modal, deadline=deadline)
+            quit_applied = observed(app).scope.expect(
+                CompletionKey(app, "guarded_quit.applied", request=object())
+            )
+            original_quit = app.action_quit_tui
 
+            def quit_tui() -> None:
+                original_quit()
+                quit_applied.succeed(quit_applied.key, None)
+
+            monkeypatch.setattr(app, "action_quit_tui", quit_tui)
+
+            deadline = observed(app).scope.now() + 5
             await pilot.press(chord)
-            await pilot.pause()
+            await quit_applied.wait(deadline=deadline, description="quit guard applied")
 
             assert app.is_running
             assert app.screen is modal
@@ -976,8 +1128,9 @@ def test_enter_delimits_full_command_without_capturing_shorter_root() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
 
             await pilot.press(*":whoami")
             assert composer.text == ":whoami"
@@ -1002,8 +1155,9 @@ def test_unknown_colon_text_stays_message_and_command_cancel_preserves_draft() -
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
 
             await pilot.press(*":summonship", "space")
             assert app.screen is app._base_screen
@@ -1012,8 +1166,20 @@ def test_unknown_colon_text_stays_message_and_command_cancel_preserves_draft() -
             composer.text = ""
             await pilot.press(*":summon", "space")
             assert isinstance(app.screen, CommandLineScreen)
+            command_screen = app.screen
+            deadline = observed(app).scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.result_applied(command_screen)
+                .wait(deadline=deadline, description="cancelled command applied")
+            )
+            await (
+                observed(app)
+                .screens.retired(command_screen)
+                .wait(deadline=deadline, description="cancelled command retired")
+            )
+            await observed(app).focus(composer, deadline=deadline)
 
             assert app.screen is app._base_screen
             assert composer.text == ":summon "
@@ -1023,7 +1189,8 @@ def test_unknown_colon_text_stays_message_and_command_cancel_preserves_draft() -
             assert draft is not None and draft.text == ":summon "
 
             await pilot.press("ctrl+q")
-            await pilot.pause()
+            # Negative input case: the real Key dispatch has returned; ctrl+q
+            # has no binding and schedules no quit or other deferred action.
             assert app.is_running
             assert app.visual_state.mode is InteractionMode.COMPOSE
 
@@ -1047,18 +1214,16 @@ def test_text_command_rename_preserves_draft(
         finally:
             client.close()
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            await _pause_until(pilot, lambda: app._domain is not None)
+        async with app.run_test(size=(100, 34)):
+            await observed(app).navigation()
             assert app._domain is not None
             intent = app._advance_conversation_intent()
             app._watch_future(
                 app._domain.open_conversation("general", intent_token=intent),
                 lambda done: app._apply_optional_conversation(intent, done),
             )
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "general",
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
             app.visual_state = app.visual_state.with_draft(
                 DraftState("general", "source\ndraft", 4, 2)
             )
@@ -1071,22 +1236,23 @@ def test_text_command_rename_preserves_draft(
                 values={"old_name": "#general", "new_name": "#renamed"},
                 source=CommandInput("channel rename #general #renamed"),
             )
+            deadline = observed(app).scope.now() + 5
             assert app._dispatch_channel_command(successful, app._domain)
-            await pilot.pause()
+            await observed(app).screens.ready(app.screen, deadline=deadline)
             assert isinstance(app.screen, ConfirmationScreen)
+            renamed = observed(app).action("rename_channel")
+            deadline = observed(app).scope.now() + 5
             app.screen.query_one("#confirmation-confirm", Button).press()
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "renamed",
-            )
+            await renamed.wait(deadline)
+            await observed(app).conversation(deadline=deadline)
+            assert app.visual_state.active_conversation == "renamed"
             assert app.visual_state.draft_for("renamed") == DraftState(
                 "renamed", "source\ndraft", 4, 2
             )
+            submitted = observed(app).sending()
             composer.action_submit()
-            await _pause_until(
-                pilot,
-                lambda: any(row.text == "source\ndraft" for row in app._message_rows),
-            )
+            await observed(app).send(submitted)
+            assert any(row.text == "source\ndraft" for row in app._message_rows)
 
     asyncio.run(exercise())
 
@@ -1232,13 +1398,25 @@ def test_successful_promoted_command_clears_unchanged_originating_draft() -> Non
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
 
             await pilot.press(*":whoami", "enter")
             assert isinstance(app.screen, CommandLineScreen)
+            command_screen = app.screen
+            deadline = observed(app).scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.result_applied(command_screen)
+                .wait(deadline=deadline, description="promoted command applied")
+            )
+            await (
+                observed(app)
+                .screens.retired(command_screen)
+                .wait(deadline=deadline, description="promoted command retired")
+            )
 
             assert app.screen is app._base_screen
             assert composer.text == ""
@@ -1256,16 +1434,29 @@ def test_promoted_command_does_not_clear_a_newer_originating_draft() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
 
             await pilot.press(*":whoami", "enter")
             assert isinstance(app.screen, CommandLineScreen)
-
+            command_screen = app.screen
+            edited = observed(app).composer_edit(composer)
+            deadline = observed(app).scope.now() + 5
             composer.text = "newer draft"
-            await pilot.pause()
+            await edited.wait(deadline=deadline, description="newer draft applied")
+            deadline = observed(app).scope.now() + 5
             await pilot.press("enter")
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.result_applied(command_screen)
+                .wait(deadline=deadline, description="promoted command applied")
+            )
+            await (
+                observed(app)
+                .screens.retired(command_screen)
+                .wait(deadline=deadline, description="promoted command retired")
+            )
 
             assert app.screen is app._base_screen
             assert composer.text == "newer draft"
@@ -1308,6 +1499,7 @@ def test_command_palette_excludes_command_open_action() -> None:
 
 
 def test_command_palette_mouse_activation_opens_summon_argument_form() -> None:
+    from taut_tui.actions import ActionId
     from taut_tui.app import TautApp
     from taut_tui.screens import SummonStartScreen
     from taut_tui.widgets import TautOptionList
@@ -1315,20 +1507,24 @@ def test_command_palette_mouse_activation_opens_summon_argument_form() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            deadline = observed(app).scope.now() + 5
             await pilot.press("ctrl+p")
             query = app.screen.query_one("#palette-query", Input)
-            await _pause_until(pilot, lambda: query.has_focus)
+            await observed(app).focus(query, deadline=deadline)
             await pilot.press(*"Start summoned member")
-            await pilot.pause()
+            # Input.Changed renders these palette results synchronously; the
+            # typed-key dispatch fence includes that real handler.
 
             results = app.screen.query_one("#palette-results", TautOptionList)
             assert results.option_count == 1
+            pushed = observed(app).screen_for_action(ActionId.SUMMON_START)
             assert await pilot.click(
                 "#palette-results",
                 offset=(1, 0),
                 times=2,
             )
-            await _pause_until(pilot, lambda: isinstance(app.screen, SummonStartScreen))
+            screen = await observed(app).pushed(pushed, focus="#summon-name")
+            assert isinstance(screen, SummonStartScreen)
 
             name = app.screen.query_one("#summon-name", Input)
             assert name.has_focus
@@ -1345,8 +1541,21 @@ def test_command_palette_double_click_dismisses_only_once() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p")
+            palette = app.screen
+            deadline = observed(app).scope.now() + 5
             assert await pilot.click("#palette-results", offset=(1, 1), times=2)
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.result_applied(palette)
+                .wait(
+                    deadline=deadline, description="double-click palette result applied"
+                )
+            )
+            await (
+                observed(app)
+                .screens.retired(palette)
+                .wait(deadline=deadline, description="double-click palette retired")
+            )
             assert app.screen is app._base_screen
             assert app.visual_state.mode is InteractionMode.NORMAL
 
@@ -1375,10 +1584,8 @@ def test_empty_state_actions_use_the_navigation_route(
         app = TautApp(db_path=db_path, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: expected in app._navigation_targets,
-            )
+            await observed(app).navigation()
+            assert expected in app._navigation_targets
             navigation.highlighted = app._navigation_targets.index(expected)
             navigation.focus()
             monkeypatch.setattr(app, "_dispatch_action_invocation", seen.append)
@@ -1412,28 +1619,26 @@ def test_explicit_mouse_controls_use_the_typed_action_dispatcher(
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: _has_option_containing(navigation, "#general"),
-            )
+            await observed(app).navigation()
+            assert _has_option_containing(navigation, "#general")
             navigation.highlighted = _option_index_containing(navigation, "#general")
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(pilot, lambda: bool(app._message_rows))
+            await observed(app).conversation()
+            assert app._message_rows
             transcript = app.query_one("#transcript", TautOptionList)
+            deadline = observed(app).scope.now() + 5
             transcript.highlighted = 0
-            await _pause_until(
-                pilot,
-                lambda: all(
-                    app.query_one(selector).display
-                    for selector in (
-                        "#composer-send",
-                        "#members-action",
-                        "#reply-action",
-                        "#react-action",
-                        "#delete-action",
-                    )
-                ),
+            await observed(app).highlighted(transcript, 0, deadline=deadline)
+            assert all(
+                app.query_one(selector).display
+                for selector in (
+                    "#composer-send",
+                    "#members-action",
+                    "#reply-action",
+                    "#react-action",
+                    "#delete-action",
+                )
             )
 
             monkeypatch.setattr(app, "_dispatch_action_invocation", seen.append)
@@ -1753,14 +1958,19 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
                 return real_suspend()
 
             monkeypatch.setattr(app, "suspend", observed_suspend)
+            deadline = observed(app).scope.now() + 5
             await pilot.press("ctrl+p")
             query = app.screen.query_one("#palette-query", Input)
-            await _pause_until(pilot, lambda: query.has_focus)
+            await observed(app).focus(query, deadline=deadline)
             await pilot.press(*"Start summoned member")
             results = app.screen.query_one("#palette-results", TautOptionList)
             assert results.option_count == 1
+            from taut_tui.actions import ActionId
+
+            pushed = observed(app).screen_for_action(ActionId.SUMMON_START)
             assert await pilot.click("#palette-results", offset=(1, 0), times=2)
-            await _pause_until(pilot, lambda: isinstance(app.screen, SummonStartScreen))
+            screen = await observed(app).pushed(pushed, focus="#summon-name")
+            assert isinstance(screen, SummonStartScreen)
             app.screen.query_one("#summon-name", Input).value = "native-grok"
             app.screen.query_one("#summon-provider", Select).value = "grok"
             app.screen.query_one("#summon-submit", Button).press()
@@ -1778,8 +1988,9 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
             await _await_cancelled_summon_run(app, native_future)
 
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await _pause_until(pilot, lambda: composer.has_focus)
+            await observed(app).focus(composer, deadline=deadline)
             await pilot.press(*":summon", "space", *"grok", "enter")
             textual_future = await _await_summon_confirmation(
                 app,
@@ -1811,25 +2022,24 @@ def test_tui_unmount_cancels_pending_attach_confirmation(tmp_path: Path) -> None
     async def exercise() -> None:
         nonlocal worker
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
             interaction = app._summon_interaction
             assert interaction is not None
+            notice = TerminalAttachNotice(
+                member="grok",
+                provider="grok",
+                detach_hint="Ctrl-\\ Ctrl-\\",
+            )
             worker = threading.Thread(
                 target=lambda: decisions.append(
-                    interaction.confirm_terminal_attach(
-                        TerminalAttachNotice(
-                            member="grok",
-                            provider="grok",
-                            detach_hint="Ctrl-\\ Ctrl-\\",
-                        )
-                    )
+                    interaction.confirm_terminal_attach(notice)
                 ),
                 daemon=True,
             )
+            pushed = observed(app).attach_confirmation(notice)
             worker.start()
-            await _pause_until(
-                pilot, lambda: isinstance(app.screen, ConfirmationScreen)
-            )
+            screen = await observed(app).pushed(pushed)
+            assert isinstance(screen, ConfirmationScreen)
             assert decisions == []
 
     asyncio.run(exercise())
@@ -1841,7 +2051,9 @@ def test_tui_unmount_cancels_pending_attach_confirmation(tmp_path: Path) -> None
 
 def test_resolved_attach_confirmation_never_opens_stale_modal(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from _completion import CompletionKey
     from taut_summon import TerminalAttachNotice
 
     from taut_tui.app import TautApp
@@ -1861,9 +2073,23 @@ def test_resolved_attach_confirmation_never_opens_stale_modal(
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
+            applied = observed(app).scope.expect(
+                CompletionKey(app, "attach_request.applied", request=request)
+            )
+            dispatch = app._on_message
+
+            async def apply(event: Any) -> None:
+                await dispatch(event)
+                if event is request:
+                    applied.succeed(applied.key, None)
+
+            monkeypatch.setattr(app, "_on_message", apply)
+            deadline = observed(app).scope.now() + 5
             assert app.post_message(request)
-            await pilot.pause()
+            await applied.wait(
+                deadline=deadline, description="resolved request handled"
+            )
             assert not isinstance(app.screen, ConfirmationScreen)
 
     asyncio.run(exercise())
@@ -2001,8 +2227,8 @@ def test_central_dispatch_enforces_applicability_before_forms_and_mouse_handlers
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(130, 34)) as pilot:
-            await _pause_until(pilot, lambda: app._domain is not None)
+        async with app.run_test(size=(130, 34)):
+            await observed(app).navigation()
             target = "general"
             app._target_kinds[target] = "channel"
             app.visual_state = replace(
@@ -2025,8 +2251,13 @@ def test_central_dispatch_enforces_applicability_before_forms_and_mouse_handlers
             assert send_entry.enabled is False
             assert send_entry.reason == "Enter a message first"
             assert app.query_one("#composer-send").display is True
-            app.query_one("#composer-send", Button).press()
-            await pilot.pause()
+            button = app.query_one("#composer-send", Button)
+            pressed = observed(app).button_press(button)
+            deadline = observed(app).scope.now() + 5
+            button.press()
+            await pressed.wait(
+                deadline=deadline, description="disabled send dispatched"
+            )
             assert reached == []
             assert send_entry.reason in str(app.query_one("#inspector-body").render())
 
@@ -2056,8 +2287,8 @@ def test_conversation_open_evaluates_after_navigation_target_projection(
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            await _pause_until(pilot, lambda: app._domain is not None)
+        async with app.run_test(size=(100, 34)):
+            await observed(app).navigation()
             reached: list[ActionId] = []
 
             def dispatch(action_id: ActionId, _domain: object) -> bool:
@@ -2100,34 +2331,23 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: app._navigation_targets[:1] == ["general"],
-            )
+            await observed(app).navigation()
+            assert app._navigation_targets[:1] == ["general"]
             assert await pilot.click("#navigation-list", offset=(1, 0)) is True
-            await _pause_until(pilot, lambda: navigation.highlighted == 0)
             assert navigation.highlighted == 0
             assert app.visual_state.active_conversation is None
 
             await pilot.press("enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if app.visual_state.active_conversation == "general":
-                    break
+            await observed(app).conversation()
             assert app.visual_state.active_conversation == "general"
 
         second = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with second.run_test(size=(100, 34)) as pilot:
             navigation = second.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: second._navigation_targets[:1] == ["general"],
-            )
+            await observed(second).navigation()
+            assert second._navigation_targets[:1] == ["general"]
             assert await pilot.click("#navigation-list", offset=(1, 0), times=2) is True
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if second.visual_state.active_conversation == "general":
-                    break
+            await observed(second).conversation()
             assert second.visual_state.active_conversation == "general"
 
     asyncio.run(exercise())
@@ -2149,22 +2369,24 @@ def test_navigation_drag_out_does_not_swallow_next_keyboard_enter(
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: app._navigation_targets[:1] == ["general"],
-            )
+            await observed(app).navigation()
+            assert app._navigation_targets[:1] == ["general"]
             navigation.highlighted = 0
+            deadline = observed(app).scope.now() + 5
             navigation.focus()
-            await _pause_until(pilot, lambda: navigation.has_focus)
+            await observed(app).focus(navigation, deadline=deadline)
 
+            released = observed(app).pointer_release(navigation)
+            deadline = observed(app).scope.now() + 5
             assert await pilot.mouse_down("#navigation-list", offset=(1, 0)) is True
             assert await pilot.mouse_up("#transcript", offset=(1, 0)) is True
-            await _pause_until(pilot, lambda: not navigation._pointer_pending)
-            await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "general",
+            await released.wait(
+                deadline=deadline, description="navigation pointer released"
             )
+            assert not navigation._pointer_pending
+            await pilot.press("enter")
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
 
             assert app.visual_state.active_conversation == "general"
 
@@ -2237,15 +2459,8 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
             navigation.highlighted = dm_index
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: (
-                    app.visual_state.active_conversation == dm_target
-                    and "DM with bob" in str(app.query_one("#target-header").render())
-                    and app.query_one("#composer", TautComposer).placeholder
-                    == "Message DM with bob"
-                ),
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == dm_target
             assert "DM with bob" in str(app.query_one("#target-header").render())
             assert (
                 app.query_one("#composer", TautComposer).placeholder
@@ -2289,7 +2504,7 @@ def test_help_and_errors_open_a_visible_inspector_at_medium_and_compact_sizes(
 
             await pilot.resize_terminal(64, 34)
             app._show_error("visible failure")
-            await pilot.pause()
+            # Error projection and placement are synchronous owner operations.
             assert app.query_one("#inspector").display is True
             assert "visible failure" in str(app.query_one("#inspector-body").render())
 
@@ -2347,12 +2562,13 @@ def test_compose_send_failure_is_visible_and_preserves_the_draft(
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(64, 34)) as pilot:
+        async with app.run_test(size=(64, 34)):
             composer = app.query_one("#composer", TautComposer)
             composer.text = "keep\n\tme"
             composer.cursor_position = 6
+            deadline = observed(app).scope.now() + 5
             composer.focus()
-            await pilot.pause()
+            await observed(app).focus(composer, deadline=deadline)
             app.visual_state = replace(
                 app.visual_state,
                 active_conversation="general",
@@ -2364,7 +2580,7 @@ def test_compose_send_failure_is_visible_and_preserves_the_draft(
             failed.set_exception(RuntimeError("send failed visibly"))
 
             app._apply_send_result(1, failed)
-            await pilot.pause()
+            # The tested failure projection is the real synchronous apply.
 
             assert app.query_one("#conversation").display is True
             assert "send failed visibly" in str(app.query_one("#status-line").render())
@@ -2472,17 +2688,13 @@ def test_live_reply_notification_refreshes_the_contextual_reply_marker(
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: app._navigation_targets[:1] == ["general"],
-            )
+            await observed(app).navigation()
+            assert app._navigation_targets[:1] == ["general"]
             navigation.highlighted = 0
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: any(message.ts == root.ts for message in app._message_rows),
-            )
+            await observed(app).conversation()
+            assert any(message.ts == root.ts for message in app._message_rows)
 
             reply_navigation_applied = asyncio.Event()
             apply_navigation_result = app._apply_navigation_result
@@ -2663,31 +2875,28 @@ def test_superseding_navigation_clears_and_rejects_stale_search(
                 "open_search_result",
                 lambda _hit: pending,
             )
+            search = observed(app).action("open_search_result")
             app._selected_search_hit = hit
             app._dispatch_tui_action(
                 ActionId.SEARCH_OPEN_RESULT,
                 source=ActionRoute.CONTEXT,
             )
-            await pilot.pause()
             assert app._operation_state == "searching"
 
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: _has_option_containing(navigation, "#random"),
-            )
+            await observed(app).navigation()
+            assert _has_option_containing(navigation, "#random")
             navigation.highlighted = _option_index_containing(navigation, "#random")
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "random",
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "random"
             assert app._operation_state == "idle"
             assert "searching" not in str(app.query_one("#status-line").render())
 
+            deadline = observed(app).scope.now() + 5
             pending.set_result(context)
-            await pilot.pause()
+            await search.wait(deadline)
             assert app.visual_state.active_conversation == "random"
             assert app._operation_state == "idle"
 
@@ -2796,14 +3005,17 @@ def test_compact_mouse_pane_affordance_reaches_each_logical_surface(
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(64, 34)) as pilot:
             app._render_inspector("context", kind=InspectorKind.SYSTEM)
-            await pilot.pause()
             seen: set[str] = set()
             for _ in range(4):
                 for widget_id in ("navigation", "conversation", "inspector"):
                     if app.query_one(f"#{widget_id}").display:
                         seen.add(widget_id)
+                button = app.query_one("#pane-affordance", Button)
+                pressed = observed(app).button_press(button)
+                deadline = observed(app).scope.now() + 5
                 assert await pilot.click("#pane-affordance") is True
-                await pilot.pause()
+                await pressed.wait(deadline=deadline, description="pane switch applied")
+                await observed(app).button_ready(pressed, deadline=deadline)
             assert seen == {"navigation", "conversation", "inspector"}
 
     asyncio.run(exercise())
@@ -2828,24 +3040,16 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", OptionList)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if navigation.option_count and "#general" in str(
-                    navigation.get_option_at_index(0).prompt
-                ):
-                    break
-            else:
-                pytest.fail("navigation did not load")
+            await observed(app).navigation()
+            assert navigation.option_count and "#general" in str(
+                navigation.get_option_at_index(0).prompt
+            )
 
             navigation.highlighted = 0
             navigation.focus()
             await pilot.press("enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if app.visual_state.active_conversation == "general":
-                    break
-            else:
-                pytest.fail("conversation did not open")
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
 
             await pilot.press("i")
             await pilot.press(
@@ -2856,12 +3060,8 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
                 *"tui",
             )
             await pilot.press("enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if app.query_one("#composer", TautComposer).text == "":
-                    break
-            else:
-                pytest.fail("send did not complete")
+            await observed(app).send()
+            assert app.query_one("#composer", TautComposer).text == ""
 
     try:
         asyncio.run(exercise())
@@ -2874,6 +3074,7 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
 def test_command_palette_opens_native_form_and_applies_public_identity_change(
     tmp_path: Path,
 ) -> None:
+    from taut_tui.actions import ActionId
     from taut_tui.app import TautApp
 
     db_path = tmp_path / "identity.db"
@@ -2886,22 +3087,16 @@ def test_command_palette_opens_native_form_and_applies_public_identity_change(
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p")
             assert app.visual_state.mode is InteractionMode.COMMAND
+            pushed = observed(app).screen_for_action(ActionId.IDENTITY_SET_PERSONA)
             await pilot.press(*"set persona", "enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if list(app.screen.query("#field-persona")):
-                    break
-            else:
-                pytest.fail("persona form did not open")
+            await observed(app).pushed(pushed, focus="#field-persona")
             field = app.screen.query_one("#field-persona", Input)
             field.value = "reviewer"
+            changed = observed(app).action("set_persona")
+            deadline = observed(app).scope.now() + 5
             app.screen.query_one("#form-submit", Button).press()
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if alice.whoami().persona == "reviewer":
-                    break
-            else:
-                pytest.fail("persona action did not complete")
+            await changed.wait(deadline)
+            assert alice.whoami().persona == "reviewer"
 
     try:
         asyncio.run(exercise())
@@ -2922,20 +3117,22 @@ def test_native_form_keeps_values_and_renders_domain_error_inline(
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
+            deadline = observed(app).scope.now() + 5
             app._dispatch_tui_action(
                 ActionId.IDENTITY_SET_NAME,
                 source=ActionRoute.PALETTE,
             )
-            await pilot.pause()
+            await observed(app).screens.ready(app.screen, deadline=deadline)
             field = app.screen.query_one("#field-name", Input)
             field.value = "bad name"
+            rejected = observed(app).action("set_name")
+            deadline = observed(app).scope.now() + 5
             app.screen.query_one("#form-submit", Button).press()
-            for _ in range(100):
-                await pilot.pause(0.01)
-                error = str(app.screen.query_one("#form-errors").render())
-                if error and error != "Working…":
-                    break
+            with pytest.raises(ValueError, match="name must match"):
+                await rejected.wait(deadline)
+            error = str(app.screen.query_one("#form-errors").render())
+            assert error and error != "Working…"
             assert app.screen.query_one("#field-name", Input).value == "bad name"
             assert app.screen.query_one("#form-submit", Button).disabled is False
             assert "name" in str(app.screen.query_one("#form-errors").render()).lower()
@@ -2999,16 +3196,12 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
-        async with app.run_test(size=(100, 24)) as pilot:
+        async with app.run_test(size=(100, 24)):
             app._selected_search_hit = hit
             app._open_selected_search_result()
-            await _pause_until(
-                pilot,
-                lambda: (
-                    app.visual_state.active_conversation == "general"
-                    and any(message.ts == hit.ts for message in app._message_rows)
-                ),
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
+            assert any(message.ts == hit.ts for message in app._message_rows)
             assert app.visual_state.viewport.message_id == hit.ts
             transcript = app.query_one("#transcript", TautOptionList)
             assert app._message_rows[transcript.highlighted or 0].ts == hit.ts
@@ -3042,14 +3235,20 @@ def test_user_scroll_supersedes_pending_search_anchor_restore(
             transcript = app.query_one("#transcript", TautOptionList)
             app._conversation_intent = 7
             app._message_rows = messages
+            measured = observed(app).rows_measured(transcript)
+            deadline = observed(app).scope.now() + 5
             transcript.add_options(app._message_prompt(message) for message in messages)
-            await pilot.pause()
+            await measured.wait(
+                deadline=deadline, description="initial scroll rows measured"
+            )
             initial_offset = transcript.scroll_offset.y
             app._arm_search_anchor(7, messages[24].ts)
             search_generation = app.visual_state.viewport.generation
 
+            settled = observed(app).user_viewport()
+            deadline = observed(app).scope.now() + 5
             await _perform_viewport_user_input(user_input, pilot, transcript)
-            await pilot.pause()
+            await settled.wait(deadline=deadline, description="user viewport committed")
 
             def viewport_matches_widget() -> bool:
                 viewport = app.visual_state.viewport
@@ -3068,12 +3267,12 @@ def test_user_scroll_supersedes_pending_search_anchor_restore(
                     remaining -= height
                 return False
 
-            await _eventually(pilot, viewport_matches_widget)
-            await _eventually(
-                pilot,
-                lambda: int(transcript.scroll_offset.y)
-                == int(transcript.scroll_target_y),
+            assert viewport_matches_widget()
+            await asyncio.wait_for(
+                app.animator.wait_until_complete(),
+                timeout=max(0, deadline - observed(app).scope.now()),
             )
+            assert int(transcript.scroll_offset.y) == int(transcript.scroll_target_y)
 
             assert app.visual_state.viewport.search_owned is False
             if user_input != "click":
@@ -3114,7 +3313,7 @@ def test_programmatic_scroll_does_not_claim_user_viewport_intent() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 24)) as pilot:
+        async with app.run_test(size=(100, 24)):
             transcript = app.query_one("#transcript", TautOptionList)
             app._message_rows = messages
             transcript.add_options(item.text for item in messages)
@@ -3122,7 +3321,7 @@ def test_programmatic_scroll_does_not_claim_user_viewport_intent() -> None:
             owner = app.visual_state.viewport
 
             transcript.scroll_to(y=10, animate=False, force=True, immediate=True)
-            await pilot.pause()
+            # Immediate non-animated scroll has no pending movement phase.
 
             assert app.visual_state.viewport == owner
             assert app.visual_state.viewport.search_owned is True
@@ -3168,18 +3367,22 @@ def test_removed_history_anchor_recovers_to_tail() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 24)) as pilot:
+        async with app.run_test(size=(100, 24)):
             app.visual_state = replace(
                 app.visual_state,
                 viewport=TranscriptViewport.history(999),
             )
+            recovered = observed(app).recovering_tail()
+            deadline = observed(app).scope.now() + 5
             app._render_messages(messages)
             transcript = app.query_one("#transcript", TautOptionList)
-
-            await _eventually(
-                pilot,
-                lambda: app.visual_state.viewport.tail_pinned
-                and transcript.is_vertical_scroll_end,
+            await recovered.wait(
+                deadline=deadline,
+                description="missing history anchor recovered to tail",
+            )
+            assert (
+                app.visual_state.viewport.tail_pinned
+                and transcript.is_vertical_scroll_end
             )
 
     asyncio.run(exercise())
@@ -3198,7 +3401,7 @@ def test_completed_search_restore_releases_viewport_ownership() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
             app._conversation_intent = 7
             app._message_rows = messages
             transcript = app.query_one("#transcript", TautOptionList)
@@ -3209,11 +3412,11 @@ def test_completed_search_restore_releases_viewport_ownership() -> None:
             )
             app._arm_search_anchor(7, message.ts)
             app._render_messages(messages, restore_owner_intent=7)
-            await pilot.pause()
+            await observed(app).viewport()
             assert app.visual_state.viewport.search_owned is False
 
             transcript.scroll_to(y=5, animate=False, force=True, immediate=True)
-            await pilot.pause()
+            # Explicit immediate programmatic scroll has no deferred settlement.
             app._capture_settled_transcript_viewport()
             assert app.visual_state.viewport.tail_pinned is False
             assert app.visual_state.viewport.message_id != message.ts
@@ -3463,27 +3666,29 @@ def test_overlapping_send_completion_only_clears_its_own_draft(
 
             app._apply_send_result = observe_send_result  # type: ignore[method-assign]
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: _has_option_containing(navigation, "#general"),
-            )
+            await observed(app).navigation()
+            assert _has_option_containing(navigation, "#general")
             navigation.highlighted = _option_index_containing(navigation, "#general")
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "general",
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
 
             app._domain = DeferredDomain()  # type: ignore[assignment]
             composer = app.query_one("#composer", TautComposer)
+            edited = observed(app).composer_edit(composer)
+            deadline = observed(app).scope.now() + 5
             composer.text = "first\nbody"
             composer.cursor_position = 3
-            await pilot.pause()
+            await edited.wait(deadline=deadline, description="first draft edit applied")
             app._submit_composer("first\nbody")
+            edited = observed(app).composer_edit(composer)
+            deadline = observed(app).scope.now() + 5
             composer.text = "second\nbody"
             composer.cursor_position = 4
-            await pilot.pause()
+            await edited.wait(
+                deadline=deadline, description="second draft edit applied"
+            )
             app._submit_composer("second\nbody")
             expected = app.visual_state.draft_for("general")
             assert expected is not None
@@ -3524,17 +3729,13 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: bool(navigation.option_count and app._reply_threads),
-            )
+            await observed(app).navigation()
+            assert bool(navigation.option_count and app._reply_threads)
             navigation.highlighted = 0
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.active_conversation == "general",
-            )
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
 
             transcript = app.query_one("#transcript", TautOptionList)
             origin_index = next(
@@ -3547,19 +3748,14 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
             transcript.highlighted = origin_index
             transcript.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: app.visual_state.open_reply_thread is not None,
-            )
+            await observed(app).conversation()
             assert app.visual_state.open_reply_thread is not None
 
+            deadline = observed(app).scope.now() + 5
             assert await pilot.click("#reply-affordance") is True
-            await _pause_until(
-                pilot,
-                lambda: (
-                    app.visual_state.open_reply_thread is None and transcript.has_focus
-                ),
-            )
+            await observed(app).conversation(deadline=deadline)
+            await observed(app).focus(transcript, deadline=deadline)
+            assert app.visual_state.open_reply_thread is None
             assert app.visual_state.focus.surface is LogicalSurface.CONVERSATION
             assert app.visual_state.pane_choice is LogicalSurface.CONVERSATION
             assert transcript.has_focus
@@ -3722,9 +3918,9 @@ def test_transcript_option_render_keeps_hanging_indent_and_height_in_sync() -> N
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(80, 34)) as pilot:
+        async with app.run_test(size=(80, 34)):
             app._render_messages((message,))
-            await pilot.pause()
+            await observed(app).viewport()
             transcript = app.query_one("#transcript", TautOptionList)
             option = transcript.get_option_at_index(0)
             strips = transcript._get_option_render(
@@ -3901,38 +4097,40 @@ def test_programmatic_draft_restore_never_promotes(tmp_path: Path) -> None:
         navigation = app.query_one("#navigation-list", TautOptionList)
         index = next(i for i, t in enumerate(app._navigation_targets) if t == target)
         navigation.highlighted = index
-        await pilot.pause()
+        opened = observed(app).opening()
         navigation.action_select()
-        for _ in range(200):
-            await pilot.pause(0.01)
-            if app.visual_state.active_conversation == target:
-                return
-        pytest.fail(f"conversation {target} did not open")
+        await observed(app).conversation(opened)
+        assert app.visual_state.active_conversation == target
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="van", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
-            for _ in range(200):
-                await pilot.pause(0.01)
-                if app._navigation_targets:
-                    break
+            await observed(app).navigation()
+            assert app._navigation_targets
             await open_target(app, pilot, "general")
             await pilot.press("i")
+            promoted = observed(app).command_line()
             for character in ":summon kimi":
                 await pilot.press("space" if character == " " else character)
-                await pilot.pause(0.005)
-            await pilot.pause(0.05)
+            screen = await observed(app).pushed(promoted)
             assert isinstance(app.screen, CommandLineScreen)
+            deadline = observed(app).scope.now() + 5
             await pilot.press("escape")
-            await pilot.pause(0.05)
+            await (
+                observed(app)
+                .screens.result_applied(screen)
+                .wait(deadline=deadline, description="promoted command result applied")
+            )
+            await (
+                observed(app)
+                .screens.retired(screen)
+                .wait(deadline=deadline, description="promoted command screen retired")
+            )
             composer = app.query_one("#composer", TautComposer)
             assert composer.text.startswith(":summon")
             await pilot.press("escape")
-            await pilot.pause(0.05)
             await open_target(app, pilot, "quiet")
-            await pilot.pause(0.1)
             await open_target(app, pilot, "general")
-            await pilot.pause(0.2)
             assert not isinstance(app.screen, CommandLineScreen)
             assert composer.text.startswith(":summon")
 
@@ -3958,37 +4156,167 @@ def test_command_line_open_keeps_live_deliveries_rendering(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
-            for _ in range(200):
-                await pilot.pause(0.01)
-                if app._navigation_targets:
-                    break
+            await observed(app).navigation()
+            assert app._navigation_targets
             navigation = app.query_one("#navigation-list", TautOptionList)
             index = next(
                 i for i, t in enumerate(app._navigation_targets) if t == "general"
             )
             navigation.highlighted = index
-            await pilot.pause()
+            opened = observed(app).opening()
             navigation.action_select()
-            for _ in range(200):
-                await pilot.pause(0.01)
-                if app.visual_state.active_conversation == "general":
-                    break
+            await observed(app).conversation(opened)
+            assert app.visual_state.active_conversation == "general"
             transcript = app.query_one("#transcript", TautOptionList)
             baseline = transcript.option_count
+            pushed = observed(app).command_line()
             await pilot.press("escape", "colon")
-            await pilot.pause()
+            await observed(app).pushed(pushed)
             assert isinstance(app.screen, CommandLineScreen)
-            bob.say("general", "delivered while the command line is open")
-            for _ in range(400):
-                await pilot.pause(0.01)
-                if transcript.option_count > baseline:
-                    break
+            deadline = observed(app).scope.now() + 5
+            message = bob.say("general", "delivered while the command line is open")
+            await observed(app).delivery(message, deadline=deadline)
             assert transcript.option_count > baseline
             assert isinstance(app.screen, CommandLineScreen)
 
     asyncio.run(exercise())
     alice.close()
     bob.close()
+
+
+def test_rapid_resize_setup_selection_survives_pending_initial_highlights(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionKey
+
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    path = tmp_path / "held-initial-highlight.db"
+    TautClient.init(db_path=path)
+    client = TautClient(db_path=path, as_name="alice")
+    client.join("general")
+    for index in range(24):
+        client.say("general", f"seed {index}")
+    client.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(130, 34)):
+            await observed(app).navigation()
+            transcript = app.query_one("#transcript", TautOptionList)
+            original_post = transcript.post_message
+            held: list[Any] = []
+            trace: list[tuple[Any, ...]] = []
+
+            def post(event: Any) -> bool:
+                if isinstance(event, TautOptionList.OptionHighlighted):
+                    held.append(event)
+                    trace.append(
+                        (
+                            "held",
+                            event.option_index,
+                            app.visual_state.selected_message_id,
+                        )
+                    )
+                    return True
+                return bool(original_post(event))
+
+            monkeypatch.setattr(transcript, "post_message", post)
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            navigation.highlighted = app._navigation_targets.index("general")
+            opened = observed(app).opening()
+            navigation.action_select()
+            await observed(app).conversation(opened)
+            await observed(app).viewport()
+            assert held
+            selected = app._message_rows[5].ts
+            last = held[-1]
+            applied = observed(app).scope.expect(
+                CompletionKey(app, "held_initial_highlight.applied", request=last)
+            )
+            original_dispatch = app._on_message
+
+            async def dispatch(event: Any) -> None:
+                await original_dispatch(event)
+                if event is last:
+                    trace.append(
+                        (
+                            "last_initial_applied",
+                            event.option_index,
+                            app.visual_state.selected_message_id,
+                        )
+                    )
+                    applied.succeed(applied.key, event)
+
+            monkeypatch.setattr(app, "_on_message", dispatch)
+            monkeypatch.setattr(transcript, "post_message", original_post)
+            deadline = observed(app).scope.now() + 5
+            for event in held:
+                original_post(event)
+            await _activate_transcript_message(app, transcript, 5)
+            await applied.wait(
+                deadline=deadline, description="held initial highlight applied"
+            )
+            trace.append(
+                (
+                    "released",
+                    transcript.highlighted,
+                    app.visual_state.selected_message_id,
+                )
+            )
+            assert app.visual_state.selected_message_id == selected, trace
+
+    asyncio.run(exercise())
+
+
+def test_transcript_activation_observer_preserves_the_real_handler_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    error = RuntimeError("controlled selection handler failure")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(130, 34)):
+            transcript = app.query_one("#transcript", TautOptionList)
+            app._render_messages(
+                (Message("general", 1, "m_alice", "alice", "message", "row"),)
+            )
+            await observed(app).viewport()
+            original_post = transcript.post_message
+            arrived: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+            def hold(event: Any) -> bool:
+                if isinstance(event, TautOptionList.Activated):
+                    arrived.set_result(event)
+                    return True
+                return bool(original_post(event))
+
+            monkeypatch.setattr(transcript, "post_message", hold)
+            applied = observed(app).option_activation(transcript)
+            deadline = observed(app).scope.now() + 5
+            transcript.action_select()
+            event = await asyncio.wait_for(arrived, 5)
+
+            def fail(_index: int) -> None:
+                raise error
+
+            monkeypatch.setattr(app, "_select_message", fail)
+            with pytest.raises(RuntimeError) as dispatched:
+                await app._on_message(event)
+            assert dispatched.value is error
+            with pytest.raises(RuntimeError) as observed_error:
+                await applied.wait(
+                    deadline=deadline, description="selection handler error"
+                )
+            assert observed_error.value is error
+
+    asyncio.run(exercise())
 
 
 def test_real_rapid_resize_burst_keeps_latest_state_and_live_delivery(
@@ -4012,24 +4340,33 @@ def test_real_rapid_resize_burst_keeps_latest_state_and_live_delivery(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
-            await _eventually(pilot, lambda: "general" in app._navigation_targets)
+            await observed(app).navigation()
+            assert "general" in app._navigation_targets
             navigation = app.query_one("#navigation-list", TautOptionList)
             navigation.highlighted = app._navigation_targets.index("general")
+            opened = observed(app).opening()
             navigation.action_select()
-            await _eventually(
-                pilot,
-                lambda: app.visual_state.active_conversation == "general",
-            )
+            await observed(app).conversation(opened)
+            assert app.visual_state.active_conversation == "general"
             transcript = app.query_one("#transcript", TautOptionList)
-            await _eventually(pilot, lambda: transcript.option_count >= 24)
-            app._select_message(5)
-            await _eventually(pilot, lambda: app.visual_state.inspector is not None)
-            selected = app.visual_state.selected_message_id
+            assert transcript.option_count >= 24
+            await observed(app).viewport()
+            selected = app._message_rows[5].ts
+            await _activate_transcript_message(app, transcript, 5)
+            assert app.visual_state.inspector is not None
+            assert app.visual_state.selected_message_id == selected
+            # Selecting a real row scrolls it into view. Establish the intended
+            # tail geometry synchronously before capturing that viewport owner.
+            transcript.scroll_end(animate=False, force=True, immediate=True)
             app._capture_settled_transcript_viewport()
             await pilot.press("i")
             composer = app.query_one("#composer", TautComposer)
+            edited = observed(app).composer_edit(composer)
+            deadline = observed(app).scope.now() + 5
             composer.text = "draft survives resize burst"
-            await pilot.pause()
+            await edited.wait(
+                deadline=deadline, description="resize-burst draft applied"
+            )
 
             async def resize_burst() -> None:
                 for size in ((119, 24), (79, 24), (49, 24), (80, 24)):
@@ -4038,22 +4375,26 @@ def test_real_rapid_resize_burst_keeps_latest_state_and_live_delivery(
             async def worker_result() -> None:
                 domain = app._domain
                 assert domain is not None
+                result = observed(app).action("show_identity")
+                deadline = observed(app).scope.now() + 5
                 app._run_action(domain.show_identity())
-                await _eventually(pilot, lambda: app._operation_state == "idle")
+                await result.wait(deadline)
+                assert app._operation_state == "idle"
 
-            await asyncio.gather(
+            deadline = observed(app).scope.now() + 5
+            _resized, message, _shown = await asyncio.gather(
                 resize_burst(),
                 asyncio.to_thread(bob.say, "general", "delivery during resize burst"),
                 worker_result(),
             )
-            await _eventually(
-                pilot,
-                lambda: any(
-                    message.text == "delivery during resize burst"
-                    for message in app._message_rows
-                ),
+            await observed(app).delivery(message, deadline=deadline)
+            assert any(
+                message.text == "delivery during resize burst"
+                for message in app._message_rows
             )
-            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            await observed(app).resize_render(deadline=deadline)
+            await observed(app).viewport()
+            assert transcript.is_vertical_scroll_end
 
             assert app._accepted_size == TerminalSize(80, 24)
             assert app.layout_mode is LayoutMode.MEDIUM
@@ -4066,6 +4407,8 @@ def test_real_rapid_resize_burst_keeps_latest_state_and_live_delivery(
             assert transcript.is_vertical_scroll_end is True
             accepted = app._accepted_size
             generation = app.visual_state.model_generation
+            # A negative late-work window, not a completion proof: the latest
+            # resize callback and its real viewport effect have already returned.
             await pilot.pause(0.2)
             assert app._accepted_size == accepted
             assert app.visual_state.model_generation == generation
@@ -4095,36 +4438,39 @@ def test_tail_pin_survives_own_send_and_watcher_delivery(tmp_path: Path) -> None
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 24)) as pilot:
-            await _eventually(pilot, lambda: "general" in app._navigation_targets)
+            await observed(app).navigation()
+            assert "general" in app._navigation_targets
             navigation = app.query_one("#navigation-list", TautOptionList)
             navigation.highlighted = app._navigation_targets.index("general")
+            opened = observed(app).opening()
             navigation.action_select()
-            await _eventually(pilot, lambda: len(app._message_rows) >= 24)
+            await observed(app).conversation(opened)
+            assert len(app._message_rows) >= 24
             transcript = app.query_one("#transcript", TautOptionList)
-            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            await observed(app).viewport()
+            assert transcript.is_vertical_scroll_end
             assert app.visual_state.viewport.tail_pinned is True
 
             await pilot.press("i")
             composer = app.query_one("#composer", TautComposer)
             composer.text = "own send keeps tail"
             await pilot.press("enter")
-            await _eventually(
-                pilot,
-                lambda: any(
-                    message.text == "own send keeps tail" for message in app._message_rows
-                ),
+            await observed(app).send()
+            assert any(
+                message.text == "own send keeps tail" for message in app._message_rows
             )
-            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            await observed(app).viewport()
+            assert transcript.is_vertical_scroll_end
             assert app.visual_state.viewport.tail_pinned is True
 
-            await asyncio.to_thread(bob.say, "general", "watcher keeps tail")
-            await _eventually(
-                pilot,
-                lambda: any(
-                    message.text == "watcher keeps tail" for message in app._message_rows
-                ),
+            deadline = observed(app).scope.now() + 5
+            message = await asyncio.to_thread(bob.say, "general", "watcher keeps tail")
+            await observed(app).delivery(message, deadline=deadline)
+            assert any(
+                message.text == "watcher keeps tail" for message in app._message_rows
             )
-            await _eventually(pilot, lambda: transcript.is_vertical_scroll_end)
+            await observed(app).viewport()
+            assert transcript.is_vertical_scroll_end
             assert app.visual_state.viewport.tail_pinned is True
 
     try:
@@ -4134,6 +4480,258 @@ def test_tail_pin_survives_own_send_and_watcher_delivery(tmp_path: Path) -> None
         bob.close()
 
 
+def test_viewport_completion_rejects_a_newer_user_owner_even_if_both_are_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionSuperseded
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 24)):
+            messages = (Message("general", 1, "m_alice", "alice", "message", "row"),)
+            held: list[Any] = []
+            reached = asyncio.Event()
+            real_tail = app._reapply_tail_effect
+
+            def hold(effect: Any) -> None:
+                held.append(effect)
+                reached.set()
+
+            monkeypatch.setattr(app, "_reapply_tail_effect", hold)
+            app._render_messages(messages)
+            await asyncio.wait_for(reached.wait(), 5)
+            pending = asyncio.create_task(observed(app).viewport())
+            fence = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_soon(fence.set_result, None)
+            await fence
+
+            app._on_transcript_user_viewport_intent()
+            assert app.visual_state.viewport.tail_pinned
+            reached.clear()
+            app._render_messages(messages)
+            await asyncio.wait_for(reached.wait(), 5)
+            real_tail(held[-1])
+            with pytest.raises(CompletionSuperseded):
+                await pending
+
+    asyncio.run(exercise())
+
+
+def test_navigation_budget_starts_at_session_handoff_not_app_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import _app_completion
+    from _completion import CompletionScope
+
+    from taut_tui.app import TautApp
+
+    now = [0.0]
+    monkeypatch.setattr(
+        _app_completion,
+        "CompletionScope",
+        lambda: CompletionScope(clock=lambda: now[0]),
+    )
+    path = tmp_path / "late-bootstrap.db"
+    TautClient.init(db_path=path)
+    client = TautClient(db_path=path, as_name="alice")
+    client.join("general")
+    client.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(path), as_name="alice", continuity_token=None)
+        now[0] = 20.0
+        async with app.run_test():
+            await observed(app).navigation()
+            assert "general" in app._navigation_targets
+            observer = observed(app)
+            assert observer.navigation_deadline == 25.0
+            assert observer._navigation_applied is not None
+            assert (
+                observer._navigation_applied.key.request is observer.navigation_future
+            )
+            assert observer.navigation_source is not None
+            assert observer.navigation_source.key.request is observer.navigation_future
+
+    asyncio.run(exercise())
+
+
+def test_action_screen_observer_ignores_an_unrelated_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _app_completion
+    from _completion import CompletionScope
+
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen, NativeFormScreen
+
+    now = [0.0]
+    monkeypatch.setattr(
+        _app_completion,
+        "CompletionScope",
+        lambda: CompletionScope(clock=lambda: now[0]),
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test():
+            requested = observed(app).screen_for_action(ActionId.IDENTITY_SET_PERSONA)
+            unrelated = ConfirmationScreen("Unrelated")
+            app.push_screen(unrelated)
+            assert requested.snapshot() is None
+            now[0] = 20.0
+            app._open_native_form(ActionId.IDENTITY_SET_PERSONA)
+            screen = await observed(app).pushed(requested, focus="#field-persona")
+            assert observed(app)._screen_started[requested] == 20.0
+            assert isinstance(screen, NativeFormScreen)
+            assert screen is not unrelated
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_navigation_ui_apply_retains_exact_source_error_or_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    cancelled: bool,
+) -> None:
+    from _completion import CompletionStatus
+
+    from taut_tui.app import TautApp
+    from taut_tui.session import TuiSession
+
+    source: Future[Any] = Future()
+    error = ValueError("controlled navigation source failure")
+    if cancelled:
+        source.cancel()
+    else:
+        source.set_exception(error)
+    monkeypatch.setattr(TuiSession, "refresh_navigation", lambda _session: source)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test():
+            await observed(app).navigation()
+            retained = observed(app).navigation_source
+            assert retained is not None and retained.key.request is source
+            outcome = retained.snapshot()
+            assert outcome is not None
+            if cancelled:
+                assert outcome.status is CompletionStatus.CANCELLED
+            else:
+                assert outcome.status is CompletionStatus.ERROR
+                assert outcome.error is error
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("phase", ["focus", "highlight"])
+def test_app_observer_does_not_credit_a_message_already_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    from textual import events
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    async def fence() -> None:
+        done = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(done.set_result, None)
+        await done
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test():
+            observer = observed(app)
+            widget: Any
+            old: Any
+            if phase == "focus":
+                widget = app.query_one("#composer", TautComposer)
+                old = events.DescendantFocus(widget)
+            else:
+                widget = app.query_one("#transcript", TautOptionList)
+                app._message_rows = tuple(
+                    Message("general", ts, "m_alice", "alice", "message", "row")
+                    for ts in (1, 2)
+                )
+                widget.add_options(["one", "two"])
+                deadline = observer.scope.now() + 5
+                widget.highlighted = 1
+                await observer.highlighted(widget, 1, deadline=deadline)
+                old = TautOptionList.OptionHighlighted(
+                    widget, widget.get_option_at_index(0), 0
+                )
+            entered, release = asyncio.Event(), asyncio.Event()
+            original = observer._original_message
+
+            async def blocked(event: Any) -> None:
+                if event is old:
+                    entered.set()
+                    await release.wait()
+                await original(event)
+
+            monkeypatch.setattr(observer, "_original_message", blocked)
+            old_dispatch = asyncio.create_task(observer._observe_on_message(old))
+            await asyncio.wait_for(entered.wait(), 5)
+            waiting = asyncio.create_task(
+                observer.focus(widget, deadline=observer.scope.now() + 5)
+                if phase == "focus"
+                else observer.highlighted(widget, 0, deadline=observer.scope.now() + 5)
+            )
+            await fence()
+            record = (
+                observer._focus_waiters[widget]
+                if phase == "focus"
+                else observer._highlight_waiters[(widget, 0)]
+            )
+            release.set()
+            await old_dispatch
+            assert record.snapshot() is None
+            if phase == "focus":
+                widget.focus()
+            else:
+                widget.highlighted = 0
+            await waiting
+
+    asyncio.run(exercise())
+
+
+def test_focus_wait_uses_retained_publication_time_not_later_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _app_completion
+    from _completion import CompletionScope, CompletionTimeout
+
+    from taut_tui.app import TautApp
+
+    now = [0.0]
+    monkeypatch.setattr(
+        _app_completion,
+        "CompletionScope",
+        lambda: CompletionScope(clock=lambda: now[0]),
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test():
+            composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
+            now[0] = 6.0
+            composer.focus()
+            # An independent later observer proves the real handler returned.
+            await observed(app).focus(composer, deadline=11.0)
+            assert composer.has_focus
+            with pytest.raises(CompletionTimeout):
+                await observed(app).focus(composer, deadline=deadline)
+
+    asyncio.run(exercise())
+
+
 def test_action_browser_and_command_line_are_named_distinctly() -> None:
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautButton
@@ -4141,11 +4739,11 @@ def test_action_browser_and_command_line_are_named_distinctly() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
-            await pilot.pause()
+            # run_test has completed the root mount before yielding.
             button = app.query_one("#commands-affordance", TautButton)
             assert "Actions" in str(button.label)
             await pilot.press("f1")
-            await pilot.pause()
+            # press awaits the real key dispatch; inspector projection is sync.
             help_text = str(app.query_one("#inspector-body").render())
             assert "command line" in help_text
             assert "action browser" in help_text
@@ -4172,14 +4770,14 @@ def test_history_anchor_rerender_preserves_selected_message() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
             app.visual_state = dc_replace(
                 app.visual_state,
                 selected_message_id=5,
                 viewport=TranscriptViewport.history(2),
             )
             app._render_messages(messages)
-            await pilot.pause(0.1)
+            await observed(app).viewport()
             assert app.visual_state.selected_message_id == 5
 
     asyncio.run(exercise())
@@ -4192,17 +4790,31 @@ def test_too_small_shield_clears_even_when_covered_by_a_modal() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            deadline = observed(app).scope.now() + 5
             await pilot.resize_terminal(40, 10)
-            await pilot.pause()
+            await observed(app).screens.ready(app.screen, deadline=deadline)
             assert isinstance(app.screen, TerminalTooSmallScreen)
+            shield = app.screen
+            deadline = observed(app).scope.now() + 5
             app.push_screen(ConfirmationScreen("Keep working?"))
-            await pilot.pause()
+            await observed(app).screens.ready(app.screen, deadline=deadline)
             assert isinstance(app.screen, ConfirmationScreen)
             await pilot.resize_terminal(100, 34)
-            await pilot.pause()
+            # resize_terminal returns after actual Resize message dispatch.
             assert isinstance(app.screen, ConfirmationScreen)
+            modal = app.screen
+            deadline = observed(app).scope.now() + 5
             app.screen.action_reject()
-            await pilot.pause(0.1)
+            await (
+                observed(app)
+                .screens.retired(modal)
+                .wait(deadline=deadline, description="covering modal retired")
+            )
+            await (
+                observed(app)
+                .screens.retired(shield)
+                .wait(deadline=deadline, description="size shield retired")
+            )
             assert not any(
                 isinstance(screen, TerminalTooSmallScreen)
                 for screen in app.screen_stack
@@ -4220,22 +4832,34 @@ def test_reply_form_with_vanished_selection_stays_recoverable() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)):
             screen = NativeFormScreen(FORM_SPECS[ActionId.MESSAGE_REPLY])
+            deadline = observed(app).scope.now() + 5
             app.push_screen(screen)
-            await pilot.pause()
+            await observed(app).screens.ready(screen, deadline=deadline)
             field = screen.query_one("#field-message", Input)
+            edited = observed(app).input_edit(field)
+            deadline = observed(app).scope.now() + 5
             field.value = "orphaned reply"
-            await pilot.pause()
+            await edited.wait(deadline=deadline, description="reply form edit applied")
             # Selection vanished between opening the form and submitting.
+            submitted = observed(app).form_submission(screen)
+            deadline = observed(app).scope.now() + 5
             screen._submit()
-            await pilot.pause(0.1)
+            await submitted.wait(
+                deadline=deadline, description="vanished reply selection refused"
+            )
             submit = screen.query_one("#form-submit", TautButton)
             assert submit.disabled is False
             errors = str(screen.query_one("#form-errors").render())
             assert "Select a message" in errors
+            deadline = observed(app).scope.now() + 5
             screen.action_cancel()
-            await pilot.pause()
+            await (
+                observed(app)
+                .screens.retired(screen)
+                .wait(deadline=deadline, description="recoverable reply form retired")
+            )
             assert not isinstance(app.screen, NativeFormScreen)
 
     asyncio.run(exercise())
@@ -4256,26 +4880,24 @@ def test_unselected_composer_draft_carries_into_first_conversation(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="van", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
-            for _ in range(200):
-                await pilot.pause(0.01)
-                if app._navigation_targets:
-                    break
+            await observed(app).navigation()
+            assert app._navigation_targets
             composer = app.query_one("#composer", TautComposer)
+            deadline = observed(app).scope.now() + 5
             composer.focus()
+            await observed(app).focus(composer, deadline=deadline)
             await pilot.press(*"hello there")
-            await pilot.pause()
+            # press has dispatched each Changed event before returning.
             assert app.visual_state.active_conversation is None
             navigation = app.query_one("#navigation-list", TautOptionList)
             index = next(
                 i for i, t in enumerate(app._navigation_targets) if t == "general"
             )
             navigation.highlighted = index
-            await pilot.pause()
+            opened = observed(app).opening()
             navigation.action_select()
-            for _ in range(200):
-                await pilot.pause(0.01)
-                if app.visual_state.active_conversation == "general":
-                    break
+            await observed(app).conversation(opened)
+            assert app.visual_state.active_conversation == "general"
             assert composer.text == "hello there"
 
     asyncio.run(exercise())
@@ -4308,10 +4930,9 @@ def test_dump_submission_failure_stays_recoverable(
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(100, 34)):
             app._run_command_dump(cast(Any, BusyDomain()), tmp_path / "dump.tar")
-            await pilot.pause()
+            # Synchronous submission failure projects its error before return.
             assert app.is_running
             inspector = str(app.query_one("#inspector-body").render())
             expected = "already running" if error == "busy" else "backend refused"
@@ -4327,8 +4948,7 @@ def test_delivery_during_teardown_is_rejected_without_raising() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(100, 34)):
             app._shutting_down = True
             item = Message("general", 1, "m_bob", "bob", "message", "late")
             assert app._apply_delivery(0, item) is False
@@ -4359,8 +4979,7 @@ def test_stale_intent_snapshot_is_not_applied() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(100, 34)):
             app._conversation_intent = 5
             stale = ConversationSnapshot(
                 generation=1,

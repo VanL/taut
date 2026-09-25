@@ -17,6 +17,43 @@ Related plan:
 
 ## Conversion ledger
 
+- 2026-09-25, chat/screens: the five chat helper callers, four chat inline
+  loops and two screen search loops now observe exact delivery, navigation,
+  conversation, or search phases. Both modules have no remaining pauses,
+  sleeps or liveness loops. Standalone result waits distinguish callback
+  application from actual retirement; reactive input/suggestion/refusal waits
+  capture their real messages or named handlers. The core-count test installs
+  the existing initial-drain publication before watcher start and checks
+  counts once after readiness, then after actual session close/join. Inactive
+  replies remain excluded by the real watcher filter and durably unread
+  after owner retirement. Independent review CAP-CHAT-1 moved the separate
+  ready deadline to actual watcher start, retaining its five seconds and
+  recording publication time through the real initial-drain Event. Paired
+  timely/late tests cover delayed waiter wakeup. OBS-CHAT-2 forced a newer
+  render between notification NAV apply and its queued restore: the old
+  observer falsely accepted the newer effect. It now retains the exact target
+  effect and reports supersession for the old generation. The last full
+  instrumented run before those review additions passed 36 cases. Independent
+  migration review passed 198 app/chat/screen/lifecycle neighbors and eight
+  final targeted cases, including both readiness-clock schedules and exact
+  notification supersession.
+
+- 2026-09-25, app: all 59 helper callers and remaining positive counted loops
+  use exact source/owner phases; both retired helper definitions are removed.
+  Appendix B's standalone readiness pauses were also migrated. The sole
+  `pilot.pause(0.2)` is a negative late-work window in the real resize test,
+  preceded by actual latest-resize callback return and accepted viewport
+  completion. Finite typing and pane traversal still exercise real input.
+  Startup navigation begins its five-second cap at actual session submission,
+  screen budgets at the named presentation request, and focus/highlight carry
+  pre-action deadlines. Review rejected generic “next screen” and in-flight
+  old-event acceptance. A causal replay also found that the resize fixture's
+  direct private selection bypassed pending initial highlights. Its shared
+  setup now awaits exact real widget activation before the unchanged burst.
+  The former setup fires the seed-selection assertion under that forced
+  schedule. All 150 app cases and independent three-case causal review pass.
+  The final combined retained run and native qualification remain separate.
+
 - 2026-09-25, Summon: 21 helper callers, 14 counted/negative-drain loops,
   four elapsed loops and the answerer lease/stop poll are converted. There
   are no remaining pauses, sleeps or liveness loops in the module. The named
