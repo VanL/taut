@@ -584,6 +584,32 @@ The completion-wait migration and native qualification are tracked by the
 active Windows TUI root-cause plan below; this instrumentation alone does not
 resolve S4 or replace its causal gate.
 
+### Test-local completion ownership
+
+`extensions/taut_tui/tests/_completion.py` observes existing source and owner
+callbacks; it does not drive domain work. Each test scope retains exact
+owner/request identities and named phases. Terminal outcome and monotonic
+publication time are stored before waking the existing loop. An absolute
+deadline accepts on-time publication even if wake delivery is delayed, but
+never accepts a late publication merely because the timeout callback ran late.
+Timeout or observing-task cancellation disposes only observation. Product
+stop and retirement remain separate test responsibilities.
+
+`_screen_completion.py` observes Textual's already-scheduled `AwaitMount`
+and existing removal future. It does not start an extra mount task. Result
+callback return, actual removal, and committed focus are different phases.
+Textual discovers event handlers on classes, so focus is observed after real
+app message dispatch, not by assigning an instance `on_descendant_focus`.
+Capture the push lifecycle before dispatch and retain that identity across
+an awaited handler; a reused screen object does not authorize a newer push.
+
+The helper and real-framework regressions live in `test_tui_determinism.py`
+and `test_screen_completion.py`. They cover early/late completion, wrong
+identity, duplicate outcomes, cancellation, weak callback lifetime, real
+held mount/focus/removal, screen reuse and teardown. Caller migrations and
+native qualification remain tracked by the active plan; these tests alone
+neither diagnose historical S4 nor close its release gate.
+
 ## Related Plans
 
 - `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md` — exact

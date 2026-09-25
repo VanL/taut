@@ -976,6 +976,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   so arm any such hold only while the forwarded output has actually enabled an
   encoding that needs it.
 
+- 2026-09-25: An observer must retain identity across the work it observes.
+  In Textual, instance handler replacement may not intercept class-based
+  dispatch, and looking up a screen's current lifecycle after an awaited
+  handler can credit an old focus event to a newer push of the same object.
+  Observe the actual dispatch seam, capture its lifecycle before delegation,
+  and publish only if that lifecycle remains current. Hold the real handler
+  across pop/repush in the firing test. A modal result callback is also not
+  removal: retain the framework's separate retirement completion without
+  allowing observer cancellation to cancel shared removal work.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

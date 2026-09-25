@@ -152,3 +152,74 @@ claim until the original samples are supplied.
 
 No soak or synthetic boundary mutant in this audit establishes the historical
 S4 cause. Its causal-reproduction gate remains open under the inherited plan.
+
+## Native diagnostic measurement, before wait migration
+
+[Run 36144544513](https://github.com/VanL/taut/actions/runs/36144544513),
+attempt 1, dispatched with one repetition at immutable SHA
+`3f0c4116764a904639d432ec971a2d53360b4067`, retained `-n 2 --dist loadfile`.
+Windows Server 2025 / Python 3.13.15 completed 575 cases: 574 passed, one
+failed, zero skips, 329.223 s. The failure is the separately reproduced
+search-observer false positive, corrected afterward at `53ea080`; this run
+is not green qualification. All other matrix jobs failed that same oracle.
+
+The [Windows artifact](https://github.com/VanL/taut/actions/runs/36144544513/artifacts/10868588919)
+contains all 575 phase files. Direct invocation of the recorder's
+`phase_evidence` validator accepts them, including same-owner source/apply,
+two provider consumption/close identities, lease restoration, and native
+attach retirement. The full repetition verifier correctly remains red for
+the failing test. Local artifact copy:
+`/tmp/taut-tui-native-measurement.sl0VEA`.
+
+Raw same-owner durations below are in seconds; each cell is the complete
+sample, **n = 1** for each named flow. No percentile or reliability inference
+is warranted. The navigation row is the S4 DM test, not aggregate app latency.
+
+| Phase | Windows 3.13 | Ubuntu 3.11 | Ubuntu 3.13 | Ubuntu 3.14 | macOS 3.13 |
+|---|---:|---:|---:|---:|---:|
+| S4 navigation request → source | 0.099777 | 0.075002 | 0.075734 | 0.070454 | 0.039570 |
+| S4 source → application | 0.002856 | 0.001452 | 0.001675 | 0.001522 | 0.001043 |
+| Recovery navigation request → source | 0.088571 | 0.077448 | 0.079769 | 0.087321 | 0.038673 |
+| Recovery source → application | 0.002602 | 0.001583 | 0.001537 | 0.002303 | 0.055969 |
+| Confirmation request → resolution | 0.093899 | 0.081771 | 0.103723 | 0.081408 | 0.335962 |
+| Lease request → acquired | 0.000725 | 0.000285 | 0.000443 | 0.000310 | 0.000435 |
+| Lease acquired → restored | 0.046080 | 0.048652 | 0.027320 | 0.025266 | 0.177700 |
+| Lease restored → hold returned | 0.000569 | 0.004999 | 0.000184 | 0.000081 | 0.000465 |
+
+Windows wiring/recovery provider `inject()`-return-to-consumption differences
+are 0.001668 / 0.000689 s (two distinct providers, one observation each).
+These are **not orientation durations**: consumption may precede injection
+return (the macOS wiring sample is −0.000155 s). The acknowledgement proves
+consumption after fixture logging; no timestamp is backdated to an unobserved
+orientation start. Actual behavior deadlines must start at that owner handoff
+in the migration adapters, not at the late await or injection return.
+
+The Windows recovery test lasted 18.090601 s. Its wiring provider/host closed
+at relative 6.492895/6.623543 s; recovery confirmation was requested at
+12.530803 s, readiness applied at 12.940399 s, final provider close occurred
+at 17.972054 s, and foreground return applied at 18.072655 s. Native attach
+cleanup returned at 1.308376 and 12.857025 s. These are raw transition times,
+not isolated process-bootstrap or close-call costs. They cannot justify
+charging bootstrap/cleanup against a UI application deadline.
+
+### Proposed conversion caps for model review
+
+No TUI CI scaling seam exists and this sample supplies no reason to invent
+one. Every existing explicit call-site cap wins, whether smaller or larger
+than a proposed default; no existing explicit behavior cap changes.
+Infrastructure and cleanup
+remain source-specific rather than receiving a blanket Windows multiplier.
+
+| Inventory group | Deadline owner and cap | Rationale / containment boundary |
+|---|---|---|
+| App navigation, conversation, delivery, action, render, focus, search, resize | Preserve each explicit call-site limit from its initiating action/request. Use 5 s only for formerly counted waits with no explicit elapsed limit. | Preserve the app's explicit 5 s baseline. For formerly counted action/routes/inline waits this is a newly explicit limit, not a claimed conversion of attempts × pause. The measured real navigation/application samples are far below it; action-specific firing and hosted tests still qualify other phases. |
+| Pure confirmation decision formerly 200 attempts | 2 s from resolve/decision handoff | Makes the previously ambiguous count explicit at the neighboring confirmation protocol's existing 2 s limit; native request/resolution sample is 0.093899 s. No provider startup is charged here. |
+| Existing Summon confirmation/offer/acknowledgement | Preserve 2 / 45 / 10 s at each existing call site, from its real initiating action | The recovery offer's 45 s remains end-to-end from owned-run start, including its setup. Do not move its start to the offer or add a second 45 s allowance. |
+| Existing provider/orientation and foreground outcomes | Preserve wiring orientation's 30 s; recovery orientation and normal outcomes' 45 s; declined return's 90 s, at their actual phase handoffs | Await consumption rather than file polling; preserve driver-ready versus app-ready identity. Injection return is not a valid new deadline origin. |
+| Framework app/control readiness | Retain real `run_test` / `AwaitMount` ownership and the existing Pilot screen fence (30 s), separately from worker/application handles | `run_test` waits for its startup callback before yielding. That initial framework wait has no separate timeout; the unchanged Actions step remains outer containment. Do not claim the 30 s screen fence bounds earlier startup, or cancel shared framework futures to impose a new cap. Control operations with explicit 2/5/10 s limits retain those. |
+| Native/process infrastructure and retirement | Preserve each existing source cap: terminal reads 15 s, provider/worker futures 5/30/60 s as currently named, joins 2/5/15/20 s as currently named | These are resource-owner containment limits, not behavior allowances. The exact inventory call site wins over this summary. Stop first, then await/join the actual owner. Each Windows repetition retains the 20-minute outer Actions cap. |
+
+The model's budget firing pair must still show delayed setup followed by
+timely behavior succeeds, while late behavior fails at the unchanged deadline.
+The sample neither proves these caps sufficient under every schedule nor
+closes S4. Conversion may proceed only after scoped model/cap review.

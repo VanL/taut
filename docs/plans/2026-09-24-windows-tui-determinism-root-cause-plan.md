@@ -1,7 +1,7 @@
 # Windows TUI Determinism Root-Cause Plan
 
-Status: active — implementation authorized 2026-09-25; slice 1 diagnosis
-and instrumentation in progress. S4 remains open.
+Status: active — implementation authorized 2026-09-25; slice 1 diagnostic,
+model and cap gates passed. Slice 2 implementation is in progress. S4 remains open.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -692,6 +692,41 @@ both follow-up callbacks finish inside the observation scope and real app
 teardown remains intact. This is no claim about S4 or the exact callback
 classes present in the original hosted logs.
 
+### Native measurement and conversion-cap review
+
+Independent reviewer recomputed every raw same-owner duration in the evidence
+artifact and independently validated all 575 native phase files. The recorded
+failing run remains failing qualification. Initial verdict: blocker CAP-1.
+
+| ID | Severity | Location | Finding (verbatim) | Suggested disposition |
+|---|---|---|---|---|
+| CAP-1 | P2 | Evidence artifact, conversion-cap table | “Keep an existing smaller explicit cap” can replace larger explicit app limits with 5 s, conflicting with the reviewed requirement to preserve existing limits. “30 s orientation” also conflates wiring’s 30 s `_wait_until` with post-recovery orientation’s existing 45 s `_await_until`. The inventory-precedence sentence currently appears only in the infrastructure row. | Make exact existing call-site caps authoritative across the whole table. Apply the new 5 s/2 s defaults only to formerly counted waits. Explicitly distinguish wiring orientation 30 s from recovery orientation 45 s. |
+
+Accepted and corrected: every explicit call-site cap wins globally, neither
+grows nor shrinks; 5 s/2 s apply only to formerly counted waits. Wiring and
+recovery orientation retain 30 s and 45 s respectively. Scoped re-review:
+**PASS**, CAP-1 resolved with no new defect. The reviewer confirmed global
+existing-cap precedence, counted-wait-only defaults, and the two distinct
+orientation limits. Completion-helper implementation and wait migration
+started only after this model/cap gate passed.
+
+### Completion foundation review
+
+Separate-role review inspected the full completion and Textual lifecycle
+adapters and their tests against the model, M1 and M3. Initial finding:
+
+| ID | Severity | Location | Finding (verbatim) | Suggested disposition |
+|---|---|---|---|---|
+| OBS-R1 | P2 | `_screen_completion.py`, `ScreenCompletions._on_message` | Looking up the screen lifecycle only after awaiting real message dispatch can attribute an old in-flight `DescendantFocus` to a newer push of the same installed screen. Holding generation 1’s handler, popping and repushing as generation 2, then releasing only generation 1 completed generation 2’s focus handle with exactly one handler having run. | Capture the exact lifecycle before delegation, and publish afterward only if that same lifecycle is still current and not popped. Add a held-old-focus/reused-screen firing test. |
+
+Accepted and fixed. The reviewer added the real held-handler/reused-screen
+regression. A process-local mutation restoring post-dispatch lookup failed
+the new generation's pending assertion; the corrected code passes. Final
+verdict: **PASS, no residual blocker**. The reviewer independently ran all
+82 helper/lifecycle cases plus scoped Ruff, four-file mypy and whitespace
+checks. No second loop or cancellation of shared producer work was found.
+This review gate covers the foundation, not later caller migrations or S4.
+
 ## Execution Log
 
 (append-only)
@@ -801,6 +836,33 @@ classes present in the original hosted logs.
   `3f0c4116764a904639d432ec971a2d53360b4067`. This diagnostic may still hit
   the now-proven search oracle defect, which is not in that immutable SHA.
   It is not a qualification attempt or a retry counted as a passing streak.
+- 2026-09-25 — The second diagnostic completed with 574 passed, one known
+  search-oracle failure, zero skips on Windows in 329.223 s. The import defect
+  is absent. All 575 native phase files pass direct validation, including
+  source/application, both provider-consumption identities, restoration and
+  native attach retirement. Raw phase durations and their one-sample limits
+  are in the evidence artifact; S4 source/application took 0.099777/0.002856 s.
+  Other matrix jobs failed only the same already-corrected search oracle.
+  No deadline miss was observed in this run. This remains a red diagnostic,
+  not an acceptance run or causal S4 resolution.
+- 2026-09-25 — Full local retained suite after `53ea080`: 576 passed in
+  97.57 s. Full TUI Ruff and 41-file mypy gates pass. The one additional case
+  is the forced search-observer ordering regression; no tests were removed.
+- 2026-09-25 — Slice 1 model/cap re-review passed after CAP-1. Slice 2
+  started with the TUI-local retained completion interface. Seventy-two
+  foundation cases pass on Python 3.14 and isolated Python 3.11; the main
+  agent independently inspected identity, publication/deadline ordering,
+  observer disposal, callback lifetime and lock boundaries, then ran the
+  foundation and real Textual lifecycle probes together: 81 passed at
+  `-n 2 --dist loadfile`. Independent whole-foundation review is in progress.
+- 2026-09-25 — Textual mount/result/removal probes hold actual framework
+  transitions. In scratch copies, publishing mount at object creation fails
+  the held-mount pending assertion; publishing retirement at result delivery
+  fails the held-removal pending assertion. Nine green real-framework cases
+  include actual input after mount/focus, observer timeout/cancellation
+  without source cancellation, pop-before-ready, repeated lifecycle,
+  callback failure, and detached focus during teardown. These are causal
+  harness proofs for (e)/M3, not native ConPTY or historical S4 evidence.
 
 ## Fresh-Eyes Review
 
