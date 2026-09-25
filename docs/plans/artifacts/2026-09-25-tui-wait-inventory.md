@@ -17,6 +17,33 @@ Related plan:
 
 ## Conversion ledger
 
+- 2026-09-25, final selection/native sweep: all 16 selection and three
+  textual-contract standalone positive pauses are removed. Exact MouseUp
+  admission binds the resulting TextSelected message; completion follows its
+  real handler, including errors. Early-post publication fires two semantic
+  reds. Plain fixture refresh keeps Pilot's 30-second framework watchdog;
+  app render/viewport and exact input application use the reviewed five-second
+  phase cap. Captured copy timers remain finite direct stimuli. Startup-only
+  synchronous render/size assertions use `run_test`'s existing readiness.
+  Paste observes its exact real handler. Independent selection review passed.
+
+  The native lease test's 0.25-second quiet window is replaced with a held
+  actual WriterThread write and its real stop/join boundary. The existing
+  lease worker reacts to finite stop/acquisition events; queued UI output
+  appears only after restoration. Removing suspend fires an exact durable
+  `writer.during` receipt, even with terminal frames omitted by the negative
+  probe. Original raw terminal/thread/restoration assertions remain additional
+  native qualifiers, not historical cause evidence. Local combined 33 cases
+  pass; independent textual review passed the final three native-contract
+  schedules locally. Windows frame capture still requires hosted execution.
+
+  Final scan leaves only three documented action/route framework fences and
+  one installed-wheel startup fence, the rapid-resize 0.2-second negative
+  late-work window after real completion, and the deliberately retained old
+  counted observer inside its causal-negative test. No active positive
+  liveness helper or polling loop remains. Native terminal adapters retain
+  their own real read/join/watchdog ownership.
+
 - 2026-09-25, chat/screens: the five chat helper callers, four chat inline
   loops and two screen search loops now observe exact delivery, navigation,
   conversation, or search phases. Both modules have no remaining pauses,

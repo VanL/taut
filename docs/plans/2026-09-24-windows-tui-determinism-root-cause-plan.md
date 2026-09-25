@@ -770,6 +770,20 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Final selection/native wait sweep is implemented and reviewed.
+  Sixteen selection and three textual-contract pauses are replaced by exact
+  handler/refresh completion or removed where real startup already proves
+  synchronous state. Held real selection messages reject premature posting
+  as application and retain original errors. The native lease probe now
+  holds an actual WriterThread write across real stop/acquisition boundaries;
+  removed suspend produces the exact semantic breach, including when the
+  mutant's terminal display is omitted. No delay, polling or new domain
+  controller substitutes for that boundary. Original raw terminal assertions
+  remain separate hosted qualifiers. Local combined 33 cases pass (6.53 s);
+  independent selection/native review and final three-case exclusive-lease
+  review pass. The inventory classifies every remaining finite framework
+  fence, negative window and intentionally retained historical mutant.
+
 - 2026-09-25 — Integrated review found two false-green evidence gaps.
   INT-CI-1: three passing JUnit cases with only two phase files passed both
   capture and verification. Both now require exactly `tests - skipped`

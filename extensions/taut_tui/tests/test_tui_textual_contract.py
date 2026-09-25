@@ -10,10 +10,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _completion import CompletionKey, CompletionScope
 from tests.helpers.terminal_probe import run_terminal_child
 from textual import events
 from textual.app import App, ComposeResult
@@ -150,8 +152,9 @@ def test_owned_display_sinks_escape_initial_and_updated_content() -> None:
 
     async def exercise() -> None:
         app = ProbeApp()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(100, 30)):
+            # run_test has already completed Compose/Mount; these render() and
+            # property assertions read synchronous owned sink values, not a frame.
             display = app.query_one("#display", Static)
             rendered = display.render()
             assert str(rendered) == escaped
@@ -294,7 +297,7 @@ def test_composer_modified_keys_insert_structure_without_submitting() -> None:
     asyncio.run(exercise())
 
 
-def test_composer_preserves_multiline_paste() -> None:
+def test_composer_preserves_multiline_paste(monkeypatch: pytest.MonkeyPatch) -> None:
     from taut_tui.widgets import TautComposer
 
     class ProbeApp(App[None]):
@@ -303,11 +306,32 @@ def test_composer_preserves_multiline_paste() -> None:
 
     async def exercise() -> None:
         app = ProbeApp()
-        async with app.run_test(size=(40, 10)) as pilot:
+        async with app.run_test(size=(40, 10)):
             composer = app.query_one(TautComposer)
             composer.focus()
-            app.post_message(events.Paste("one\n\ttwo"))
-            await pilot.pause()
+            paste = events.Paste("one\n\ttwo")
+            with CompletionScope() as scope:
+                applied = scope.expect(
+                    CompletionKey(composer, "paste.applied", request=paste)
+                )
+                original = composer._on_message
+
+                async def dispatch(event: Any) -> None:
+                    try:
+                        await original(event)
+                    except BaseException as error:
+                        if event is paste:
+                            applied.fail(applied.key, error)
+                        raise
+                    if event is paste:
+                        applied.succeed(applied.key, event)
+
+                monkeypatch.setattr(composer, "_on_message", dispatch)
+                deadline = scope.now() + 5
+                app.post_message(paste)
+                await applied.wait(
+                    deadline=deadline, description="actual paste applied"
+                )
 
             assert composer.text == "one\n\ttwo"
 
@@ -393,7 +417,8 @@ def test_retained_textual_pilot_click_focus_and_resize() -> None:
         app = ProbeApp()
 
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            # Initial Resize is synchronously dispatched before Mount/ready in
+            # retained Textual; run_test's startup boundary already covers it.
             assert app.size == Size(100, 30)
             assert app.last_resize == Size(100, 30)
 
@@ -650,21 +675,99 @@ def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> No
     assert b"\\x1b]8;;https://evil.invalid\\a" in captured
 
 
-def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
-    child_source = textwrap.dedent(
+def test_retained_textual_suspend_grants_exclusive_real_pty_lease(
+    tmp_path: Path,
+) -> None:
+    _assert_exclusive_real_pty_lease(tmp_path)
+
+
+def _assert_exclusive_real_pty_lease(tmp_path: Path) -> None:
+    import json
+
+    receipt_path = tmp_path / "exclusive-lease-receipts.json"
+    child_source = f"PROBE_RECEIPT = {str(receipt_path)!r}\n" + textwrap.dedent(
         r"""
         import json
         import os
+        import queue
         import threading
-        import time
+        from contextlib import nullcontext
 
         from textual.app import App
+        from textual.drivers._writer_thread import WriterThread
         from textual.message import Message
         from textual.widgets import Static
+
+        if os.name == "nt":
+            from textual.drivers import windows_driver as driver_module
+        else:
+            from textual.drivers import linux_driver as driver_module
+
+        writer_blocked = threading.Event()
+        allow_writer = threading.Event()
+        writer_written = threading.Event()
+        handoff = queue.Queue(maxsize=2)
+        ui_written = threading.Event()
+        ui_receipts = set()
+        receipts = []
+        receipt_lock = threading.Lock()
+        pending_output = "TEXTUAL-WRITER-PENDING"
+
+
+        def record(value):
+            with receipt_lock:
+                receipts.append(value)
+
+
+        class ObservedFile:
+            def __init__(self, file):
+                self.file = file
+
+            def write(self, data):
+                if data == pending_output:
+                    writer_blocked.set()
+                    if not allow_writer.wait(5):
+                        raise RuntimeError("queued writer was not released")
+                result = self.file.write(data)
+                self.file.flush()
+                if data == pending_output:
+                    record("writer.during" if app.lease_active else "writer.before")
+                    writer_written.set()
+                for marker in ("UI-QUEUED-BEFORE", "UI-QUEUED-DURING"):
+                    if marker in data and marker not in ui_receipts:
+                        record(marker + (".restored" if app.restored.is_set() else ".early"))
+                        ui_receipts.add(marker)
+                        if len(ui_receipts) == 2:
+                            ui_written.set()
+                return result
+
+            def flush(self):
+                self.file.flush()
+
+
+        class ObservedWriter(WriterThread):
+            def __init__(self, file):
+                super().__init__(ObservedFile(file))
+
+            def stop(self):
+                if writer_blocked.is_set() and not writer_written.is_set():
+                    # The existing lease worker reacts to this real owner stop,
+                    # or to acquisition if the suspend boundary is removed.
+                    handoff.put("writer.stopping")
+                super().stop()
+
+
+        driver_module.WriterThread = ObservedWriter
 
 
         class LeaseRequest(Message):
             pass
+
+
+        class QueuedUi(Message):
+            def __init__(self, label):
+                super().__init__()
+                self.label = label
 
 
         class ProbeApp(App[None]):
@@ -675,48 +778,83 @@ def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
                 self.restored = threading.Event()
                 self.enter_thread: int | None = None
                 self.exit_thread: int | None = None
+                self.lease_active = False
+                self.failure = None
+                self.lease_worker = None
 
             def compose(self):
-                yield Static("textual-screen")
+                yield Static("textual-screen", id="before")
+                yield Static("textual-screen", id="during")
 
             def on_mount(self) -> None:
-                threading.Thread(target=self._lease_worker, daemon=False).start()
+                self.lease_worker = threading.Thread(target=self._lease_worker, daemon=False)
+                self.lease_worker.start()
 
             def _lease_worker(self) -> None:
-                if not self.post_message(LeaseRequest()):
-                    os._exit(20)
-                if not self.acquired.wait(5):
-                    os._exit(21)
-                os.write(1, b"LEASE-BEGIN")
-                time.sleep(0.25)
-                os.write(1, b"LEASE-END")
-                self.release.set()
-                if not self.restored.wait(5):
-                    os._exit(22)
-                self.call_from_thread(self.exit)
+                try:
+                    assert self.post_message(LeaseRequest())
+                    phase = handoff.get(timeout=5)
+                    if phase == "writer.stopping":
+                        allow_writer.set()
+                    else:
+                        assert phase == "lease.acquired"
+                    assert self.acquired.wait(5), "lease not acquired"
+                    os.write(1, b"\rLEASE-BEGIN")
+                    # With real suspend this write has already drained. Without
+                    # suspend it is released inside the lease, a semantic breach.
+                    allow_writer.set()
+                    assert writer_written.wait(5), "pending output not written"
+                    assert self.post_message(QueuedUi("during"))
+                    os.write(1, b"LEASE-END")
+                    self.release.set()
+                    assert self.restored.wait(5), "lease not restored"
+                    assert ui_written.wait(5), "queued UI output not rendered"
+                except BaseException as error:
+                    self.failure = type(error).__name__
+                finally:
+                    allow_writer.set()
+                    self.release.set()
+                    self.call_from_thread(self.exit)
 
             def on_lease_request(self, _message: LeaseRequest) -> None:
                 self.enter_thread = threading.get_ident()
+                self._driver.write(pending_output)
+                assert writer_blocked.wait(5), "pending writer did not enter"
+                assert self.post_message(QueuedUi("before"))
                 with self.suspend():
+                    self.lease_active = True
                     self.acquired.set()
-                    if not self.release.wait(5):
-                        os._exit(23)
+                    handoff.put("lease.acquired")
+                    try:
+                        assert self.release.wait(5), "lease not released"
+                    finally:
+                        self.lease_active = False
                 self.exit_thread = threading.get_ident()
                 self.restored.set()
 
+            def on_queued_ui(self, message):
+                self.query_one("#" + message.label, Static).update(
+                    "UI-QUEUED-" + message.label.upper()
+                )
+
 
         app = ProbeApp()
-        app.run()
-        print(
-            "RESULT:"
-            + json.dumps(
-                {
-                    "same_ui_thread": app.enter_thread == app.exit_thread,
-                    "restored": app.restored.is_set(),
-                }
-            ),
-            flush=True,
-        )
+        try:
+            app.run()
+        finally:
+            allow_writer.set()
+            app.release.set()
+            if app.lease_worker is not None:
+                app.lease_worker.join(timeout=5)
+                assert not app.lease_worker.is_alive(), "lease worker survived cleanup"
+        with open(PROBE_RECEIPT, "w", encoding="utf-8") as receipt:
+            json.dump({
+                "same_ui_thread": app.enter_thread == app.exit_thread,
+                "restored": app.restored.is_set(),
+                "failure": app.failure,
+                "receipts": receipts,
+            }, receipt)
+        raise SystemExit(app.return_code or 0)
         """
     )
     try:
@@ -725,12 +863,47 @@ def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
         pytest.fail("Textual PTY suspension probe timed out")
     captured = result.output
     assert result.returncode == 0, captured.decode(errors="replace")
+    result_receipts = json.loads(receipt_path.read_text(encoding="utf-8"))
+    # The exact real writer's completed I/O is the semantic boundary evidence.
+    # Keep raw terminal assertions below as an additional native qualifier; a
+    # ConPTY frame is not a lossless log of all writes before restoration.
+    assert "writer.during" not in result_receipts["receipts"], (
+        "Textual writer output crossed active lease"
+    )
     assert b"LEASE-BEGIN" in captured
     assert b"LEASE-END" in captured
     between = captured.split(b"LEASE-BEGIN", 1)[1].split(b"LEASE-END", 1)[0]
-    assert between == b""
-    assert b'"same_ui_thread": true' in captured
-    assert b'"restored": true' in captured
+    assert between == b"", "Textual writer output crossed active lease"
+    assert result_receipts["same_ui_thread"] is True
+    assert result_receipts["restored"] is True
+    assert result_receipts["failure"] is None
+    assert result_receipts["receipts"] == [
+        "writer.before",
+        "UI-QUEUED-BEFORE.restored",
+        "UI-QUEUED-DURING.restored",
+    ]
+
+
+@pytest.mark.parametrize("terminal_markers_visible", (False, True))
+def test_real_pty_lease_probe_rejects_removed_suspend(
+    terminal_markers_visible: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_run = run_terminal_child
+
+    def remove_suspend(source: str, **kwargs: Any) -> Any:
+        assert source.count("with self.suspend():") == 1
+        result = real_run(
+            source.replace("with self.suspend():", "with nullcontext():"), **kwargs
+        )
+        # Even if a rendered frame omits the lease markers, the exact completed
+        # writer I/O must reject the mutant, not fail at a missing-screen marker.
+        return result if terminal_markers_visible else replace(result, output=b"")
+
+    monkeypatch.setitem(globals(), "run_terminal_child", remove_suspend)
+    with pytest.raises(
+        AssertionError, match="Textual writer output crossed active lease"
+    ):
+        _assert_exclusive_real_pty_lease(tmp_path)
 
 
 def test_message_body_decodes_closed_escape_allowlist() -> None:
