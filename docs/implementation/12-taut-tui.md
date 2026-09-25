@@ -553,9 +553,42 @@ including `test_tui_launch.py` and its session-scoped installed-wheel fixture,
 while independent modules run concurrently. The fixed worker count bounds
 SQLite, Textual, and subprocess pressure; `auto` is not permitted. All five
 OS/Python rows, every collected test, and the existing timeout caps remain
-unchanged.
+unchanged per repetition. Dispatch alone may request `windows_repeat=1..5`:
+Windows starts that many fresh full-suite processes sequentially, stopping at
+the first failure. Other platforms and push/PR/reusable calls run once. Each
+Windows invocation retains its 20-minute step cap; the job cap is
+`15 + 20 * repetitions` minutes. This does not enlarge a behavior deadline.
+
+`bin/record_tui_run.py` owns invocation and retained evidence. It writes start
+metadata before pytest, preserves its actual status, and rejects missing final
+results, inconsistent SHA/lock/runtime/counts, or malformed phase evidence.
+Raw JUnit stays outside the uploaded tree; published XML keeps only test
+identity/count/status/duration. Artifacts upload even after failure or timeout.
+Five passing Windows repetitions at one immutable SHA are a bounded acceptance
+sample, not proof of a historical root cause or zero flake probability.
+
+The opt-in test observer in `extensions/taut_tui/tests/_phase_evidence.py`
+records real callback transitions without scheduling work. Exact future/run
+objects map to per-test opaque ordinals; source completion and UI application
+are distinct. It preserves the production confirmation callback and observes
+provider consumption through the existing output reader: the Windows handle
+callback or the POSIX handle's terminal-state callback. The fixture logs input
+before its matched echo. Sequence is log-write order; captured monotonic times
+are the transition evidence. No message body, token, or provider screen is
+exported. Required-phase duplicates, conflicting outcomes, impossible causal
+times, missing phases, and capacity overflow invalidate evidence. Ordinary
+background cancellation/error remains diagnostic. Observer disposal is not
+producer cancellation or proof of source-thread retirement.
+
+The completion-wait migration and native qualification are tracked by the
+active Windows TUI root-cause plan below; this instrumentation alone does not
+resolve S4 or replace its causal gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md` — exact
+  owner completion, split budgets, causal elicitation, native diagnostics and
+  bounded Windows qualification; inherits unresolved S4.
 
 - `docs/plans/2026-09-24-tui-text-selection-and-clipboard-plan.md` — framework
   transcript selection, explicit and timed OSC 52 copy, and display-form

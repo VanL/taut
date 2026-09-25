@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      windows_repeat:
+        description: Full Windows retained-suite repetitions on this SHA
+        type: choice
+        default: "1"
+        options: ["1", "2", "3", "4", "5"]
   workflow_call:
 
 permissions:
@@ -18,7 +24,9 @@ jobs:
   tui-retained:
     name: taut-tui retained (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.job-timeout-minutes }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && github.event_name == 'workflow_dispatch' && fromJSON('{"1":35,"2":55,"3":75,"4":95,"5":115}')[inputs.windows_repeat] || matrix.job-timeout-minutes }}
+    env:
+      TAUT_TUI_REPETITIONS: ${{ matrix.os == 'windows-latest' && github.event_name == 'workflow_dispatch' && inputs.windows_repeat || '1' }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +75,63 @@ jobs:
             extensions/taut_tui/uv.lock
 
       - name: Run taut-tui suite against retained lock
+        if: ${{ runner.os != 'Windows' }}
         timeout-minutes: ${{ matrix.test-timeout-minutes }}
+        shell: bash
         run: |
-          uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -v --tb=short -n 2 --dist loadfile
+          python bin/record_tui_run.py --ordinal 1
+
+      - name: Run Windows taut-tui repetition 1
+        if: ${{ runner.os == 'Windows' }}
+        timeout-minutes: ${{ matrix.test-timeout-minutes }}
+        shell: pwsh
+        run: |
+          python bin/record_tui_run.py --ordinal 1
+          exit $LASTEXITCODE
+
+      - name: Run Windows taut-tui repetition 2
+        if: ${{ success() && runner.os == 'Windows' && env.TAUT_TUI_REPETITIONS >= 2 }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          python bin/record_tui_run.py --ordinal 2
+          exit $LASTEXITCODE
+
+      - name: Run Windows taut-tui repetition 3
+        if: ${{ success() && runner.os == 'Windows' && env.TAUT_TUI_REPETITIONS >= 3 }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          python bin/record_tui_run.py --ordinal 3
+          exit $LASTEXITCODE
+
+      - name: Run Windows taut-tui repetition 4
+        if: ${{ success() && runner.os == 'Windows' && env.TAUT_TUI_REPETITIONS >= 4 }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          python bin/record_tui_run.py --ordinal 4
+          exit $LASTEXITCODE
+
+      - name: Run Windows taut-tui repetition 5
+        if: ${{ success() && runner.os == 'Windows' && env.TAUT_TUI_REPETITIONS >= 5 }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          python bin/record_tui_run.py --ordinal 5
+          exit $LASTEXITCODE
+
+      - name: Verify retained repetition evidence
+        if: ${{ always() }}
+        timeout-minutes: 2
+        shell: bash
+        run: python bin/record_tui_run.py --verify
+
+      - name: Upload retained TUI diagnostics
+        if: ${{ always() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tui-diagnostics-${{ matrix.os }}-py${{ matrix.python-version }}-attempt-${{ github.run_attempt }}
+          path: tui-diagnostics/
+          if-no-files-found: error

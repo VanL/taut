@@ -424,6 +424,13 @@ deadline now supplies remaining budgets throughout. No new blocker found.
   diagnosis, not permission to call a longer/event-based wait the fix.
 - Comprehension answers, red/green commands, slice reviews and final SHA evidence
   are required here during implementation; no implementation completion claimed.
+- 2026-09-25: S4 diagnosis ownership transfers to
+  `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md` on the
+  owner's implementation direction. The successor retrieved the original
+  W5 failure and confirmed that it contains only attempt-count exhaustion,
+  not source/future/application phase evidence. S4 and this predecessor
+  remain open. Transfer does not waive the causal closure/release gate;
+  neither a replacement wait nor a passing soak supplies the missing cause.
 
 ## Fresh-Eyes Check
 

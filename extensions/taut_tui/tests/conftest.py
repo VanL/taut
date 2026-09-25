@@ -2,16 +2,48 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True)
+def _record_tui_phases(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Observe real owner phases only when the hosted recorder opts in."""
+
+    directory = os.environ.get("TAUT_TUI_PHASE_DIR")
+    if not directory:
+        yield
+        return
+
+    from _phase_evidence import PhaseEvidence, install_phase_observers
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    identity = hashlib.sha256(f"{worker}:{request.node.nodeid}".encode()).hexdigest()
+    path = Path(directory) / f"{identity}.jsonl"
+    kind = {
+        "test_direct_message_header_and_composer_use_actor_scoped_label": "navigation",
+        "test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes": "recovery",
+    }.get(request.node.name, "other")
+    evidence = PhaseEvidence(path)
+    try:
+        # Use the test's shared patch stack: later test patches must undo
+        # before these wrappers, or they can restore a disposed observer.
+        install_phase_observers(monkeypatch, evidence, gate_module=request.module)
+        yield
+    finally:
+        evidence.close(test_kind=kind)
 
 
 @pytest.fixture(autouse=True)

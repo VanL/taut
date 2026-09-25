@@ -33,7 +33,7 @@ step 6. Claude and Grok were refreshed through that workflow on this machine;
 the remaining statuses predate the skill's adoption and should be re-derived
 before use.
 
-Last refreshed: 2026-09-22 (Claude reactor implementation reviews; other family statuses unchanged)
+Last refreshed: 2026-09-25 (Claude model-review timeout and Grok sandbox-blocked probes; details below)
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
@@ -42,9 +42,37 @@ Last refreshed: 2026-09-22 (Claude reactor implementation reviews; other family 
 | Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
 | Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |
 | Kimi | present | `/Users/van/.kimi-code/bin/kimi`, version 0.23.5. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
-| Grok | verified usable; review-eligible; completion-signal drift observed | `/Users/van/.local/bin/grok`, version 1.0.3. A Class 5 plan review completed under the OS-enforced read-only sandbox on 2026-08-14 with no sandbox fail-open warning or repository write; focused tests ran and the response contained an explicit `BLOCKED` verdict with source-backed findings. JSON still reported lowercase `end_turn` rather than the `EndTurn` spelling documented by `skills/call-agent/SKILL.md`. Do not treat the lowercase signal alone as a passing gate until the invocation guidance is reconciled; inspect the explicit verdict and select another review-eligible family when a required PASS is unavailable. Write-attempt containment was verified when the skill was adopted. |
+| Grok | blocked in current environment; fresh sandbox probe required | `/Users/van/.local/bin/grok`, now 1.0.41. The 2026-09-25 read-only probes fail closed on the Docker socket symlink; details below. Historical 1.0.3 review/containment passed in August, with lowercase `end_turn` completion-signal drift, but those results do not establish current eligibility. Do not bypass the sandbox or treat the old probe as current approval. |
 
 ## Review Preference
+
+2026-09-25: Claude 2.1.273's Windows TUI slice-1 model review used the
+previously verified safe-mode/plan-mode matched Read/Grep/Glob invocation,
+strict MCP configuration, no session persistence, closed stdin and a
+540-second bound. It timed out (exit 124) with empty stdout/stderr and no
+verdict. This attempt supplies no review gate. The earlier successful
+revision review remains valid; use an independent fallback for this model
+and diagnose the stalled attempt before changing invocation guidance.
+
+Bounded diagnosis found no flag/authentication/containment failure: one
+same-containment file-read probe completed in 4.583 s, success/end_turn,
+terminal_reason=completed, with only Glob/Grep/Read exposed. The failed
+review's cause remains unknown; prior successful reviews exceeded 540 s.
+Final-only JSON cannot distinguish a busy review from a stall. A verified
+diagnostic improvement is `--output-format stream-json --verbose
+--include-partial-messages`, preserving all containment and checking the
+terminal result independently of exit. Save the exact assembled prompt too.
+This is an invocation proposal, not permission to increase caps or blindly
+retry a full review; the model gate used the independent fallback.
+
+2026-09-25: Grok is now 1.0.41 (`4220f3b224a6`). Both bounded liveness
+and write-containment probes refused to start, exit 1: the read-only sandbox
+could not resolve `/var/run/docker.sock` because the endpoint is a symlink.
+The tool **failed closed**, and no probe file appeared. Grok is blocked for
+this environment, not review-eligible on the strength of the old 1.0.3
+probe. Do not bypass the sandbox. Proposed follow-up: repair the sandbox's
+runtime-socket path handling/configuration, then repeat both probes; this
+TUI task does not modify Docker or the global CLI configuration.
 
 2026-09-22: the unchanged Claude 2.1.273 safe-mode/Read-Grep-Glob invocation
 completed core/MCP and Summon implementation reviews in 561 and 583 seconds,
@@ -153,3 +181,13 @@ were checked. Verdict: no blocker. The full response and disposition live in
 `docs/plans/2026-09-19-reactor-restoration-plan.md`, Addendum C. The final executor
 submission rollback also received an independent slice review and real executor
 failure tests after the broad review dispatch.
+
+### Windows TUI determinism plan review probe (2026-09-24)
+
+Claude CLI 2.1.273 passed the bounded read-only probe with safe/plan mode,
+matched Read/Grep/Glob tool sets, strict MCP configuration, closed stdin,
+and no session persistence. It read the TUI spec heading (`PROBE-OK`) and
+reported `WRITE-UNAVAILABLE`; `probe-write-test.txt` was absent. The result
+was success, `is_error=false`, `end_turn`, and `terminal_reason=completed`;
+the reviewer resolved to `claude-opus-4-6`. Review outcome and dispositions
+belong to the Windows TUI determinism root-cause plan's Review Log.

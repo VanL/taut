@@ -22,6 +22,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
 | `bin/render-tui-screens` | Deterministic wide, medium, compact, and too-small TUI SVG regeneration for manual visual review |
+| `bin/record_tui_run.py` | Retained TUI repetition owner: fixed full-suite invocation, truthful child status, safe result/phase artifacts, and exact-SHA/runtime/count consistency checks |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for synchronized current core, Summon, and MCP wheels, exact distribution metadata, live control behavior, incompatible current-core floors, and the current MCP/current-core stdio lifecycle |
 | `bin/build-and-check-release-wheels.py` | Fresh-build owner, or coordinated explicit-current-wheel consumer in canonical CI, that supplies synchronized current core, Summon, and MCP artifacts to the installed-artifact checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
@@ -32,7 +33,7 @@ Quick pointers to the key guidance documents in this repository.
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, deterministic exact-union Windows source-factor shards, and sole canonical release-byte production for all five packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
-| `.github/workflows/test-tui-extension.yml` | Push/PR/reusable retained-lock TUI behavior across its OS/Python factor matrix; required exact-SHA pre-tag evidence and never a release-byte owner |
+| `.github/workflows/test-tui-extension.yml` | Push/PR/reusable retained-lock TUI behavior across its OS/Python matrix; optional bounded Windows dispatch repetitions with retained phase evidence; required exact-SHA pre-tag evidence and never a release-byte owner |
 | `.github/workflows/release-gate.yml` | `v*` observer for `taut-chat`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` observer for `taut-pg`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` observer for `taut-summon`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |

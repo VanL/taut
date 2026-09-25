@@ -2,6 +2,7 @@
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+tui-diagnostics/
 .hypothesis/
 .coverage
 .coverage.*

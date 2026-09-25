@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Retained TUI CI can collect up to five sequential Windows repetitions at
+  one SHA, retaining bounded owner-phase diagnostics and content-free result
+  summaries without changing test behavior deadlines. Missing, conflicting,
+  or incomplete evidence fails qualification; the historical initial-DM cause
+  remains an open diagnosis.
+
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it
   bypasses. The release gate now has a five-minute PyPI visibility retry sleep

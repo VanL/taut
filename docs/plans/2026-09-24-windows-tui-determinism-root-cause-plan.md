@@ -1,7 +1,7 @@
 # Windows TUI Determinism Root-Cause Plan
 
-Status: draft — evidence register assembled from the 2026-09-23 Windows
-streak and the 0.9.9 release; awaiting independent plan review.
+Status: active — implementation authorized 2026-09-25; slice 1 diagnosis
+and instrumentation in progress. S4 remains open.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -10,8 +10,10 @@ ConPTY) and changes the test harness that gates Windows release evidence.
 Hardening applies. No normative spec change is planned; if the deep dive
 finds one is required, the class escalates to 5 with a declared delta.
 
-Plan type: diagnosis (slice 1) then implementation against existing
-contracts (slices 2–3), with a spec-revision escalator.
+Plan type: diagnosis (slice 1), then failing proofs and implementation
+(slice 2), then hosted qualification (slice 3), with a spec-revision
+escalator. The revision review is recorded below; execution evidence is
+appended as each slice runs. Authorization does not claim S4 resolved.
 
 Owner: implementing engineer. Owner direction (2026-09-24): "there should be
 two things to happen: 1. a deep dive into root causes and how they can be
@@ -21,30 +23,36 @@ bugs are closed by designing a test that elicits them and then using CI.
 
 ## Goal
 
-Stop closing Windows TUI failures by iterating on CI. Produce a written
-determinism model for the TUI's timing-sensitive paths (what event completes
-each phase, and how a test observes that event instead of polling), fix the
-product and harness causes the model exposes, and replace attempt-counted
-waits with tests that either subscribe to the completing event or force the
-failure order deterministically. Define, and then meet, a sufficiency
-criterion for "the Windows TUI lane is deterministic".
+Explain the Windows failures with causal evidence, then test the failure
+orders directly. Write down which owner completes each phase and how that
+completion reaches the existing reactor. Queue, PTY, worker, interrupt, and
+deadline inputs feed one scheduling/wake owner per context under [TAUT-8.5];
+this work introduces no separate domain control loop. Tests observe retained
+completion for the exact request and phase. Portable ordering proofs plus
+native Windows tests and a bounded soak form the acceptance gate, not a claim
+that finite passing runs prove all possible executions deterministic.
 
 ## Evidence Register
 
-The register is the input to slice 1; every row is a fact with a source.
+The register is the input to slice 1. Historical observations, diagnoses,
+and hypotheses remain distinct. CI counts and outcomes below are recorded
+claims from the named runs; slice 1 retrieves their logs before relying on
+them, and records unavailable artifacts explicitly. Current-tree checks do
+not independently revalidate the historical hosted runs.
 
 | # | Fact | Source |
 |---|------|--------|
-| E1 | 0.9.9 preparation commit `3993e20` was red on Windows TUI only; seven fix-forward commits over ~3 h (`d7e056a`…`583038e`) made `c894059` green on all five retained jobs; the release helper tagged the green SHA. | `gh run list --workflow test-tui-extension.yml`; tags `v0.9.9`, `taut_tui/v0.9.9` → `c894059` |
-| E2 | The failing test throughout was `test_tui_summon.py::test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes`, timing out at `_await_until(... "post-recovery orientation injection")` (`test_tui_summon.py:2017`, helper at `:1749`); once also `test_tui_action_handlers.py::test_every_action_reaches_a_concrete_handler[search.open-result]`. | run 35917159249 and 35918083458 failed-step logs |
-| E3 | That test drives the real `SummonController.run_foreground` in a thread, a real gate-harness provider (`tests/fixtures/gate_harness.py`) on a real host PTY (`HostTerminal.open()`, `_terminal_probe.py`), and the real `TautApp` with only `suspend()` faked. On Windows the provider side is ConPTY. | `test_tui_summon.py` `_wire_gate_member`, `_gate_app` |
+| E1 | 0.9.9 preparation commit `3993e20` was red on Windows TUI only; seven fix-forward commits (`d7e056a`…`583038e`) reached the first all-five-job green at `583038e`. The release SHA `c894059` was also green and both tags point there. Initial-to-release run creation spanned 1 h 54 m 41 s, not ~3 h. | runs 35917159249, 35927108722, 35928843388; remote tags `v0.9.9`, `taut_tui/v0.9.9` |
+| E2 | The recurring recovery failure initially timed out at post-recovery orientation injection (1 failed/473 passed in 303.64 s); the next run also failed search selection (2 failed/472 passed in 366.99 s). Later failures included gate-menu/lease waits, wiring-run orientation, missing mounted controls, and Ubuntu reply-close focus. They are not one proven cause. | runs 35917159249, 35918083458, 35920877370, 35923841280, 35925072346, 35926016403; verified audit below |
+| E3 | Recovery drives the real controller, provider, host PTY, and app. Narrow harness seams include fake `suspend()`, terminal suitability/fds, and a lease-body thread intercepting `TerminalLeaseRequest` so the headless pilot loop remains live. On Windows the provider is ConPTY. | `test_tui_summon.py` `_wire_gate_member`, `_gate_app`, `_configure_gate_pty`, `_prepare_gate_recovery` |
 | E4 | Product root cause found in the streak: the TUI used `threading.get_ident()` as the terminal-ownership token across Summon's *distinct* confirmation and attachment phase threads; passing runs depended on numeric thread-id reuse. Fixed by an opaque per-run token (`_ScopedTuiSummonInteraction`, `583038e`; [TUI-11] sentence added). | `git show 583038e`; setup-recovery plan "2026-09-23 Release-hardening correction" |
 | E5 | Second product root cause: a stale `OptionList` highlight message from a superseded transcript render could retarget selection after a search jump took ownership (`d7e056a`, `app.py` +7). | `git show d7e056a` |
-| E6 | Harness causes found in the streak: (a) one host-terminal session shared across independent foreground attaches leaked cancelled Windows pipe I/O and unread reset output between runs; (b) provider-output deadlines were charged from process setup and TUI confirmation, not from the recovery generation; (c) the headless harness blocked the same asyncio loop that drives Textual's pilot during the suspension body; (d) confirmation helpers treated screen-object creation as UI readiness instead of waiting for controls to mount; (e) focus tests observed the framework event cycle early. | CHANGELOG entries at `d7e056a`, `c53ddca`, `5fcf32c`, `88a2f40` |
-| E7 | Windows retained job: 477 tests in 258 s vs 138 s on Ubuntu 3.13 (1.9×), both at `-n 2 --dist loadfile`. Owner (2026-09-24): the slowness is endemic to Windows process and filesystem handling, not a defect to fix; it is the reason infrastructure phases need their own scaled budget (slice 2, step 6), never a reason to grow a behavior deadline. | run 35928843388 job logs; owner statement |
-| E8 | Wait shapes in the TUI suite: `_pause_until` is `for _ in range(100): await pilot.pause(0.01)` (attempt-counted, ~1 s nominal, elastic under load); 32 `for _ in range(N)` loops across `test_tui_app.py` (16) and `test_tui_summon.py` (16); 82 bare `pilot.pause()` calls; `_await_until` in `test_tui_summon.py`. The 2026-08-14 lesson rejects fixed-count short pauses as deadlines. | grep; `docs/lessons.md` 2026-08-14 |
-| E9 | S4 (initial DM navigation missing on Windows, W5) never reproduced with phase evidence: 20/20 locally, green in every hosted Windows run since `6326905`; the original wait was an attempt-counted loop at the then `test_tui_app.py:2162`; macOS oversubscription runs measured navigation apply at 40 ms median, 280 ms max. | Windows plan Execution Log; review artifact §5 (TUI) |
-| E10 | The Windows lane runs `-n 2 --dist loadfile`: tests in one file share a worker, so the two largest, most timing-sensitive files serialize behind each other while the other worker idles or contends. | `.github/workflows/test-tui-extension.yml:72` |
+| E6 | Verified harness corrections with unequal causal evidence: (a) separate host sessions remove a possible cancelled-I/O/reset-output leak, but no historical native trace proves it occurred; (b) deadline origin moved first to recovery generation, then to lease acquisition, without retained phase durations; (c) a headless lease-body thread removes a real pilot-loop blocking mechanism; (d/e) missing controls/OutOfBounds and premature focus are directly observed. The code changes are facts; not every proposed mechanism is a confirmed cause of the historical timeout. | `d7e056a`, `c53ddca`, `d41242a`, `5fcf32c`, `88a2f40`; retrieved logs in the verified audit |
+| E7 | Windows retained job: 477 tests in 258 s vs 138 s on Ubuntu 3.13 (1.9×), both at `-n 2 --dist loadfile`. Owner (2026-09-24): Windows process/filesystem cost calls for a separate infrastructure budget, not a larger behavior deadline. Whole-suite duration is not a per-phase scaling measurement. | run 35928843388 job logs; owner statement |
+| E8 | Historical inventory: fixed-attempt `_pause_until`, 32 counted loops across the app/Summon test modules, and 82 bare pilot pauses. These are search leads, not a current count or proof that every loop is a wait. Commit `e05c813` replaced the app helper with `_eventually` (5 s elapsed deadline), retaining `_pause_until` as an alias. Re-inventory the implementation SHA; distinguish input actions, causal drains, and liveness polling. | participation-loop commit `e05c813`; `test_tui_app.py`; 2026-08-14 lesson |
+| E9 | S4's original run at `3e45409` failed the first DM-entry attempt-counted wait with no source/future/apply evidence. Follow-up `6326905` passed 462 tests on all five jobs; 20/20 local and macOS oversubscription are recorded. No subsequent S4 failure was found in the audited runs. The previously quoted 40 ms/280 ms timings have no located raw source and are withdrawn. Cause remains unresolved. | runs 35145237393, 35162150661; predecessor Execution Log; review artifact §5 (TUI) |
+| E10 | The Windows lane runs `-n 2 --dist loadfile`: each file stays on one worker, but different files can run concurrently. Imbalance and contention require measurement; they do not follow merely from two large files. Keep this scheduler fixed during diagnosis and acceptance. | `.github/workflows/test-tui-extension.yml`, retained-suite step |
+| E11 | The current S4 test observes the real navigation apply callback, retains the future result/error and rendered targets, then asserts the DM is present. The terminal-owner test holds the confirmation thread alive while a distinct lease thread runs. Both are existing proof to preserve. | `test_direct_message_header_and_composer_use_actor_scoped_label`; `test_terminal_lease_ownership_survives_distinct_driver_phase_threads` |
 
 ## Requested Outcomes
 
@@ -53,25 +61,29 @@ The register is the input to slice 1; every row is a fact with a source.
   recovery offer, orientation injection, navigation apply, transcript
   render, search jump, focus transition, resize), the event that completes
   it, who publishes it, and how a test observes it.
-- [ ] Every root cause in E4–E6 and any new one found in slice 1 has a
-  forced-order elicitation test that fails deterministically without its
-  fix, on every platform, and passes with it.
-- [ ] No attempt-counted wait remains in the TUI suite; waits subscribe to
-  the completing event under one deadline helper, with infrastructure
-  phases (process spawn, ConPTY setup) budgeted separately from the
-  behavior under test.
-- [ ] A stated sufficiency criterion for the Windows lane, met on hosted CI:
-  the elicitation tests plus `K` consecutive green Windows runs of the
-  retained lane (owner sets `K`; proposed 5) with the phase tripwire
-  retained, and a `workflow_dispatch` input that repeats the Windows lane
-  `N` times for soak.
+- [ ] Every confirmed root-cause class has a firing test and a failing
+  mutation of the specific fix. Portable ownership/ordering proofs run on
+  all retained platforms; Windows I/O and ConPTY proof runs natively on
+  Windows. Unconfirmed hypotheses stay labeled as such.
+- [ ] No attempt-counted liveness wait remains in the TUI suite. Tests use
+  one TUI completion-observation interface over actual owner events, with
+  infrastructure and behavior budgets separated. Legitimate finite action
+  sequences and source adapters are classified, not mechanically rewritten.
+- [ ] Five consecutive full Windows retained-suite repetitions on one
+  immutable SHA, with two workers and `loadfile`, pass the acceptance gate.
+  The new dispatch input controls repetitions within one Windows job;
+  phase evidence is retained for every repetition.
 - [ ] S4 of `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md`
-  is inherited here and closed by elicitation, not by recurrence.
+  is inherited here as an open diagnosis. Close it only by causal
+  reproduction and correction, or an explicit owner acceptance of the
+  unresolved cause; the latter is not a root-cause claim.
 
 ## Source Documents
 
 Source specs:
 
+- `docs/specs/02-taut-core.md` [TAUT-8.5] (one scheduling/wake owner,
+  state-before-wake, source adapters, deadlines, and nested contexts)
 - `docs/specs/10-taut-tui.md` [TUI-4.1] (process model), [TUI-6.1]–[TUI-6.2]
   (opening and live delivery), [TUI-9.3] (resize processing), [TUI-11.1]–
   [TUI-11.3] (Summon availability, driver ownership, terminal handoff),
@@ -87,26 +99,39 @@ Supporting context:
   S4 and its gate; its Execution Log hosted-qualification entries.
 - `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` (active): the
   2026-09-23 correction section (E4).
-- `docs/plans/2026-09-24-tui-participation-loop-plan.md` (draft): owns the
-  tail-pin viewport extraction; cites this plan for S4 elicitation.
+- `docs/plans/2026-09-24-tui-participation-loop-plan.md` (completed at
+  `e05c813`): owns the viewport extraction and elapsed-deadline app helper;
+  this plan preserves its tests and generation ownership.
 - `2026-08-11-eventually-test-helper-adoption-plan` (retired plan; source `434db87`)
   (completed): `tests.helpers.eventually` and `async_eventually`; the
   TUI's `_pause_until` predates or bypassed that adoption.
-- `docs/lessons.md`: 2026-08-14 (fixed-count pauses are not deadlines),
-  2026-08-18 (one outer timeout must not be both infrastructure budget and
-  behavior oracle; scale only the containment cap), 2026-09-16 (published
-  state is not completion evidence for the next phase; tests wait for the
-  exact owner and outcome), 2026-09-15 (platform markers and native
-  surfaces).
+- `docs/program-theory.md` [THEORY-3], [REV-THEORY-002]: one wake path for
+  every event kind. None of [THEORY-5]'s rejected alternatives is reopened.
+- `docs/lessons.md`: Golden Rules; 2026-08-14 entries on committed UI
+  focus/result application and misattributed aggregate timeouts; 2026-08-17
+  native host routing; 2026-09-03 narrow clock seams; 2026-09-22 completion
+  versus applied owner policy and duplicate observation.
 - `docs/agent-context/runbooks/testing-patterns.md` Patterns 4, 7, 8.
+- `docs/agent-context/README.md`, `decision-hierarchy.md`, `principles.md`,
+  `engineering-principles.md`, `runbooks/writing-plans.md`,
+  `runbooks/hardening-plans.md`, `runbooks/review-loops-and-agent-bootstrap.md`;
+  `docs/implementation/12-taut-tui.md` and `03-agent-inventory.md`.
 - `docs/plans/artifacts/2026-09-23-deep-dive-review.md` §5 (TUI).
+- Slice-1 audits: `docs/plans/artifacts/2026-09-25-windows-tui-evidence.md`,
+  `docs/plans/artifacts/2026-09-25-tui-completion-seams.md`, and
+  `docs/plans/artifacts/2026-09-25-tui-wait-inventory.md`.
 
 ## Spec Baseline
 
-- `c894059` (0.9.9 release SHA) — `docs/specs/10-taut-tui.md` and
-  `docs/specs/04-summon.md` at plan authoring time. No delta is proposed;
-  if slice 1 finds a contract gap, add `## Proposed Spec Delta` and
-  re-classify to 5 before slice 2.
+- Historical evidence baseline: `c894059` (0.9.9 release SHA).
+- Revision baseline: `33205d797814da07071bbe27d2336a057e233b8c` for the
+  core, Summon, TUI, and operating-model specs named above. Record the
+  implementation start SHA and reconcile intervening changes before slice 1.
+- No normative spec change is proposed. A TUI-local completion helper does
+  not change [DOM-10.3]'s predicate-polling API. If diagnosis requires a
+  product contract change or a repository-wide helper/process revision,
+  stop that dependent slice, declare Class 5 (and +P where applicable),
+  review an exact delta, and promote it before implementation.
 
 ## Context and Key Files
 
@@ -117,72 +142,108 @@ Files to read first (current structure):
   `TerminalAttachConfirmationRequest`; the coordinator that permits exactly
   one acknowledgement or lease.
 - `extensions/taut_tui/taut_tui/app.py` — `_apply_delivery`,
-  `_apply_navigation_result`, `_watch_future`, the OptionList highlight
-  handler changed in E5, `_declare_user_viewport_intent`.
+  `_apply_navigation_result`, `_watch_future`, transcript selection and
+  search restoration. Read `viewport.py` before changing generation handling;
+  E5's historical OptionList fix may have a different adapter after later work.
 - `extensions/taut_tui/taut_tui/session.py` — `refresh_navigation` and the
   serialized public-client worker (the S4 production path; edit only on
   causal evidence).
 - `tests/helpers/terminal_probe.py` — `HostTerminal`,
   `run_terminal_child`; `extensions/taut_summon/tests/fixtures/gate_harness.py`.
 - `extensions/taut_tui/tests/test_tui_summon.py` — `_await_until`,
-  `_wire_gate_member`, `_gate_app`, the recovery test; `tests/test_tui_app.py`
-  — `_pause_until` (line ~27), the DM-navigation test.
+  `_wire_gate_member`, `_gate_app`, `_GateAnswerer`, the recovery test, and
+  the existing distinct-phase-thread regression; `test_tui_app.py` —
+  `_eventually`/`_pause_until` and the observed DM-navigation apply callback.
 - `extensions/taut_summon/taut_summon/_driver.py` — `_after_owner_settle`
   (setup-recovery decision, `awaiting_onboarding`, orientation injection);
   `extensions/taut_summon/taut_summon/_pty_windows.py` — `_AttachSession`,
   chunk queue, cancellation.
 - `.github/workflows/test-tui-extension.yml` — matrix and `-n 2 --dist
-  loadfile`.
+  loadfile`; it has no `windows_repeat` input yet.
+- `tests/helpers/eventually.py` and its [DOM-10.3] contract — read for
+  deadline/failure semantics, not as authority to add another polling owner.
+- Planned new files: `extensions/taut_tui/tests/_completion.py` (thin
+  TUI test completion observer) and `test_tui_determinism.py` beside it.
+  The gate fixture's `_chat_loop` already logs each input before emitting
+  its `echo:` output. Prefer that acknowledgement via the existing adapter's
+  output callback (`WindowsPtyHandle._observe_output`, or the POSIX handle's
+  existing terminal-state `observe_output`); account for chunks and bind it to
+  the exact run/marker. Extend the fixture only if that existing proof is
+  insufficient. Keep the log assertions. No new product event bus is planned.
 
 Comprehension gate (answers in the Execution Log before slice 2):
 
-1. **Why did thread-id reuse only fail on Windows?** Expected: numeric
-   thread identifiers are recycled by the OS/interpreter; Summon's
-   confirmation and attachment phases run on distinct threads whose
-   lifetimes and reuse patterns differ by platform scheduler, so equality
-   of `get_ident()` across phases was a coincidence that held on POSIX
-   runners and not on Windows.
+1. **Which identifier ordering exposes the old ownership bug?** Expected:
+   distinct confirmation and lease identities in one logical run. Reuse
+   masked the bug. Keep the first thread alive while the second runs; do
+   not churn threads hoping to reproduce a platform's reuse schedule.
 2. **What is the difference between "the screen object exists" and "the
    control is mounted", and which one may a test press?** Expected:
    Textual creates widget objects before the mount/compose cycle
    completes; input posted before mount is dropped or misrouted; a test
-   may act only after the mount message the control itself emits.
+   may act only after the actual mount and required focus are observed.
 3. **Why must an infrastructure phase and a behavior phase have separate
-   budgets?** Expected: 2026-08-18 lesson — a single aggregate cap
+   budgets?** Expected: a single aggregate cap
    expiring identifies the work in progress but does not prove that phase
-   consumed it; Windows process and ConPTY setup is slower by a known
-   factor, and charging it against the behavior deadline makes a fast
-   behavior look slow.
+   consumed it; Windows process and ConPTY setup has platform-dependent
+   cost, and charging it against the behavior deadline makes a fast
+   behavior look slow. Delay after the behavior-start event still consumes
+   the behavior budget and must fail when that budget expires.
+4. **Does unified event observation allow a second control loop?** Expected:
+   no. Source adapters publish results and wake the existing owner; tests
+   subscribe to the exact owner's completion. A worker result is not UI
+   application, a wake is not completion, and a message type is not a
+   request identity. Production Textual intentionally pauses during a lease;
+   confirmation completes before acquisition. Only the headless suspension
+   body uses the existing test-owned thread seam.
+
+Incorrect answers block implementation until the named contract is reread.
 
 ## Invariants and Constraints
 
-- No test asserts timing by elapsed time; non-occurrence is proven by
-  waiting for the causally later event, then asserting over retained state
-  (Pattern 4).
-- One wait helper: extend `tests.helpers.eventually.async_eventually` (or a
-  thin TUI adapter over it, per the adoption plan's rules) with an
-  event-subscription form (a Textual message or a future) plus a deadline;
-  `_pause_until` and `_await_until` are retired, not duplicated.
+- One scheduling owner and one wake arbiter per context under [TAUT-8.5].
+  Source adapters publish authoritative state before waking that owner.
+  Clock work uses its owned deadline. No timer, test helper, or worker may
+  independently poll or advance the same domain state. Textual and the
+  broker owner may compose through published completions; neither starts
+  another observer of the other's broker state.
+- Positive assertions follow exact completion. Negative assertions follow
+  a causal/terminal fence and inspect retained state. Elapsed time is a
+  containment bound, never evidence of non-occurrence. Tests of the
+  deadline helper itself may use a narrow controlled clock.
+- One TUI test interface observes completion, as specified below.
+  `_pause_until` and `_await_until` liveness adapters are retired after
+  their callers are classified. Native reads, cancellation, and joins stay
+  with the existing source/resource owner and publish into that interface;
+  this is not permission for separate domain control loops.
 - Real boundaries stay real ([TUI-13.1]): real `TautApp`, real SQLite, real
-  Summon controller, real provider process, real host PTY. The only fake
-  is Textual's headless-unsupported `suspend()`.
-- Product changes are made only on causal evidence from an elicitation
-  test that fails without them; "the wait was too short" is a harness
-  cause and is fixed in the harness.
+  Summon controller, real provider process, real host PTY for acceptance
+  flows. The existing headless suspend/thread and fd adapters remain narrow
+  harness seams. Pure deadline and completion-record tests need no provider.
+  Test observers wrap real callbacks without replacing their implementation.
+- Product changes require causal evidence from a test failing without
+  them. A missed deadline alone identifies neither product nor harness
+  responsibility. Demonstrate where setup was charged or which owner failed
+  before selecting a fix; preserve unknowns as unknowns.
 - Windows lane parallelism (`-n 2`) and every existing assertion are
   preserved; budgets may be restructured (infrastructure vs behavior) but
   no behavior deadline grows.
 - No new dependency.
 - The setup-recovery plan's E4 correction and its firing test are not
   reopened; they are the model's first worked example.
+- The retained lane remains `-n 2 --dist loadfile`. Scheduler tuning is
+  outside this plan so qualification preserves the incident's concurrency.
 
 Hidden couplings:
 
 - Summon's driver phases (`settle`, `orientation`, recovery offer) publish
   to the TUI through `TerminalAttachNotice`/`TerminalLeaseRequest`; the
-  test's "orientation injection" oracle reads the gate harness log, which
-  is a file the provider writes, so its readiness is a filesystem event on
-  a ConPTY-hosted process, not a Textual message.
+  test's orientation oracle reads a provider-written log. A file write is
+  not automatically a subscribable event. Observe a fixture acknowledgement
+  emitted after provider consumption/logging through the existing PTY
+  adapter/owner, then inspect the log once. Do not add a filesystem polling
+  thread or a second reader of the product's PTY. Slice 1 must identify the
+  exact callback and prove that acknowledgement cannot precede consumption.
 - `loadfile` distribution makes the two heaviest files each a single
   worker's serial run; per-test budgets are therefore paid under
   contention from the other worker's process spawns.
@@ -190,138 +251,299 @@ Hidden couplings:
   result; a fix that changes result application ordering affects the
   tail-pin work in the participation plan.
 
-Failure policy: a determinism defect found in product code is a P1 for
-this plan and blocks its completion; a harness-only cause is fixed and
-recorded but does not change product contracts.
+Failure policy: a confirmed product defect blocks completion. A harness
+cause is corrected and recorded without reclassifying it as product behavior.
+Timeout diagnostics include the last completed phase and the unfinished
+owner, but do not assert that the sampled owner caused the timeout.
+
+## Completion Observation Contract
+
+Owner: `extensions/taut_tui/tests/_completion.py` (new), used by TUI tests.
+Boundary: observing real owner transitions, not scheduling product work or
+adding a production event bus. Reuse existing result callbacks, Textual
+mount/focus/application events, and retained futures. Add a test subclass or
+callback observer before adding a production publication. A required product
+publication needs a failing causal proof and review first.
+
+The interface accepts a retained completion handle plus an absolute
+monotonic deadline and a description. Its identity is the owning operation,
+request/generation, and phase. A bare message class cannot identify it.
+
+1. Register observation before triggering the action. Terminal outcomes are
+   retained, so completion before the await is not lost. For an existing
+   operation, use its retained result or an atomic observe/register seam;
+   a non-atomic check-then-subscribe sequence is forbidden.
+   The existing DM-navigation test's subclass override, installed before
+   `run_test` initiates navigation and observing after the real apply call,
+   is a conforming pre-registration pattern. The helper must accept that
+   pattern; wrapping a callback after an operation started is not equivalent.
+2. Source callbacks publish immutable outcomes through the owning loop's
+   thread-safe entry point. Success, failure, cancellation, and supersession
+   are explicit terminal outcomes; stale generations cannot satisfy a newer
+   request. A wake alone is never success.
+3. Observe the phase named by the assertion: navigation after real apply,
+   usable controls after mount/focus, provider input after consumption,
+   and resource retirement after join/close. Raw worker completion proves
+   only the worker phase. Tests still assert final visible/domain state.
+4. Await cooperatively on the existing event loop. Use the remaining deadline
+   without resetting it on intermediate messages. At expiry inspect the
+   retained outcome once before reporting a timeout. Accept only an outcome
+   published at or before that deadline in the same monotonic clock domain:
+   delayed wake delivery does not erase timely completion, but late publication
+   cannot turn expiry into success. Producer exceptions
+   and cancellation remain visible rather than becoming timeout failures.
+5. Timeout/cancellation detaches the observer and cancels only helper-owned
+   waiter tasks, not the shared producer future. Test teardown explicitly
+   requests stop and waits for the producer/adapter's own retirement under
+   a cleanup cap. Late callbacks after observer disposal do no work.
+6. Keep records local to the test/run and release them on teardown. No
+   process-global registry or unbounded completion history. The helper does
+   not consume broker/PTY records, call `process_once`, retry actions, or
+   introduce its own polling schedule.
+
+Firing tests cover completion before/during await, wrong generation,
+success/error/cancel/supersede, exact deadline expiry, observer disposal,
+and preservation of the producer on observer timeout. Scheduling barriers
+and narrow helper-owned clock seams make these deterministic; do not patch
+the shared `time` or `threading` modules.
+
+Adapters publish actual transitions once, not every call to an idempotent
+producer. Repeated/competing confirmation `resolve`/`fail` calls retain the
+first decision while preserving every real call and the production callback.
+Test both repeated and competing calls. Screen result delivery and screen
+retirement are separate observations: use the result callback for application,
+and the real cancellation-shielded removal completion for unmount assertions.
+
+## Budget and Hosted Acceptance Contract
+
+Each inventory row records existing timeout semantics, infrastructure-start
+and infrastructure-ready events, behavior-start and behavior-complete events,
+and teardown/retirement. Behavior starts at the actual user action or owner
+handoff being tested, not when the test happens to await it. A product promise
+covering end-to-end startup may not move its start past that startup.
+
+Keep existing explicit behavior limits, including the app helper's 5 s
+baseline after `e05c813`. An attempt count was never a fixed elapsed bound;
+record that ambiguity and justify the proposed bound in the model before
+conversion. Do not silently replace all waits with a larger default.
+Infrastructure and cleanup have separately named containment caps. Locate
+the applicable repository CI scaling seam; if no TUI factor exists, record
+that fact and review explicit measured caps rather than inventing a factor
+or using the whole-suite 1.9× ratio. No behavior limit grows in this plan.
+
+For budget proof, hold setup behind a barrier, then release it within its
+infrastructure cap and require behavior within its unchanged limit. A paired
+case withholds behavior completion after behavior starts and must time out.
+Check the deadline arithmetic with a controlled helper clock; integration
+barriers control ordering rather than sleeping to manufacture a race.
+Measured latency and p95 are diagnostic evidence, not automatic root-cause
+classification; retain sample count and raw phase durations.
+
+Qualification uses **N = 5 repetitions in one Windows job on one commit
+SHA**. There is no second K multiplier or count of workflow invocations.
+The planned `workflow_dispatch` input `windows_repeat` accepts integers 1–5,
+defaults to 1, and applies only to Windows; push, pull-request, and
+workflow-call behavior remains one run per matrix entry. Each repetition
+starts a fresh pytest process with the retained lock, `-n 2 --dist loadfile`,
+the full suite, and phase recording. Run repetitions sequentially, preserve
+each exit code, and fail the job on any failure, timeout, or missing result.
+Do not retry or select a green subset inside the job.
+
+Keep each repetition's existing 20-minute containment cap and bound the job
+by `15 + 20 * N` minutes (35 for the ordinary one-run lane). Use five
+conditional Windows invocation steps, each with `timeout-minutes: 20`;
+steps two through five run only when requested and prior steps succeeded.
+The existing first invocation and non-Windows caps remain unchanged. Do not
+put all repetitions in one 20-minute step or substitute a pytest-internal
+timeout for the Actions-step containment. Propagate native command failures
+explicitly on PowerShell and cover invalid inputs, early failure, and timeout
+without weakening test deadlines. Collect artifacts in an `always()` step.
+
+Always upload per-repetition results and bounded phase records, including on
+failure: SHA, workflow/run attempt, OS/Python/lock identity, ordinal, test
+count/skips, exit code, durations, and request/generation/phase outcomes.
+No message bodies, credentials, or provider screen content are needed. Define
+the phase tripwire in slice 1: missing/duplicate terminal outcome, wrong
+generation accepted, or phase ownership/order violation. Normal phase logs
+are not tripwire failures. A passing job needs five full successes with no
+tripwire violation and no unexplained test/skip reduction, plus green retained
+non-Windows jobs at that SHA. A source, fixture, lock, or workflow change
+requires a new complete five-run qualification at its new SHA.
+
+This is a finite acceptance sample combined with causal regression proof.
+It neither proves zero flake probability nor supplies the missing S4 cause.
 
 ## Rollout, Rollback, and One-Way Doors
 
 - Harness changes and product fixes land in separate commits so a product
   fix can be reverted alone. No storage or wire change; no one-way door.
-- Post-deploy signal: `K` consecutive green hosted Windows runs with the
-  soak input at `N ≥ 3`, and no tripwire output in any of them.
+- Post-deploy signal: the fixed-SHA five-repetition qualification above and
+  no recurrence in ordinary retained-lane runs. A later recurrence reopens
+  the corresponding diagnosis with its retained phase evidence.
 
 ## Dependency-Ordered Slices
 
 ### Slice 1 — Root-cause deep dive (diagnosis only, no product edits)
 
-1. **Inventory every timing-sensitive wait.** Script over
-   `extensions/taut_tui/tests/*.py`: list each `_pause_until`,
-   `_await_until`, `for _ in range(N)` loop, and bare `pilot.pause()` that
-   precedes an assertion; for each record the predicate, the phase it
-   awaits, and the event that actually completes that phase (Textual
-   message, worker future, driver notice, PTY byte, file write). Output: a
-   table in this plan's Execution Log and a `## Determinism model` section
-   drafted for `docs/implementation/12-taut-tui.md`.
-2. **Classify the streak.** For E4–E6 and S4, state the hypothesis class:
-   (a) ownership keyed by a recyclable identifier; (b) production handler
-   blocking the loop that drives the pilot; (c) attempt-counted wait under
-   a 1.9× slower runner; (d) deadline charged from the wrong start; (e)
-   readiness inferred from object creation rather than mount; (f)
-   cross-run leakage of cancelled Windows overlapped I/O; (g) framework
-   message ordering after supersession; (h) ConPTY-specific delivery. Each
-   class gets one sentence on how it is made deterministic (event
-   subscription, opaque tokens, per-run resources, split budgets) and
-   which existing lesson already names it.
-3. **Measure on Windows CI once, with instrumentation, not sleeps.** Add a
-   `workflow_dispatch` input to the TUI workflow that runs the Windows
-   retained lane with `--durations=40` and the phase tripwire enabled, and
-   repeats it `N` times. Record per-phase timings for the recovery test and
-   the DM-navigation test; compute the infrastructure/behavior split.
-   Stop gate: if any phase's p95 on Windows exceeds its behavior budget
-   even with setup excluded, that phase is a product finding, not a
-   harness one.
-4. **Deliverable check.** The deep dive is complete when every wait in the
-   inventory has a named completing event or an explicit "no event exists;
-   production must publish one" row. Independent review of the model
-   before slice 2.
+1. **Revalidate evidence and inventory waits.** Retrieve the cited CI logs
+   and inspect E4–E6's commits. Record the start SHA. Search all TUI test
+   modules for `_eventually`, `_pause_until`, `_await_until`, other polling
+   helpers, counted loops, and pilot pauses. Inspect their callers, not
+   just matching lines. For each liveness wait record test, phase, owner,
+   request/generation, completing event, current budget, proposed observation
+   hook, and teardown. Classify finite input sequences and intentional causal
+   drains separately. Missing historical logs stay an evidence limitation.
+2. **Write the determinism model.** Draft `## Determinism model` for
+   `docs/implementation/12-taut-tui.md` in this plan's Execution Log.
+   Map every requested phase and root-cause class in the matrix below to
+   its existing scheduling owner, source adapter, retained completion, and
+   test seam. For missing observation, first use a callback observer or
+   fixture acknowledgement; propose production publication only if those
+   cannot prove the real phase. Class (b) is a headless harness mismatch,
+   not a requirement that production process UI messages during suspension.
+   No existing event source receives a second polling observer.
+3. **Measure native phases.** Add the bounded dispatch input and result
+   capture described above. Instrument the recovery and S4 tests at actual
+   request, worker, apply, acquisition, consumption, and retirement hooks.
+   `--durations=40` supplies test-level context only; it does not measure
+   phases. Run a diagnostic Windows repetition with retained concurrency;
+   report raw durations and sample count before any percentile. A deadline
+   miss stops dependent fixes for causal classification, not automatic
+   attribution to product code. Workflow and instrumentation changes get
+   focused failure-path checks before dispatch; this slice has no product
+   behavior edits.
+4. **Review the model.** Every inventory row must have an existing
+   completion hook, a concrete fixture/test observation change, or a
+   justified proposed product publication with a named failing proof.
+   An unobservable phase remains a blocker to its conversion. Independently
+   review ownership, budgets, observer lifetime, native proof, and the
+   evidence limitations before slice 2.
 
 ### Slice 2 — Make things deterministic
 
-5. **One event-based wait.** Extend the [DOM-10.3] helper with
-   `await_event(message_type | future, *, deadline, description)` (or the
-   adopter's thin TUI adapter) and convert every inventory row to it; where
-   the row says "no event exists", add the publication in production (a
-   Textual message posted after mount/apply, or a future resolved after
-   the phase's owner finishes) — that is a product change and needs its
-   own elicitation test (slice 3) first.
-6. **Split budgets.** Infrastructure phases (process spawn, ConPTY
-   attach, gate-harness startup) get a containment cap scaled by the
-   repository's CI factor; behavior phases keep unscaled deadlines
-   (2026-08-18 lesson). Record both per test.
-7. **Per-run resources.** Verify structurally (a fixture assertion, not a
-   comment) that each foreground attach in a test owns its own
-   `HostTerminal`, log directory, and gate-harness process, and that the
-   headless suspension body runs on its own checked thread.
-8. **Distribution.** Evaluate `--dist loadgroup` with `xdist_group`
-   markers for the process-spawning tests instead of `loadfile`, keeping
-   `-n 2`; adopt only if the soak in slice 3 shows lower p95 with no new
-   failures.
+5. **Build the observation seam test-first.** Add `_completion.py` and its
+   firing cases in `test_tui_determinism.py` under the contract above. Keep
+   [DOM-10.3]'s shared polling helper unchanged. Prove early completion,
+   stale identity, failure, expiry, and disposal before converting callers.
+   Stop if the helper begins driving operations or requires a second loop.
+6. **Elicit, then correct, one class at a time.** Use the matrix below.
+   Existing fixes receive a narrow mutation proof in a scratch checkout;
+   newly discovered defects receive a failing test before their fix.
+   Record the exact causal assertion, mutant/fix hunk, platform, and result.
+   An import failure or missing symbol after a historical revert is not a
+   valid red. Keep production fixes and harness changes independently
+   reviewable; run the closest neighboring tests after each slice.
+7. **Convert observations and split budgets.** Follow the reviewed inventory
+   using exact completion handles. Retain final state assertions and real
+   dependencies. Verify setup-delay success and behavior-delay failure,
+   independent host terminals/log directories/providers per foreground
+   run, and observer/adapter retirement on success, error, cancellation,
+   and timeout. Remove retired liveness helpers only after their callers
+   are accounted for. Re-scan the inventory and record any remaining loop's
+   purpose and owner; absence of a helper name alone is not completion.
+8. **Review the implementation.** Review each meaningful class and the
+   integrated diff, especially source-adapter ownership and the deliberate
+   production suspension versus the headless test seam. Keep two workers
+   and `loadfile`; no scheduler comparison is required for closure.
 
-### Slice 3 — Tests that would be enough
+### Required Elicitation Matrix (executed in slice 2)
 
-9. **Elicitation test per root-cause class**, each failing deterministically
-   on every platform without its fix:
-   - (a) ownership by recyclable id: run the confirmation phase on a thread
-     that exits, start the attachment phase on a new thread, and force
-     `get_ident()` collision by draining thread creation until an ident is
-     reused (or monkeypatch the identity source in a scratch copy for the
-     red run); assert the scoped token still admits exactly one owner.
-   - (b) loop blocking: hold the pilot's loop in the suspension body and
-     assert the confirmation message still completes on its own owner.
-   - (c)/(d) budgets: inject a delay at the real navigation and orientation
-     boundaries longer than the old attempt budget; assert the behavior
-     deadline still passes because setup is excluded.
-   - (e) readiness vs mount: complete the worker future before and after
-     the control mounts; assert the pre-mount case is rejected without a
-     hang and the post-mount case renders.
-   - (g) stale highlight: post a superseded render's highlight after a
-     search jump; assert selection is retained.
-   - S4 candidates (from the Windows plan's classification list): missing
-     source DM, missing callback, stale-result rejection, widget
-     application — one forced-order test each; if all pass forced-order,
-     S4 closes with the cause classified as the harness budget the rewrite
-     replaced; if one fails, that is S4's causal reproduction.
-10. **Soak as the gate.** Run the Windows retained lane `N = 5` times via
-    the dispatch input from step 3 with the tripwire on; the sufficiency
-    criterion is `K = 5` consecutive green runs with no tripwire output.
-    Record run ids in the Execution Log.
-11. **Close S4.** Append the outcome to the Windows plan's Execution Log
-    (append-only) and its index row; this plan inherits and closes S4.
-12. **Docs, CHANGELOG, completed-work review, index flip.** Promote the
-    determinism model into `docs/implementation/12-taut-tui.md`; add a
-    lesson only if slice 1 finds a class not already in the ledger.
+These are test obligations, not a declaration that every hypothesis is an
+observed defect. Reuse an existing firing test when it already proves the row.
+
+| Class / evidence | Forced ordering and observable assertion | Red mutation / platform |
+|---|---|---|
+| (a) Run ownership, E4 | Preserve the existing test keeping the confirmation thread alive while a different lease thread acts for the same run. Acquisition succeeds; a different run is excluded; release retires the scope. | Replace the scoped run authority with thread-derived authority at the same live seam. The legitimate later phase fails. Portable; never wait for identifier reuse. |
+| (b) Headless loop blocking, E6(c) | Confirmation resolves before acquisition. Hold/release the real lease via the existing headless lease-body thread; the pilot can await acquisition, release, and restoration, and the test joins that thread. Native terminal proof retains production's intentional UI pause. | Restore delivery of the blocking headless lease body onto the pilot loop. Run this red case in a child test process with a parent watchdog and owned teardown so the verifier cannot hang. Before entering the blocking state, flush bounded phase records to a test-owned file; the parent reads them even after terminating the child. Portable harness proof. |
+| (c) Attempt-counted liveness, E8 | Gate the real result/application order with a barrier while forcing the old observer's finite attempts to exhaust; then publish completion within the explicit behavior limit. The new observer still receives and verifies it. | Restore the old attempt-bound observer; require its specific early failure. Control yields at the test seam, not global time. This proves a harness defect class, not the historical S4 cause. Portable. |
+| (d) Wrong deadline origin, E6(b) | Hold process/bootstrap setup before its ready event. After setup release, orientation/navigation completes within the unchanged behavior interval; separately withhold behavior completion after its start and require timeout. | Charge the behavior deadline from setup start, or reset it on progress. Controlled-clock helper tests and real-boundary integration barriers; portable. |
+| (e) Mount/focus readiness, E6(d/e) | Delay the actual control mount/focus transition while the screen object already exists. The test input waits for that control's committed readiness, then reaches its real handler. Also close/supersede the screen before readiness and require cancellation with no late input. | Restore object-existence-only readiness; prove input occurs before the held readiness fence or misses the intended handler. Do not invent a product requirement to reject pre-mount worker results. Portable. |
+| (f) Cross-run Windows I/O leakage, E6(a) | Wire one provider, leave a tagged reset/output tail pending at detach, await reader cancellation/retirement, then start the recovery run. Assert distinct retained host-terminal objects, log paths, provider creation identities, no old marker in run two, and successful run-two input/output. Do not assert fd/PID integers never recycle. | Reuse the first host-terminal session and require the isolation assertion to fail. Portable fixture-ownership proof; native Windows test must additionally exercise real cancelled I/O and assert the captured bytes/retirement evidence. A structural red alone does not prove the Windows mechanism. |
+| (g) Superseded UI event, E5 | Queue a real old-generation selection/highlight event, establish the newer search ownership, then deliver the old event. Assert the exact hit/selection and viewport owner survive. Choose the current transcript adapter, preserving the participation-loop contracts. | Remove the active stale-event guard at that adapter. Portable. If later code eliminated the path, document that removal and its replacement firing proof rather than resurrecting obsolete widgets. |
+| (h) ConPTY delivery hypothesis | On native Windows, hold provider readiness, release it, observe the fixture's consumption acknowledgement through the production adapter, then assert the existing log and final readiness. Exercise quiet child exit versus output EOF, detach/cancel, and complete adapter retirement without a second reader. | Existing native lifecycle tests may supply these cases. If a delivery defect is discovered, name and mutate its correction; otherwise record native qualification, no confirmed new cause. POSIX counterpart tests qualify only their own PTY path. |
+| S4: source → callback → generation → widget | Keep real SQLite/session/app. Commit the DM before requesting its snapshot; hold worker return and owner application separately; retain source membership, future outcome, callback delivery, stale decision, and rendered DM. Exercise an older request returning after a newer request and verify the latest valid DM is applied. | Mutations at each boundary must produce distinct phase diagnostics and retain final-state assertions. Green candidate probes eliminate only the exercised schedules. A red synthetic mutant is not evidence that the historical incident used that schedule. |
+
+### Slice 3 — Hosted qualification and honest closure
+
+9. **Audit proof coverage.** Every confirmed class has its intended red and
+   green on the relevant platform; helper outcomes and all inventory phases
+   fire. Unknowns and platform limits are explicit. No native Windows result
+   is inferred from a POSIX pass or a fake API test.
+10. **Qualify one SHA.** Run `windows_repeat=5` under the acceptance contract.
+    Record workflow/run attempt and each repetition's result. A failing
+    repetition invalidates that qualification attempt. Fix, review, and run
+    a new complete attempt; do not relabel a retry as uninterrupted evidence.
+11. **Disposition S4.** Inheritance transfers diagnosis responsibility, not
+    a passing verdict. Append the transfer/evidence to the predecessor and
+    update its index note without marking it complete by inference. Close
+    S4 only after a causal failing regression and correction, or after an
+    explicit owner decision accepting the residual risk. In the latter
+    case retain the exact words "cause unresolved; accepted by owner", the
+    evidence, scope of the waived predecessor gate, and reopen condition.
+    Until such evidence or decision exists, S4 and this plan remain open,
+    even if the soak passes. Do not request a waiver before presenting the
+    completed diagnostic and qualification evidence.
+12. **Docs and closure.** Promote the verified determinism model into
+    `docs/implementation/12-taut-tui.md`; align CHANGELOG, affected backlinks,
+    the predecessor, and plan index. Record only reusable new lessons.
+    Run completed-work review and the gates below; mark completed only when
+    every outcome, including S4's explicit disposition, is satisfied and the
+    implementation is committed under the repository's completion rule.
 
 ## Testing Plan
 
 - Layer: real TUI, real Summon controller and provider, real host PTY;
   Textual `run_test` for app-level proofs; scratch copies for red runs that
   need production reverted.
-- Files: `tests/test_tui_summon.py`, `tests/test_tui_app.py`, a new
-  `tests/test_tui_determinism.py` for the elicitation tests, `tests/helpers`
-  for the event-wait helper, `.github/workflows/test-tui-extension.yml`.
-- Do not mock Textual messages, worker futures, the driver, or the PTY;
-  only inject delays and thread scheduling at real boundaries.
-- Mutation check per elicitation test: revert its fix in a scratch copy
-  and confirm the test fails on macOS and Linux, not only on Windows.
+- Files: `extensions/taut_tui/tests/test_tui_summon.py`,
+  `test_tui_app.py`, and new `test_tui_determinism.py`/`_completion.py` in
+  that directory; `.github/workflows/test-tui-extension.yml`; the existing
+  provider fixture and native terminal helper only at identified seams.
+- Do not replace real Textual dispatch, worker execution, the driver, broker,
+  or PTY for integration proof. Wrap callbacks for observation and use
+  barriers to order real operations. Pure helper tests may use retained
+  futures and narrow clocks directly. Native tests retain platform markers.
+- Mutate only the causal correction in a scratch checkout, keeping the
+  current compatible APIs. Portable reds run on retained POSIX and Windows
+  environments; native cancellation/ConPTY reds run on Windows. Retain
+  subprocess cleanup even when the mutant deliberately deadlocks.
+- Planning-only verification: before/after inspection against the six review
+  findings and owner clarification, plus documentation gates. No runtime
+  implementation or CI qualification is claimed by this plan revision.
 
 ## Verification and Gates
 
+Run from the repository root after the new test module/input exists:
+
 ```bash
-cd extensions/taut_tui && uv run --extra dev pytest -n 2 --dist loadfile tests/test_tui_determinism.py tests/test_tui_summon.py tests/test_tui_app.py
-cd extensions/taut_tui && uv run --extra dev pytest
-cd extensions/taut_tui && uv run --extra dev ruff check taut_tui tests && uv run --extra dev mypy taut_tui tests --config-file pyproject.toml
-gh workflow run test-tui-extension.yml -f windows_repeat=5     # soak; record run ids
-bin/check-plan-status-index
+uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests/test_tui_determinism.py extensions/taut_tui/tests/test_tui_summon.py extensions/taut_tui/tests/test_tui_app.py -n 2 --dist loadfile
+uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -n 2 --dist loadfile
+uv run --project extensions/taut_tui --extra dev --locked ruff check extensions/taut_tui/taut_tui extensions/taut_tui/tests
+uv run --project extensions/taut_tui --extra dev --locked mypy extensions/taut_tui/taut_tui extensions/taut_tui/tests --config-file extensions/taut_tui/pyproject.toml
+uv run bin/check-doc-paths
+uv run bin/check-plan-status-index
+uv run pytest tests/test_docs_references.py
+git diff --check
 ```
+
+After committing the implementation and making its ref available to Actions,
+dispatch `gh workflow run test-tui-extension.yml --ref REF -f windows_repeat=5`
+(replace `REF` with that ref). Verify the resulting run's `headSha` equals
+the intended commit before counting it. Record run attempt and all five
+repetition artifacts; command exit 0 proves dispatch only. Existing native
+Summon tests must also run if their adapter/fixture code changes.
 
 ## Independent Review Loop
 
-Reviewer: a different family from the author, after slice 1 (the model)
-and again at completion. Inputs: this plan, the evidence register, the
-inventory table, `summon.py`, `app.py`, `_terminal_probe.py`, the streak
-commits. Ask: "Does every wait in the inventory have a real completing
-event? Which elicitation test could pass without its fix?"
+Reviewer: a different family from the author, for this revised plan, after
+slice 1, at meaningful implementation slices, and at completion. Inputs:
+this plan, [TAUT-8.5], [TUI-11.3], [DOM-10.3], the implementation note,
+inventory/evidence, current app/Summon tests and terminal helper, and streak
+commits. Ask: "Does each observation follow the exact real owner without a
+second control loop? Could its test pass with the claimed fix removed? Does
+any closure statement assert a cause the evidence cannot establish?"
+Record every finding and disposition; prefer removing work without causal
+value. None of [THEORY-5]'s rejected alternatives is being reconsidered.
 
 ## Out of Scope
 
@@ -329,12 +551,23 @@ event? Which elicitation test could pass without its fix?"
 - Summon's own Windows ConPTY lifecycle (Windows PTY lifecycle plan,
   completed) except where a TUI test's oracle depends on it.
 - Reducing the Windows matrix or growing any behavior deadline.
+- Changing xdist distribution, creating a production event bus, or changing
+  the repository-wide eventual-evidence helper/process contract.
+- Treating synthetic candidate failures or a passing soak as the historical
+  S4 root cause, or silently waiving the predecessor's release gate.
 
 ## Assumptions and Open Questions
 
-1. **Owner:** `K` (consecutive green soak runs) — proposed 5.
-2. **Owner:** may the Windows plan's S4 be marked inherited by this plan
-   so the predecessor can complete on S1–S3/S5? Recommended yes.
+1. The revision uses the proposed five-run acceptance sample, now defined
+   as five repetitions within one fixed-SHA Windows job. It does not change
+   product deadlines or claim a statistical reliability guarantee.
+2. The user's requested inheritance puts S4's remaining work here. It does
+   not authorize labeling S4 fixed or the predecessor completed. Any later
+   acceptance of an unresolved cause requires the explicit disposition
+   described in slice 3; no such decision is assumed in this revision.
+3. Whether native ConPTY delivery or cross-run cancelled-I/O leakage caused
+   a historical failure remains unknown. Slice 1 separates code-supported
+   mechanisms from directly observed historical failures.
 
 ## Deviation Log
 
@@ -344,6 +577,90 @@ event? Which elicitation test could pass without its fix?"
 ## Review Log
 
 (append-only)
+
+- 2026-09-24 — Implementability assessment accepted six corrections:
+  preserve unresolved S4 causality; force distinct thread identities rather
+  than reuse; respect deliberate production suspension; specify retained
+  completion observation; cover omitted native I/O classes honestly; and
+  make budget/soak semantics precise. The owner's clarification supersedes
+  the assessment's overly broad objection to one event-based wait: every
+  source feeds the existing reactor, with no separate domain control loop.
+  Existing [TAUT-8.5] remains the architectural authority.
+- 2026-09-24 — Independent revision review by Claude (`claude-opus-4-6`),
+  read-only CLI 2.1.273 with safe/plan mode, matched Read/Grep/Glob tools,
+  strict MCP configuration, no session persistence, and closed stdin.
+  Invocation used `timeout 540 claude ... --output-format json`; completed
+  in 188.156 s, exit 0, `success`, `is_error=false`, `end_turn`,
+  `terminal_reason=completed`. Verdict: **no blocker**. The preceding
+  120-second-bounded liveness/write-containment probe passed; no probe file
+  was created. The skill's invocation and review guidance were evaluated;
+  no correction to that guidance was needed.
+
+### Independent review findings (verbatim)
+
+| ID | Severity | Location | Finding | Suggested Disposition |
+|----|----------|----------|---------|----------------------|
+| F1 | P3 | Plan §Hidden couplings, ¶1 | The plan names `TerminalAttachNotice` as the message type Summon publishes to the TUI. The public type exists in `taut_summon` and is used by the existing distinct-phase-thread test (`test_tui_summon.py:587`). However, the TUI's `summon.py` accepts it through a private `_TerminalAttachNotice` structural protocol (line 58), not via a direct import of the public class. The plan's coupling note is accurate at the domain level; the implementer should be aware that the TUI decouples from the concrete class via a protocol, so fixture acknowledgement wiring must satisfy that protocol, not import the concrete Summon type into product TUI code. | No plan text change needed. Implementation note: the protocol boundary is already correct in the existing test; preserve it. |
+| F2 | P3 | Plan §Elicitation Matrix, row (g) | Row (g) instructs: "Choose the current transcript adapter, preserving the participation-loop contracts." The stale-highlight guard is in `app.py` line 780, gated on `self.visual_state.viewport.search_owned`. The plan references E5's `OptionList` fix. Since the participation-loop plan (`e05c813`) changed viewport ownership, the implementer must verify that `search_owned` is still the correct predicate controlling the guard and that `viewport.py`'s current adapter didn't relocate the stale-event path. Current code confirms `search_owned` is still checked at `app.py:780`. | No plan change needed; this is an implementation verification the plan's matrix row (g) already implies. Record the confirmed guard location. |
+| F3 | P3 | Plan §Budget and Hosted Acceptance Contract, ¶3 | The formula `15 + 20 * N` yields 115 minutes for N=5 and 35 for N=1, correctly matching the current Windows `job-timeout-minutes: 35`. The plan says "A single unchanged 20-minute step cap cannot contain five full repetitions" — this is accurate since the current `test-timeout-minutes: 20` is the per-step cap. However, the plan does not specify whether the 20-minute per-repetition cap is enforced as a step-level `timeout-minutes` on each iteration inside the loop, or as a process-level `--timeout` to pytest, or both. A process-level pytest timeout alone would not prevent a hung GitHub Actions step from consuming the whole job budget silently. | Author should specify: each repetition runs as a step (or script block) with its own `timeout-minutes` equivalent, not only a pytest-internal timeout. The existing step-level `test-timeout-minutes` mechanism should be preserved per iteration. |
+| F4 | P2 | Plan §Completion Observation Contract, item 1 | Item 1 states: "For an existing operation, use its retained result or an atomic observe/register seam; a non-atomic check-then-subscribe sequence is forbidden." The S4 DM navigation test (`test_tui_app.py:2190–2213`) already demonstrates the pattern: it registers an `asyncio.Event` observer via a subclass override of `_apply_navigation_result` *before* `run_test` triggers the navigation. The completion contract must be compatible with this proven pattern. The plan's contract item 1 is correct and the existing test is a valid worked example — but the contract does not explicitly state that subclass callback wrapping (the existing pattern) is an acceptable "atomic observe/register seam." If the new `_completion.py` helper requires a different registration mechanism, it risks invalidating the proven test structure. | The plan should note that subclass callback observation (as in the existing DM navigation test) is a conforming implementation of the atomic registration requirement. The new helper should accept this pattern rather than requiring a replacement mechanism. |
+| F5 | P3 | Plan §Elicitation Matrix, row (b) | Row (b) specifies: "Run this red case in a child test process with a parent watchdog, retained phase evidence, and owned teardown so the verifier cannot hang." This is prudent for a test that deliberately deadlocks the pilot loop. However, the plan doesn't specify how phase evidence is communicated from the child process to the parent. Stdout/stderr capture, a temp file, or a pipe would all work, but the choice affects whether the evidence survives a child timeout kill. | Implementation detail; author may leave this to slice 2 design. Suggest noting that the child must write phase evidence to a durable medium (file) before entering the blocking state, so the parent watchdog can read it after kill. |
+| F6 | P3 | Plan §Slice 1, step 3 | Step 3 says: "Add the bounded dispatch input and result capture described above." This refers to the `windows_repeat` workflow_dispatch input. Adding a workflow input is a non-reversible CI change (it changes the workflow file's API). The plan correctly places this in slice 1 (diagnosis), which otherwise has "no product behavior edits." The workflow change is not a product edit, but the plan's framing of slice 1 as "diagnosis only, no product edits" could mislead an implementer into thinking no file changes land. The plan does say "Workflow and instrumentation changes get focused failure-path checks before dispatch" which partially addresses this. | No plan change needed; the distinction between product edits and workflow/instrumentation changes is already drawn in the slice 1 text. |
+
+### Dispositions
+
+| ID | Disposition and verification |
+|---|---|
+| F1 | No change required. Verified the structural protocol in `summon.py`; keep the existing lazy extension boundary. Fixture output observation is not a new attach-notice import. |
+| F2 | No change required. Verified `on_option_list_option_highlighted` checks `viewport.search_owned` at the reviewed baseline. Row (g) already requires rechecking the live adapter before mutation. |
+| F3 | Accepted. Five conditional Actions invocation steps each retain their own 20-minute outer cap; later repetitions require prior success, and artifact collection runs with `always()`. This bounds a hung pytest process as well as its tests. |
+| F4 | Accepted clarification. Item 1 explicitly accepts the existing before-trigger subclass observer, while distinguishing that from attaching an observer to an already-running operation. |
+| F5 | Accepted. The child flushes bounded phase evidence to a test-owned file before the deliberately blocking state; the parent can inspect it after termination. |
+| F6 | No change required to the already explicit slice boundary. Reject the description of a workflow-input addition as non-reversible: it is a reversible workflow-file edit, with no publication or storage migration. |
+
+### Slice-1 model review attempt
+
+2026-09-25: Claude 2.1.273, unchanged verified safe/plan Read/Grep/Glob
+invocation with closed stdin, strict MCP, no session persistence and a
+540-second bound, exited 124 with no stdout/stderr or verdict. This is a
+reviewer timeout, not approval or a product finding. Invocation artifacts
+remain under `/tmp/taut-tui-model-review.xI77ut`; an independent fallback
+must supply the model gate. No wait migration started on this attempt.
+
+Grok 1.0.41's fresh read-only liveness/write-containment probes both failed
+closed before launch because its sandbox could not resolve the Docker socket
+symlink. No bypass was attempted. A fresh same-family separate-role reviewer
+was dispatched under the documented fallback; that family limitation is
+explicit, not represented as a different-family review.
+
+### Slice-1 CI diagnostic review
+
+Independent same-family reviewer, separate from the workflow/recorder author,
+returned the following findings verbatim. Initial verdict: blocker for
+diagnostic push, scoped to CI-R1/CI-R2. Native Actions/PowerShell execution
+remains a named qualification limit, not a reason to weaken local checks.
+
+| ID | Severity | Location | Finding | Suggested disposition |
+|---|---|---|---|---|
+| CI-R1 | P2 | `bin/record_tui_run.py:119`, `_required_phases` / `_completed_owners` | Required evidence is reduced to sets of successful phases. This accepts duplicate terminal records and impossible causal timestamps while the summary claims success. Direct probes accepted navigation source at 0.8 s followed by application at 0.2 s for the same request, and lease acquisition at 0.8 s followed by restoration at 0.2 s for the same lease. | Reject duplicate required terminal outcomes and contradictory timestamps at orderable owner boundaries; add firing malformed-evidence tests. Compare captured transition times, not JSON write order. Do not require injection-return before consumption. Preserve legitimate background error records. |
+| CI-R2 | P2 | `bin/record_tui_run.py`, `run_repetition` artifact writing | Raw JUnit failure/output/property text enters the uploaded artifact tree. Command arguments are also copied into start/final records, exposing inline source content in the adversarial fixture. The author's newly added privacy tests independently demonstrated both leaks. | Keep raw JUnit outside the upload tree even on interruption; upload a structural summary without failure/output/property text. Record only necessary command metadata. Author is already correcting this. |
+
+Both findings accepted; the scoped correction history follows. Reviewer observed
+the new privacy tests fail and independently reproduced CI-R1 with malformed
+phase records. Root inspection also required same-identity lease/provider
+joins and actual pytest-runtime consistency across repetitions; the author
+recorded four semantic reds then greens for these corrections.
+
+Scoped re-review: CI-R2 passed after raw XML moved to an OS temp directory
+outside the artifact tree, uploaded XML was structurally sanitized, and argv
+was removed from metadata. CI-R1's first correction still accepted conflicting
+error/success outcomes on one required identity and omitted confirmation from
+the edge-derived phase set. Those remaining cases were reproduced, corrected,
+and independently checked: final CI-R1 PASS, 85 recorder/workflow tests passed,
+50 additional conflict probes rejected, and the real full-suite artifact set
+verified. Unrelated background errors remain valid diagnostics. The writer's
+matching tripwire logic gained 42 observed reds and now passes all 65 focused
+phase-evidence cases. No native result is inferred from this local review.
 
 ## Execution Log
 
@@ -357,11 +674,201 @@ event? Which elicitation test could pass without its fix?"
   while the real rapid-resize test calls the deadline owner directly. This
   removes attempt-count timing from the tests touched by that plan; it does not
   close this plan's S4 elicitation and Windows soak gates.
+- 2026-09-24 — Plan revision inspected against baseline `33205d7`, the
+  governing core/TUI/helper contracts, current recovery and navigation
+  tests, and the `583038e` ownership correction. E8/E10 were refreshed,
+  completion/budget/soak contracts added, all elicitation classes mapped,
+  and S4's causal gate retained. This is planning evidence only; historical
+  CI logs and native qualification are slice-1/slice-3 work.
+- 2026-09-24 — Revised-plan verification: `uv run bin/check-doc-paths`
+  passed (63 sources, 1512 path claims); `uv run bin/check-plan-status-index`
+  passed; `uv run pytest tests/test_docs_references.py` passed all 15 tests;
+  `git diff --check` passed. Independent review found no blocker; F3–F5's
+  clarifications were applied and checked against the existing workflow,
+  pre-registered navigation observer, and child-watchdog proof boundary.
+- 2026-09-25 — Slice 1 retrieved the historical logs and remote tag targets.
+  E1–E3/E6/E9 corrected against retained evidence; the detailed audit records
+  each run, failed assertion, matrix count, and evidence limit. Historical
+  runs have no uploaded phase artifacts. Initial local firing checks of
+  distinct-thread ownership and real initial-DM navigation: 2 passed in
+  0.43 s. This is baseline preservation, not a new causal or Windows proof.
+- 2026-09-25 — Current wait inventory: 8 helpers with 123 callers, 35
+  inline counted wait/drain loops, 4 other elapsed polling loops, and one
+  lease/stop polling loop. It separately enumerates 201 AST pilot pauses,
+  embedded child delays, finite actions, and retained source waits. The
+  old E8 counts are historical only. Concrete source seams are recorded in
+  a separate artifact; unresolved row choices are not silently converted.
+- 2026-09-25 — Baseline retained suite before instrumentation/migration:
+  `uv run --project extensions/taut_tui --extra dev --locked pytest
+  extensions/taut_tui/tests -n 2 --dist loadfile --durations=15` passed
+  510 tests in 96.18 s on macOS/Python 3.14.4. Recovery offer/decline/host
+  shutdown tests took 22.14/30.02/14.94 s respectively. These are whole-test
+  durations, not phase budgets or native Windows measurements.
+- 2026-09-25 — Slice-1 diagnostic implementation is test/workflow-only.
+  Real smoke testing corrected two observation defects: the proposed POSIX
+  handle hook was dormant, and separate patch stacks could restore a disposed
+  observer after test teardown. The live terminal-state callback and one
+  shared pytest patch stack now have firing proofs. Marker-bound consumed
+  input, true navigation request entry, retained source/apply identity,
+  pre-wake transition timing, and source-owned retirement are recorded.
+- 2026-09-25 — The full opt-in recorder passed 524 tests in 96.64 s, then
+  575 tests in 95.96 s after additional terminal-conflict cases. The current
+  reader verifies the real artifact sets. The final set is retained locally
+  at `/tmp/taut-tui-diagnostic-final.lHiEKw`; this working-tree run is local
+  proof, not immutable-SHA Windows qualification. Focused recorder/workflow
+  tests: 85 passed. Focused phase tests: 65 passed. Documentation tests: 15
+  passed. TUI Ruff and all 41-file mypy checks pass after the repair below.
+- 2026-09-25 — Incidental Class-1 gate repair committed separately as
+  `c1888cd`: unchanged baseline `domain.py:131` promised `Future[Message]`
+  while the published core join already returns `Message | None`. Mypy
+  reproduced two errors with no production source diff, then passed after
+  aligning only the annotation. Real SQLite first-join/rejoin assertions and
+  all 9 domain tests pass; runtime behavior and product contracts are unchanged.
+  Static red/green is the substitute proof for this annotation-only correction.
+- 2026-09-25 — Debugging/TDD guidance exposed real-boundary observation and
+  patch-lifetime defects and needed no policy change. The review invocation
+  skill's bounded-failure/fallback rules were followed. A contained Claude
+  probe passed in 4.583 s; the earlier 540-second review timeout has no proven
+  underlying cause. Streamed progress plus saved exact prompts is the proposed
+  invocation improvement, with no permission expansion or blind retry.
+- 2026-09-25 — Diagnostic checkpoint gates re-run: the final 575-test local
+  artifact set passes `record_tui_run.py --verify`; documentation path and
+  plan-index checks pass; all 15 documentation tests pass; focused formatter,
+  Ruff and whitespace checks pass. This checkpoint supports a one-repetition
+  native diagnostic dispatch only. Wait migration, phase-cap approval, causal
+  elicitation and the five-run qualification remain pending.
 
 ## Fresh-Eyes Review
 
-The plan's risk is that slice 1 becomes a report with no teeth; the
-deliverable check in step 4 (every wait has a named event or a "production
-must publish one" row) is the falsifiable exit. The second risk is fixing
-waits without elicitation; the invariant that product changes need a
-failing elicitation test first guards it.
+The model must identify an implementable completion seam for every phase,
+without manufacturing a second scheduler or mistaking a wake for completion.
+The proof matrix separates existing fixes, synthetic hypotheses, and native
+platform evidence. Review must reject timeout-based blame, import-only reds,
+and a green soak used to invent S4's cause. Missing observation is first a
+test/fixture design question, not automatic authority to add product machinery.
+
+## Slice 1 Execution: Determinism Model (draft for review)
+
+Implementation start: `33205d797814da07071bbe27d2336a057e233b8c`.
+The existing uncommitted delta was the reviewed plan and reviewer inventory;
+no intervening product edits required reconciliation. The owner authorized
+implementation on 2026-09-25. The debugging and TDD skills govern causal
+proof and vertical red/green slices; the call-agent skill governs independent
+review invocation. No product change is justified merely by a timeout.
+
+Comprehension answers: (1) distinct live confirmation/lease thread identities
+expose the old token defect; reuse hides it; (2) object creation precedes
+mount and focus, so input waits for the actual control's mount plus required
+committed focus; (3) setup, behavior, and cleanup are different budget owners,
+with behavior charged from its real triggering action, not a later await;
+(4) every observation uses the existing reactor. Production suspension stays
+blocking; only the existing headless lease-body seam runs on a test thread.
+
+### Model boundary and proposed test interface
+
+The existing Textual loop remains the only scheduler for UI work. The
+serialized session worker and native PTY/lease threads retain their own
+owners. A test completion is an observation of an owner transition, not a
+command queue or a second domain controller. Its key is `(owner object,
+request object or generation, phase)`. A test scope retains immutable
+success, error, cancellation, or supersession, stores it before wake, and
+wakes its asyncio waiter through `call_soon_threadsafe` when needed.
+
+`Completion` is the common awaitable record. Test-owned callback adapters
+are installed before the action (or before `run_test` for startup); they
+delegate to the original method and then publish its outcome. Existing
+retained futures attach through `add_done_callback`, which also handles
+already-completed futures. A future's result and the UI application's
+outcome are separate records. No generic message hook repeatedly evaluates
+arbitrary domain predicates. Observer teardown disables/removes wrappers;
+late callbacks do nothing. An observer timeout never cancels its producer.
+Synchronous tests may block on the same record's condition with an absolute
+monotonic deadline; asynchronous tests register a loop-local waiter and yield.
+Neither form periodically rechecks domain state. The synchronous form must
+never run on the Textual loop. Native reads and source-owned joins retain
+their stronger resource semantics rather than being moved onto that loop.
+
+Each wait accepts an absolute loop-monotonic deadline. It awaits one
+helper-owned wake with that remaining budget and checks retained completion
+once at expiry. Its completion timestamp must be at or before the deadline
+in the same clock domain. Paired tests cover on-time publication with delayed
+wake and late publication before the timeout callback is serviced.
+Intermediate events cannot restart the clock. The helper's
+pure arithmetic tests may inject a narrow clock; integration tests use
+barriers on real callbacks. A test-local bounded phase recorder stores only
+opaque request ordinals, generation numbers, phase names, outcomes, and
+relative monotonic times. It contains no message/provider content or tokens.
+Diagnostic recording itself never schedules or advances domain work.
+
+### Owners and completion fences
+
+| Phase | Owner and retained identity | Completing event / test seam |
+|---|---|---|
+| Navigation source / worker | Serialized `TuiSession`, exact refresh `Future` | After real snapshot future completion, retain source membership and error; this does not prove UI application. |
+| Navigation applied (S4) | Textual app, same future | Preinstalled `_apply_navigation_result` wrapper calls real method, then captures rendered targets. Navigation snapshots have **no generation field or existing stale-generation guard**. |
+| Conversation / live delivery | Session intent and generation, Textual owner | After real `_apply_conversation` or `_apply_delivery`, retain acceptance and exact intent/generation. |
+| Transcript rows | Textual and viewport owner, conversation/viewport effect | After real `_render_messages` for rows; after `_apply_viewport_effect` for restore; after `_reapply_tail_effect` for final measured tail pin. |
+| Search results / jump | Search screen generation and app intent | After `_apply_results`; jump finishes at accepted restore effect, not `_apply_search_context` worker return. |
+| Resize | Textual, resize generation plus viewport generation | After current `_render_latest_resize` and required viewport effect. Stale generation is superseded; hidden/too-small results are recorded as such. |
+| Mounted controls | Textual screen and children, exact screen object | Retain real `push_screen` `AwaitMount` before trigger; reject closed/superseded screens. Framework message hooks run before handlers and are not completion. |
+| Committed focus | Textual screen/widget | After real descendant-focus handler, bound to intended widget and still-active screen. `.focus()` alone is not a fence. |
+| Recovery offer / confirmation | Exact confirmation request, Textual | Delegate through real `resolve`/`fail`. Never replace the single `set_on_resolved` slot already owned by stale-modal cleanup. |
+| Lease acquisition / restoration | Exact `TerminalLeaseRequest`, existing headless lease thread | Publish after real acquired/restored transitions; final retirement requires real hold return and join, not merely a `finally` event. |
+| Provider input consumed | Existing PTY adapter, exact run and bounded marker | After Windows `_observe_output` or the POSIX handle's terminal-state `observe_output`, match fixture `echo:` across chunks. Fixture closes its input-log append before emitting echo. Read log once after acknowledgement; no second reader or file poller. |
+| Summon ready / return | Textual, exact owned run token | After real `_apply_summon_ready` / `_apply_summon_return`; driver readiness and UI apply are distinct. |
+| Retirement | Resource owner, retained run/adapter/thread objects | Stop, await foreground completion, then bounded joins/close; native cancellation needs reader-cleanup evidence, not only child exit or EOF. |
+
+### Evidence and budget refinements
+
+Historical logs were retrieved, not inferred from current green tests. The
+register now distinguishes direct failures, verified mechanisms, and
+unmeasured hypotheses. The original S4 log contains only attempt exhaustion;
+no observation distinguishes source, callback, or rendered-state failure.
+Neither a synthetic mutation nor a new green soak establishes that cause.
+
+No TUI-specific CI timeout scaling factor exists in the inspected helpers or
+workflow. Existing explicit 5-second app behavior limits stay 5 seconds.
+Attempt counts cannot be converted by multiplying by 10 ms: `Pilot.pause`
+also contains framework screen/idle fences. Proposed replacement bounds
+must be recorded per inventory group before migration. Existing source
+timeouts/joins remain source-specific infrastructure/cleanup caps, not new
+behavior allowances. Native diagnostic samples will justify setup caps;
+whole-suite duration is not that justification.
+
+S4's forced old-after-new schedule needs clarification: the session worker
+serializes navigation and its snapshots lack generations. Hold actual future
+return and queued application separately, using future identity. Forcing an
+old navigation callback after a new one is a diagnostic schedule, not a test
+of a guard that already exists. If it demonstrates a reachable product
+defect, write its causal regression and review the correction. Conversation
+and search already have generation/intent fences and can test them directly.
+
+The recorded tripwire is a violated observer contract: a required phase has
+no terminal record at its deadline, duplicate terminal publication, a wrong
+request/generation accepted, or a finish before its own start. Normal
+supersession/cancellation is an explicit outcome, not a false violation.
+Diagnostic wrappers must not declare all background work required at teardown.
+
+Independent model review passed with M1–M3 incorporated below. Native
+diagnostic measurement and the justified replacement caps remain pending.
+
+### Independent model review result
+
+2026-09-25: fresh same-family separate-role fallback returned PASS. It read
+the full model and all three artifacts, relevant product callbacks, core
+watcher readiness, native/shared PTY paths, the gate fixture, and installed
+Textual 8.2.8 implementation. No architectural blocker or new production
+publication was required. Findings are reproduced verbatim:
+
+| ID | Severity | Location | Finding | Suggested disposition |
+|---|---|---|---|---|
+| M1 | P2 | Plan, “Model boundary and proposed test interface,” absolute-deadline paragraph; completion-seams artifact, publication paragraph | The final retained-outcome check must distinguish an on-time completion whose wake was delayed from a completion published after the deadline. Presence alone is insufficient under event-loop contention. The outcome already carries completion time, but the acceptance rule is unstated. | State that the final check accepts only an outcome recorded at or before the absolute deadline, using one consistent monotonic clock domain. Add paired firing tests: on-time publication with delayed wake succeeds; post-deadline publication does not turn expiry into success. |
+| M2 | P2 | Completion-seams artifact, attach-confirmation wrapper and duplicate-terminal rules; `summon.py`, `TerminalAttachConfirmationRequest.resolve/fail` | `resolve` and `fail` deliberately become no-ops after the first resolution. A wrapper that publishes after every invocation would report legitimate duplicate calls as duplicate terminal transitions. Concurrent resolution attempts make an unsynchronized before/after check insufficient. | Make the adapter publish the first retained decision transition once, while preserving every call to the real method and the production `_on_resolved` callback. Test repeated and competing resolve/fail calls. Keep duplicate-publication tripwires for actual observer-contract violations, not idempotent producer calls. |
+| M3 | P2 | Wait-inventory artifact, `DISMISS` row | The row permits the result callback and `AwaitComplete` interchangeably. Textual’s result callback proves result delivery; it does not prove screen removal finished. `Screen.dismiss` schedules the result callback, while `App.pop_screen` returns a separate completion for `_replace_screen` and removal. | Split result-applied and screen-retired observations where the assertion needs both. Use the callback for result/application assertions and the real, cancellation-shielded `AwaitComplete` for unmount/retirement assertions. An observer timeout must not cancel Textual’s shared removal future. |
+
+All three accepted. M1 is explicit in the completion contract/model and owed
+paired firing tests. M2 is explicit in the adapter contract and owed repeated/
+competing-resolution proof. M3 splits result delivery from screen retirement
+in the inventory and seam artifact; removal futures are shielded from observer
+timeouts. These are safeguards within the approved scope. The review does not
+qualify native measurements, elicitation mutations, or S4's historical cause.

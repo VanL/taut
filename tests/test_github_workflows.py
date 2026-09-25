@@ -368,7 +368,7 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
             "test-timeout-minutes": 20,
         },
     ]
-    assert job["timeout-minutes"] == "${{ matrix.job-timeout-minutes }}"
+    assert job["timeout-minutes"].endswith("|| matrix.job-timeout-minutes }}")
     steps = _named_steps(job)
     cache_glob = steps["Install uv"]["with"]["cache-dependency-glob"]
     assert "extensions/taut_tui/pyproject.toml" in cache_glob
@@ -376,21 +376,10 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
     suite = steps["Run taut-tui suite against retained lock"]
     assert suite["timeout-minutes"] == "${{ matrix.test-timeout-minutes }}"
     assert suite["run"].split() == [
-        "uv",
-        "run",
-        "--project",
-        "extensions/taut_tui",
-        "--extra",
-        "dev",
-        "--locked",
-        "pytest",
-        "extensions/taut_tui/tests",
-        "-v",
-        "--tb=short",
-        "-n",
-        "2",
-        "--dist",
-        "loadfile",
+        "python",
+        "bin/record_tui_run.py",
+        "--ordinal",
+        "1",
     ]
 
 
