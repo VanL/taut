@@ -986,6 +986,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   removal: retain the framework's separate retirement completion without
   allowing observer cancellation to cancel shared removal work.
 
+- 2026-09-25: Replacing a UI pause requires identifying which phase the next
+  assertion needs, not merely the last callback that returned. A click can
+  finish while its button's active-effect timer still rejects another click;
+  row measurement can finish before committed scrollbar geometry; a viewport
+  effect can finish while older highlight events remain queued. Keep test
+  actions on the real UI producer path and observe the exact applied event.
+  Do not use direct private state changes to race ahead of pending owner work.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

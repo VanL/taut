@@ -770,6 +770,31 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — First full instrumented local integration ran 703 cases:
+  698 passed, two failed, three native skips (95.53 s). Complete log and
+  phase files: `/tmp/taut-tui-integrated-local.jft0Ia`. The resize failure
+  retained a last-seed selection replacing the intended seed-5 selection;
+  diagnosis is continuing with held real highlight events, not green retries.
+  The other failure is now causal: the launch help test directly evicted
+  `taut_tui.app` from `sys.modules`, so the later chat fixture patched a
+  different class from the test's local import. The exact ordered pair
+  reproduced the missing-observer `AttributeError`. All three lazy-import
+  probes now use scoped `monkeypatch.delitem`, restoring exact module
+  identities. The ordered pair passes, as do all 46 launch/chat cases.
+  A new loaded-module restoration regression and independent three-case
+  ordered review pass. No launch behavior or product runtime changes.
+
+- 2026-09-25 — Diagnostic 3 at `d2ffea5` completed: Windows 682 passed,
+  one native isolation probe failed before chat-prompt observation; all four
+  non-Windows lanes passed 681 with the two declared native-only skips.
+  Quiet native exit passed. Every phase file validates, but the full Windows
+  result correctly remains red. The prompt observer required unstable
+  trailing padding; a portable split-token regression fired before matching
+  the established `chat>` token. Independent review found no blocker.
+  This is a candidate hosted-failure explanation, not a confirmed native
+  product cause. Diagnostic 4 (run 36150401173, one repetition at `e91a435`)
+  tests that correction and the real reused-host mutant. It is not the soak.
+
 - 2026-09-25 — Main integration audit found that a per-test scope released
   history on teardown but had no fixed admission bound while repeatable
   focus/highlight events were observed. A 4096-record overflow regression

@@ -98,9 +98,13 @@ def test_root_help_lists_explicit_tui_command() -> None:
     assert stderr == ""
 
 
-def test_tui_help_loads_adapter_but_not_textual_runtime() -> None:
-    sys.modules.pop("textual", None)
-    sys.modules.pop("taut_tui.app", None)
+def test_tui_help_loads_adapter_but_not_textual_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Restore the exact loaded class/module identities after the import probe.
+    # Later tests may already hold those objects from collection.
+    monkeypatch.delitem(sys.modules, "textual", raising=False)
+    monkeypatch.delitem(sys.modules, "taut_tui.app", raising=False)
 
     result, _stdout, stderr = _dispatch_static(["tui", "--help"])
 
@@ -108,6 +112,16 @@ def test_tui_help_loads_adapter_but_not_textual_runtime() -> None:
     assert "textual" not in sys.modules
     assert "taut_tui.app" not in sys.modules
     assert stderr == ""
+
+
+def test_lazy_import_probe_restores_loaded_runtime_identity() -> None:
+    import textual
+    import taut_tui.app as runtime
+
+    with pytest.MonkeyPatch.context() as probe:
+        test_tui_help_loads_adapter_but_not_textual_runtime(probe)
+    assert sys.modules.get("textual") is textual
+    assert sys.modules.get("taut_tui.app") is runtime
 
 
 @pytest.mark.parametrize(
@@ -150,8 +164,10 @@ def test_supported_identity_and_storage_globals_reach_launch(
 
 
 @pytest.mark.parametrize("option", ["--json", "-t", "--timestamps", "-q", "--quiet"])
-def test_preverb_unsupported_global_fails_before_textual_import(option: str) -> None:
-    sys.modules.pop("textual", None)
+def test_preverb_unsupported_global_fails_before_textual_import(
+    option: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "textual", raising=False)
 
     result, stdout, stderr = _dispatch_static([option, "tui"])
 
@@ -180,7 +196,7 @@ def test_non_tty_fails_before_textual_import_or_client_creation(
 
     created: list[dict[str, Any]] = []
     stderr = StringIO()
-    sys.modules.pop("textual", None)
+    monkeypatch.delitem(sys.modules, "textual", raising=False)
     monkeypatch.setattr(sys, "stdin", StringIO())
     monkeypatch.setattr(sys, "stdout", StringIO())
 
