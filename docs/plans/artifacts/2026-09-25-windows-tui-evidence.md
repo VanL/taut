@@ -4,9 +4,10 @@ Date: 2026-09-25
 Implementation baseline: `33205d797814da07071bbe27d2336a057e233b8c`.
 Owner: implementing engineer for
 `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md`, slice 1.
-Boundary: read-only retrieval of historical Actions logs and metadata, remote
-tag checks, and inspection of local commits and supporting records. This
-artifact neither dispatches CI nor claims a new reproduction or qualification.
+Boundary: read-only retrieval of Actions logs and metadata, remote tag
+checks, and inspection of local commits and supporting records. The initial
+audit below makes no new qualification claim; dated diagnostic and
+qualification sections record subsequent runs with their separate limits.
 
 ## Method and availability
 
@@ -378,3 +379,45 @@ variants pass without weakening full viewport equality or geometry checks;
 the exact-wait-removal mutant fails its semantic callback-applied assertion.
 The hosted log does not identify its exact callback producer, so the forced
 reproduction is evidence of this matching defect, not a reconstructed trace.
+
+## Qualification attempt 2 at the requested-open correction
+
+[Run 36159590581](https://github.com/VanL/taut/actions/runs/36159590581),
+attempt 1, dispatched at 16:15:27 UTC on
+`3a0f30c725b3385c3c2136b8afbf846242fd5d05`, completed successfully with five
+consecutive Windows repetitions in job `108152559967`. Artifact
+`10876058793` passes the five-result verifier locally as well as in Actions.
+Every repetition has **765 passes, zero skips/failures/errors, and 765 valid
+phase files**, for 3,825 Windows test executions and phase files. All record
+the same SHA, run/attempt, lock hash, Python 3.13.15 and Windows Server 2025
+build 26100. Child and launcher exits are zero; no evidence error is present.
+The raw Windows lock hash is
+`489cb1c034c41c0aaeb1a1312f1c31ce9b1d4b706a51e12a17e320658c549093`
+(the documented CRLF representation of the unchanged committed lock).
+
+| Windows repetition | Start UTC | JUnit seconds | Launcher seconds |
+|---|---|---:|---:|
+| 1 | 16:15:47 | 439.613 | 442.975 |
+| 2 | 16:23:10 | 486.619 | 487.136 |
+| 3 | 16:31:18 | 516.710 | 517.237 |
+| 4 | 16:39:56 | 418.217 | 418.751 |
+| 5 | 16:46:55 | 430.761 | 431.303 |
+
+The retained `-n 2 --dist loadfile` scheduler and caps were unchanged. No
+source, fixture, workflow or lock edits occurred during the attempt. This
+satisfies the successor's bounded-soak criterion, including native Windows
+proofs on every repetition, but does not establish historical S4's cause or
+waive its separate owner-disposition gate.
+
+All four non-Windows artifacts pass whole-result verification: each contains
+765 cases, 762 passes, exactly three native-only skips, and 762 valid phase
+files. Each records the exact requested SHA, run and attempt, with lock hash
+`97f246df18d978bbe90fae05dd41031c095039706b2dd708e78fb9b34bd46962`.
+Downloaded evidence: `/tmp/taut-tui-qualification2.6Amf2w`.
+
+| Lane | Actual pytest Python | JUnit seconds | Artifact |
+|---|---|---:|---|
+| Ubuntu 3.11 | 3.11.16 | 230.988 | 10875132962 |
+| Ubuntu 3.13 | 3.13.15 | 204.369 | 10874174221 |
+| Ubuntu 3.14 | 3.14.7 | 211.497 | 10874518847 |
+| macOS 3.13 | 3.13.15 | 226.858 | 10874074527 |

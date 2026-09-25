@@ -1,10 +1,9 @@
 # Windows TUI Determinism Root-Cause Plan
 
-Status: active — implementation authorized 2026-09-25; slice 1 diagnostic,
-model and cap gates passed. Slice 2 implementation and local gates pass;
-slice 3's first immutable-SHA qualification failed a viewport-generation
-assertion in Windows repetition 1. Exact-owner setup correction and local
-gates pass; five-run qualification must restart. S4 remains open.
+Status: active — implementation and qualification passed on 2026-09-25.
+Attempt 2 at `3a0f30c` passed all five full Windows repetitions and all four
+non-Windows lanes with validated phase evidence. Only historical S4's causal
+closure or explicit owner disposition remains open; no acceptance is inferred.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -72,7 +71,7 @@ not independently revalidate the historical hosted runs.
   one TUI completion-observation interface over actual owner events, with
   infrastructure and behavior budgets separated. Legitimate finite action
   sequences and source adapters are classified, not mechanically rewritten.
-- [ ] Five consecutive full Windows retained-suite repetitions on one
+- [x] Five consecutive full Windows retained-suite repetitions on one
   immutable SHA, with two workers and `loadfile`, pass the acceptance gate.
   The new dispatch input controls repetitions within one Windows job;
   phase evidence is retained for every repetition.
@@ -774,6 +773,41 @@ the one additional M2 case passed afterward. Scoped Ruff/mypy pass. Native
 Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
+
+- 2026-09-25 — Final scoped evidence audit: **no blocker**, no actionable
+  findings. Independent reviewer revalidated all nine results (five Windows,
+  four non-Windows), phase coverage, runtime/lock/SHA identities, native
+  cases, scheduler and unchanged caps. Each Windows repetition includes all
+  twelve native-module cases and 22 successful `attach.retired` outcomes.
+  Main independently verified these counts and reran documentation gates
+  (15 reference tests, path/status checks, clean diff whitespace). Qualified
+  implementation is committed at `3a0f30c`; subsequent changes are evidence
+  documentation only. The remaining S4 decision requires owner direction.
+
+- 2026-09-25 — **Qualification PASSED:** run `36159590581`, attempt 1, at
+  immutable `3a0f30c725b3385c3c2136b8afbf846242fd5d05`. Windows repetitions
+  1–5 each pass all 765 cases with zero skips and 765 valid phase files.
+  All four non-Windows lanes pass 762 cases with three native-only skips.
+  Actions and local artifact verification pass; Windows artifact
+  `10876058793` contains all five matching SHA/lock/runtime/ordinal results.
+  Source/fixtures/workflow/lock and `-n 2 --dist loadfile` remained unchanged.
+  Exact times, artifacts and checks are in the evidence register. S4's
+  original failed run lacks causal phase evidence; candidate schedules and
+  this soak do not identify its historical cause. Plan and predecessor stay
+  open pending causal reproduction/correction or explicit owner acceptance.
+
+- 2026-09-25 — Participation-plan wording that inferred the harness cause
+  from passing candidates is explicitly superseded by this approved plan's
+  bounded-evidence rule. Supplemental independent documentation review:
+  no blocker, no actionable findings; actual navigation has no generation
+  guard. No closure or owner acceptance is inferred from that correction.
+
+- 2026-09-25 — Reflow correction committed and pushed as
+  `3a0f30c725b3385c3c2136b8afbf846242fd5d05`. Qualification attempt 2:
+  [run 36159590581](https://github.com/VanL/taut/actions/runs/36159590581),
+  dispatched at 16:15:27 UTC with `windows_repeat=5`. Observed `headSha`
+  matches exactly. Code/fixture/workflow/lock remain frozen; evidence-only
+  documentation may change. Dispatch is not a passing gate.
 
 - 2026-09-25 — Reflow setup candidate passes the full retained local gate:
   **762 passed, three native-only skips, 765 total, 165.55 s**. All 762 phase

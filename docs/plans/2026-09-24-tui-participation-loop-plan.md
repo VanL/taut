@@ -457,14 +457,17 @@ and any new defect they introduced.
      complete after the widget is mounted and after it is unmounted;
      assert the mounted case renders and the unmounted case is rejected
      without a hang.
-   If every candidate passes forced-order on Windows, every product owner
-   is exonerated by construction and the remaining cause is the harness
-   budget the rewrite already replaced; S4 then closes with that
-   classification recorded, which satisfies its "classify from positive
-   evidence" rule. If one fails, that is the causal reproduction the plan
-   asked for. Those tests, and S4's closure, are owned by
-   `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md`;
-   this plan only converts the polling loops it touches.
+   **Superseded closure inference (2026-09-25):** the approved successor
+   `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md`
+   replaces the earlier claim that green candidate tests exonerate every
+   product owner and thereby identify the old harness budget as the cause.
+   Finite forced schedules rule out only the cases exercised. Navigation
+   has no stale-generation guard, so its actual serialized-worker and
+   callback-order boundaries are tested rather than inventing one. The
+   successor owns these proofs, five-repeat qualification, and S4 disposition:
+   causal reproduction and correction, or explicit owner acceptance recorded
+   as "cause unresolved; accepted by owner". No such acceptance is inferred.
+   This participation plan only converts the polling loops it touches.
 
 ## Deviation Log
 

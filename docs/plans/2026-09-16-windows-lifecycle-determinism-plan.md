@@ -431,6 +431,14 @@ deadline now supplies remaining budgets throughout. No new blocker found.
   not source/future/application phase evidence. S4 and this predecessor
   remain open. Transfer does not waive the causal closure/release gate;
   neither a replacement wait nor a passing soak supplies the missing cause.
+- 2026-09-25: Successor qualification passed at
+  `3a0f30c725b3385c3c2136b8afbf846242fd5d05`, run `36159590581`, attempt 1:
+  five consecutive full Windows repetitions with 765 passes each and zero
+  skips, plus all four non-Windows lanes. All artifacts validate. The
+  successor also retains real source/callback/application ordering and
+  causal mutation probes. These are bounded schedule evidence, not a
+  reconstruction of the original uninstrumented failure. S4 remains open;
+  no owner acceptance or release-gate waiver is recorded.
 
 ## Fresh-Eyes Check
 

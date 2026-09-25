@@ -1,11 +1,11 @@
 # TUI determinism elicitation results
 
-Status: slice-2 proof register; five-run qualification and S4 closure remain
-open. Native diagnostic execution is recorded below. Owner: Windows TUI
+Status: proof register; five-run qualification passed at `3a0f30c`; S4 causal
+closure or owner disposition remains open. Native execution is recorded below. Owner: Windows TUI
 determinism plan implementer. Boundary:
 source-owned test observations over real app/session/framework/lease work.
-Required action: finish current-tree integration, then run the unchanged full
-retained suite five times on one Windows job/SHA.
+Required action: retain the qualified evidence and resolve S4's separate
+causal-closure or explicit owner-disposition gate without inferring its cause.
 
 ## Portable proof register
 
@@ -142,3 +142,16 @@ It was one diagnostic repetition, not the five-run acceptance gate. All three
 Linux lanes passed; macOS exposed the transcript render/input race now recorded
 as class (i) in the active plan. That correction needs its own causal mutants
 and a new immutable-SHA qualification. Historical S4 remains unresolved.
+
+## Five-run qualification update (2026-09-25)
+
+Run `36159590581`, attempt 1, qualifies
+`3a0f30c725b3385c3c2136b8afbf846242fd5d05`: five consecutive full Windows
+repetitions, each 765 passes and no skips, plus four green non-Windows lanes.
+All five Windows repetitions include the twenty semantic mutant gates, both
+reflow variants and all twelve native-module cases. Each records 22 successful
+`attach.retired` outcomes. All result/phase artifacts validate locally and
+in Actions; independent evidence audit found no blocker. The above pending
+statements are historical checkpoints, now superseded for qualification.
+S4's original uninstrumented cause remains unresolved; its distinct causal
+closure or explicit owner-disposition gate is not satisfied by this soak.
