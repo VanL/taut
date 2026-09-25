@@ -662,6 +662,36 @@ verified. Unrelated background errors remain valid diagnostics. The writer's
 matching tripwire logic gained 42 observed reds and now passes all 65 focused
 phase-evidence cases. No native result is inferred from this local review.
 
+### Slice-1 instrumentation review attempt
+
+2026-09-25: a separate scoped Claude review used the saved exact prompt at
+`/tmp/taut-tui-phase-review.ikDywR/prompt.txt`, the same read-only containment,
+and streamed output. It exited 124 at the 540-second bound with empty stderr.
+The stream retained 6,314 events and 36 assistant messages but no terminal
+result. This establishes activity, not approval; a fresh separate-role
+fallback review was dispatched. No permission or global CLI configuration was
+changed. The earlier model review and separate CI review remain distinct.
+
+Fresh separate-role fallback verdict (verbatim): **no blocker**. Finding
+table: "None | — | `_phase_evidence.py`, conftest wiring, focused tests | No
+verified defect within this review’s boundary. | Accept this diagnostic
+slice’s review gate." The reviewer independently checked real callback
+delegation, navigation identity, pre-wake timestamps, confirmation callback
+preservation, the live platform output paths, disposal/patch lifetime,
+retirement and bounded content-free recording; all 65 focused cases passed.
+Accepted for the instrumentation gate only. Native validation, wait migration
+and S4 closure remain separate. Same-family fallback is explicitly disclosed.
+
+Scoped search-observer correction review: **no blocker**, no actionable
+P1–P3 findings. Finding (verbatim): "The observer identifies the accepted
+search-owned transition, while retaining the exact `[message_ts]` assertion
+and existing final-state checks." Suggested disposition: "Accept the scoped
+correction." Accepted after the independent reviewer ran both the original
+handler case and forced-order regression: 2 passed. The reviewer verified
+both follow-up callbacks finish inside the observation scope and real app
+teardown remains intact. This is no claim about S4 or the exact callback
+classes present in the original hosted logs.
+
 ## Execution Log
 
 (append-only)
@@ -737,6 +767,40 @@ phase-evidence cases. No native result is inferred from this local review.
   Ruff and whitespace checks pass. This checkpoint supports a one-repetition
   native diagnostic dispatch only. Wait migration, phase-cap approval, causal
   elicitation and the five-run qualification remain pending.
+- 2026-09-25 — Diagnostic checkpoint `5b30d80` was pushed to
+  `codex/windows-tui-determinism` and dispatched with `windows_repeat=1` as
+  run `36143982762`, attempt 1. Its head SHA was verified. Windows failed
+  before execution: 514 collected items plus two collection errors produced
+  516 errors because the shared terminal helper imported POSIX-only `fcntl`
+  unconditionally. The artifact uploaded and the verifier correctly rejected
+  it; this run supplies no Windows phase timing or S4 evidence. History pins
+  that defect to baseline ancestor `a1a35f09`, not the observer delta.
+  Correction `3f0c411` lazily imports `fcntl`, `pty`, and `termios` only at real
+  POSIX operations. Three fresh-process unavailable-module cases failed before
+  and passed after; two real POSIX ownership/cleanup and four real TUI PTY
+  neighbors passed. Native revalidation remains pending.
+- 2026-09-25 — The same diagnostic run passed all 575 tests on Ubuntu 3.13.
+  Ubuntu 3.11/3.14 and macOS 3.13 each failed the existing search-handler
+  observer's exact `[message_ts]` assertion with three copies of the same
+  timestamp. The observer tests only post-restore state, so later history or
+  rejected stale effects can be counted as another search transition. A
+  bounded causal probe is in progress; neither broadening the assertion nor
+  changing product behavior is justified by these counts alone.
+- 2026-09-25 — Search-observer diagnosis completed with a causal red: after
+  the real search restore, force one accepted HISTORY restore to the same
+  hit, then replay the stale search effect. The old observer deterministically
+  records `[ts, ts, ts]`; its exact `[ts]` assertion fails. Pre-call search
+  ownership, matching intent/hit and accepted effect generation distinguish
+  the real transition; after adding those checks, both this regression and
+  the original handler case pass without weakening final assertions. All 52
+  instrumented action-handler/viewport cases pass at `-n 2 --dist loadfile`;
+  scoped Ruff/mypy/whitespace checks pass. Only the test oracle changes.
+  Historical logs do not show which of these extra callback classes fired.
+- 2026-09-25 — The import-only correction was dispatched separately as run
+  `36144544513`, attempt 1, `windows_repeat=1`; verified head SHA
+  `3f0c4116764a904639d432ec971a2d53360b4067`. This diagnostic may still hit
+  the now-proven search oracle defect, which is not in that immutable SHA.
+  It is not a qualification attempt or a retry counted as a passing streak.
 
 ## Fresh-Eyes Review
 

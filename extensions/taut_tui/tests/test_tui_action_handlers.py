@@ -608,10 +608,19 @@ async def _search_open_result(context: HandlerContext) -> None:
         effect: ViewportEffect,
         messages: tuple[Any, ...],
     ) -> None:
+        before = context.app.visual_state.viewport
+        owned_transition_ready = (
+            before.search_owned
+            and before.intent == expected_intent
+            and before.message_id == context.message_ts
+            and before.accepts(effect)
+            and not context.app._shutting_down
+        )
         apply_viewport_effect(effect, messages)
         viewport = context.app.visual_state.viewport
         if (
-            effect.message_id == context.message_ts
+            owned_transition_ready
+            and effect.message_id == context.message_ts
             and not viewport.search_owned
             and viewport.message_id == context.message_ts
         ):
@@ -918,6 +927,67 @@ def test_colon_command_line_executes_a_typed_native_core_path(tmp_path: Path) ->
             )
 
     asyncio.run(exercise())
+
+
+def test_search_completion_counts_the_owned_transition_not_later_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Later history restores and stale effects are not new search completions."""
+
+    apply_effect = TautApp._apply_viewport_effect
+    select_palette = _select_palette
+    followups_finished = asyncio.Event()
+    followup_phases: list[tuple[str, bool]] = []
+    followups_queued = False
+
+    def replay_after_search(
+        app: TautApp,
+        search_effect: ViewportEffect,
+        messages: tuple[Any, ...],
+    ) -> None:
+        viewport, history_effect = app.visual_state.viewport.plan_render()
+        assert history_effect is not None
+        app.visual_state = replace(app.visual_state, viewport=viewport)
+        for effect in (history_effect, search_effect):
+            before = app.visual_state.viewport
+            followup_phases.append((before.mode.value, before.accepts(effect)))
+            app._apply_viewport_effect(effect, messages)
+        followups_finished.set()
+
+    def observe_effect(
+        app: TautApp,
+        effect: ViewportEffect,
+        messages: tuple[Any, ...],
+    ) -> None:
+        nonlocal followups_queued
+        before = app.visual_state.viewport
+        apply_effect(app, effect, messages)
+        if (
+            not followups_queued
+            and before.search_owned
+            and before.accepts(effect)
+            and not app.visual_state.viewport.search_owned
+        ):
+            followups_queued = True
+            app.call_after_refresh(replay_after_search, app, effect, messages)
+
+    async def select_and_observe_followups(
+        context: HandlerContext,
+        action_id: ActionId,
+    ) -> None:
+        await select_palette(context, action_id)
+        if action_id is ActionId.SEARCH_OPEN_RESULT:
+            await asyncio.wait_for(followups_finished.wait(), timeout=5)
+
+    monkeypatch.setattr(TautApp, "_apply_viewport_effect", observe_effect)
+    monkeypatch.setitem(globals(), "_select_palette", select_and_observe_followups)
+    test_every_action_reaches_a_concrete_handler(
+        ActionId.SEARCH_OPEN_RESULT,
+        tmp_path,
+        monkeypatch,
+    )
+    assert followup_phases == [("history", True), ("history", False)]
 
 
 @pytest.mark.parametrize(

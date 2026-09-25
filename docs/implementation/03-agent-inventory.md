@@ -65,6 +65,14 @@ terminal result independently of exit. Save the exact assembled prompt too.
 This is an invocation proposal, not permission to increase caps or blindly
 retry a full review; the model gate used the independent fallback.
 
+A separate scoped instrumentation review used that streamed invocation and
+saved exact prompt, with the same 540-second bound and containment. It also
+exited 124, but retained 6,314 stream events and 36 assistant messages with
+empty stderr: active work, not evidence of an idle CLI. No terminal result or
+verdict was returned and none is inferred. The review gate uses an independent
+separate-role fallback; future cap calibration should account for observed
+review latency rather than describe this attempt as an authentication failure.
+
 2026-09-25: Grok is now 1.0.41 (`4220f3b224a6`). Both bounded liveness
 and write-containment probes refused to start, exit 1: the read-only sandbox
 could not resolve `/var/run/docker.sock` because the endpoint is a symlink.
