@@ -164,6 +164,30 @@ def test_pump_start_failure_retains_handle_for_cleanup(
     assert closed == ["request", "close"]
 
 
+def test_successful_detach_advances_generation_to_wired(
+    summon_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _owner(summon_db)
+    handle = object()
+    driver._owner_attach = _GenerationAttachDecision(False, True)
+    driver._owner_running = module._RunningGeneration(
+        time.monotonic(), cast(Any, handle), driver._activate_generation(), None
+    )
+    pump = cast(threading.Thread, object())
+    settled: list[bool] = []
+    ledger = type("Ledger", (), {"generate_timestamp": lambda self: "now"})()
+    monkeypatch.setattr(driver, "_ledger", lambda: ledger)
+    monkeypatch.setattr(module, "set_wired", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(driver, "_start_generation_pump", lambda *_args: pump)
+    monkeypatch.setattr(driver, "_start_owner_settle", lambda: settled.append(True))
+
+    driver._accept_attach("detached")
+
+    assert driver._owner_attach == _GenerationAttachDecision(True, True)
+    assert driver._owner_running.pump is pump
+    assert settled == [True]
+
+
 def test_terminal_unwind_owns_spawn_result_before_acceptance(summon_db: Path) -> None:
     driver = _owner(summon_db)
     closed: list[bool] = []

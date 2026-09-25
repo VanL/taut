@@ -233,7 +233,12 @@ def _wait_for_status(db: Path, name: str, *, cwd: Path, env: dict[str, str]) -> 
         last = f"stdout={result.stdout!r}; stderr={result.stderr!r}"
         return result.returncode == 0 and "awaiting_onboarding" not in result.stdout
 
-    _wait_until(ready, message=f"out-of-band live wired status; last={last}")
+    try:
+        _wait_until(ready, message="out-of-band live wired status")
+    except AssertionError:
+        raise AssertionError(
+            f"timed out waiting for out-of-band live wired status; {last}"
+        ) from None
     return last
 
 
@@ -403,7 +408,6 @@ def test_scripted_root_cli_detach_control_plane_and_fresh_attach(
         _wait_for_cooked(
             shell, attach_cooked, message="termios restoration after detach"
         )
-        _wait_for_status(db, "host-bot", cwd=tmp_path, env=env)
         _wait_until(
             lambda: any(
                 entry.get("event") == "message"
@@ -412,6 +416,7 @@ def test_scripted_root_cli_detach_control_plane_and_fresh_attach(
             ),
             message="post-detach orientation in provider received log",
         )
+        _wait_for_status(db, "host-bot", cwd=tmp_path, env=env)
         assert _configured_termios(shell.termios_snapshot()) == _configured_termios(
             attach_cooked
         )

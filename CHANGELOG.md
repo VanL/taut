@@ -25,7 +25,12 @@
   Windows SIGINT cleanup probes raise the installed Python signal handler
   rather than invoking Windows process-termination semantics. Read-only CLI
   probes isolate peer setup from the process-ancestry claim under test, and
-  native-wait budget coverage uses a controlled monotonic clock.
+  native-wait budget coverage uses a controlled monotonic clock. PTY domain
+  cleanup probes fence leader exit until exact descendant identity is captured,
+  while host-terminal readiness follows provider progress before polling the
+  out-of-band control plane. A successful first terminal detach now advances
+  both persistent and generation-local wired state, preventing a stale attach
+  decision from falsely reporting that onboarding is still pending.
 
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it

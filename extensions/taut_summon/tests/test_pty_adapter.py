@@ -1079,6 +1079,7 @@ def test_pty_close_retires_descendant_after_leader_exits_first(
     """[SUM-7.4]/[SUM-12] PTY EOF cannot bypass domain retirement."""
 
     pid_file = tmp_path / "pty-descendant.json"
+    leader_release_file = tmp_path / "pty-descendant-leader-release"
     scenario_path = tmp_path / "pty-domain-scenario.json"
     scenario_path.write_text(
         json.dumps(
@@ -1088,6 +1089,7 @@ def test_pty_close_retires_descendant_after_leader_exits_first(
                         "spawn_descendant": {
                             "pid_file": str(pid_file),
                             "leader_exit_code": 0,
+                            "leader_exit_release_file": str(leader_release_file),
                         }
                     }
                 ]
@@ -1108,6 +1110,7 @@ def test_pty_close_retires_descendant_after_leader_exits_first(
     try:
         pump = EventPump(handle)
         identity = _capture_process_identity(pid_file)
+        leader_release_file.touch()
         assert pump.drain_until_exit(timeout=5.0).returncode == 0
 
         handle.close()

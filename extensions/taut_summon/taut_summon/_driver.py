@@ -1178,6 +1178,10 @@ class SummonDriver:
                 value=True,
                 updated_ts=self._ledger().generate_timestamp(),
             )
+            self._owner_attach = _GenerationAttachDecision(
+                wired=True,
+                should_attach=self._owner_attach.should_attach,
+            )
         running = self._owner_running
         assert running is not None
         pump = self._start_generation_pump(
