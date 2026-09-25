@@ -165,7 +165,11 @@ class ScreenCompletions:
             except NoScreen:
                 pass
         await self._original_on_message(event)
-        if self._closed or life is None or not isinstance(event, events.DescendantFocus):
+        if (
+            self._closed
+            or life is None
+            or not isinstance(event, events.DescendantFocus)
+        ):
             return
         try:
             screen = event.widget.screen

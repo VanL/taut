@@ -299,9 +299,12 @@ def test_result_observation_preserves_builtin_bound_callback(
                     deadline = scope.now() + 2
                     await screens.ready(screen, deadline=deadline)
                     screen.dismiss(7)
-                    assert await screens.result_applied(screen).wait(
-                        deadline=deadline, description="built-in result callback"
-                    ) == 7
+                    assert (
+                        await screens.result_applied(screen).wait(
+                            deadline=deadline, description="built-in result callback"
+                        )
+                        == 7
+                    )
                     assert received == [7]
                     await screens.retired(screen).wait(
                         deadline=deadline, description="screen retired"

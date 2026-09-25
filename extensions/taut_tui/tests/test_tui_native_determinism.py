@@ -336,14 +336,19 @@ def _native_gate_run(
                 )
             except CompletionTimeout as error:
                 # Content-free boundary diagnostics, not timeout-based blame.
-                error.add_note(str({
-                    "host_bytes": len(proof.output),
-                    "prompt_token_seen": b"chat>" in proof.output,
-                    "padded_prompt_seen": b"chat> " in proof.output,
-                    "driver_returned": finished.done(),
-                    "attach_retired": proof.retired.snapshot() is not None
-                    if proof.retired is not None else False,
-                }))
+                error.add_note(
+                    str(
+                        {
+                            "host_bytes": len(proof.output),
+                            "prompt_token_seen": b"chat>" in proof.output,
+                            "padded_prompt_seen": b"chat> " in proof.output,
+                            "driver_returned": finished.done(),
+                            "attach_retired": proof.retired.snapshot() is not None
+                            if proof.retired is not None
+                            else False,
+                        }
+                    )
+                )
                 raise
             echo_deadline = scope.now() + 15
             terminal.write(marker.encode() + b"\r")
