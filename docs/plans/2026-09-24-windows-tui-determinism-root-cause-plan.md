@@ -746,6 +746,28 @@ missing-request timeout. Main re-verification of handlers, routes, viewport
 and screen neighbors: **135 passed** at `-n 2 --dist loadfile`. Scoped Ruff,
 mypy and whitespace gates pass. No blocker remains in this migration slice.
 
+### Summon-caller migration review
+
+Main review found and corrected three observer defects before accepting the
+delegated slice: SUM-OBS-1, ready/return could accept an unrelated run or
+future; SUM-OBS-2, the separate readiness window was accidentally charged
+from the earlier detach boundary; SUM-OBS-3, a source error after confirmed
+provider consumption could overwrite/duplicate that consumption outcome.
+Exact start request/token/future binding now rejects unrelated callbacks,
+including readiness arriving before `start` returns. The first exact ready
+handoff is retained without resetting on later progress. The original
+post-consumption readiness window stays distinct. Consumption success remains
+immutable and a later injection error still propagates through the real
+driver and successful observer-context exit.
+
+Forced old-token/wrong-future, early-ready, consumed-then-error, and competing
+real confirmation resolution cases pass. M2's actual production callback is
+retained and fires once across competing resolve/resolve/fail threads. Main
+ran seven focused cases and inspected the source and budget changes. The
+preceding 56-case instrumented module run passed at two workers/loadfile;
+the one additional M2 case passed afterward. Scoped Ruff/mypy pass. Native
+Windows revalidation remains separate from this portable review acceptance.
+
 ## Execution Log
 
 (append-only)
@@ -900,6 +922,15 @@ mypy and whitespace gates pass. No blocker remains in this migration slice.
   new app/lease probes pass; independent review and scoped lint/types pass.
   Native (f)/(h), remaining generation diagnosis and hosted qualification
   are still open. No synthetic mutation is presented as S4's historical cause.
+- 2026-09-25 — Portable elicitation checkpoint committed as `2f341fe`, verified
+  by `git log`. Summon conversion removes all 21 old helper callers, 14
+  counted/drain loops, four elapsed polling loops and the answerer poll.
+  Exact confirmation, modal lifecycle, run outcome and provider-consumption
+  sources replace them; the headless answerer has one state-before-wake
+  acquisition/stop signal. No `pilot.pause`, `time.sleep` or liveness sampling
+  remains in that module. Native reads/joins and explicit 2/10/30/45/90-second
+  caps stay intact. All drivers retire before successful consumption-observer
+  scope exit. Review findings SUM-OBS-1/2/3 are resolved.
 
 ## Fresh-Eyes Review
 

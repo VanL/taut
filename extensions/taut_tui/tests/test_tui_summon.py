@@ -16,9 +16,274 @@ from threading import Event, Lock, Thread
 from typing import Any, cast
 
 import pytest
+from _summon_completion import LeaseOrStop, ProviderConsumption, SummonObservations
 from tests.helpers.terminal_probe import HostTerminal
 
 pytestmark = pytest.mark.sqlite_only
+
+
+@pytest.fixture(autouse=True)
+def _observe_summon_apps(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Preinstall exact per-app observations before any startup or action."""
+    from taut_tui.app import TautApp
+
+    original = TautApp.__init__
+    observations: list[SummonObservations] = []
+
+    def initialize(app: Any, *args: Any, **kwargs: Any) -> None:
+        original(app, *args, **kwargs)
+        probe = SummonObservations(app, monkeypatch)
+        app._summon_test_observations = probe
+        observations.append(probe)
+
+    monkeypatch.setattr(TautApp, "__init__", initialize)
+    try:
+        yield
+    finally:
+        for probe in observations:
+            probe.close()
+
+
+def test_request_completion_retains_the_real_first_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionScope
+    from _summon_completion import request_phase
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    request = TerminalAttachConfirmationRequest(
+        TerminalAttachNotice(member="member", provider="scripted", detach_hint="x")
+    )
+    callbacks: list[bool | None] = []
+    request.set_on_resolved(lambda: callbacks.append(request.decision))
+    with CompletionScope() as scope:
+        resolved = request_phase(scope, monkeypatch, request, "resolved")
+        deadline = scope.now() + 2
+        request.resolve(True)
+        request.resolve(False)
+        assert (
+            resolved.wait_sync(deadline=deadline, description="first decision") is True
+        )
+        assert callbacks == [True]
+        assert request.decision is True
+
+
+def test_request_completion_preserves_failure_and_late_disposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionScope
+    from _summon_completion import request_phase
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    request = TerminalAttachConfirmationRequest(
+        TerminalAttachNotice(member="member", provider="scripted", detach_hint="x")
+    )
+    error = ValueError("request failed")
+    with CompletionScope() as scope:
+        resolved = request_phase(scope, monkeypatch, request, "resolved")
+        deadline = scope.now() + 2
+        request.fail(error)
+        with pytest.raises(ValueError) as caught:
+            resolved.wait_sync(deadline=deadline, description="failed decision")
+        assert caught.value is error
+    request.resolve(True)
+    assert request.error is error
+
+
+def test_request_completion_preserves_competing_resolve_and_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Barrier
+
+    from _completion import CompletionScope
+    from _summon_completion import request_phase
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    request = TerminalAttachConfirmationRequest(
+        TerminalAttachNotice(member="member", provider="scripted", detach_hint="x")
+    )
+    error = ValueError("competing failure")
+    callbacks: list[tuple[bool | None, BaseException | None]] = []
+    request.set_on_resolved(lambda: callbacks.append((request.decision, request.error)))
+    contenders = (
+        lambda: request.resolve(True),
+        lambda: request.resolve(False),
+        lambda: request.fail(error),
+    )
+    ready = Barrier(len(contenders) + 1)
+    failures: list[BaseException] = []
+
+    def compete(action: Callable[[], None]) -> None:
+        try:
+            ready.wait(timeout=2)
+            action()
+        except BaseException as failure:  # noqa: BLE001 - retain test thread outcome
+            failures.append(failure)
+
+    with CompletionScope() as scope:
+        resolved = request_phase(scope, monkeypatch, request, "resolved")
+        workers = [
+            Thread(target=compete, args=(action,), daemon=True) for action in contenders
+        ]
+        deadline = scope.now() + 2
+        try:
+            for worker in workers:
+                worker.start()
+            ready.wait(timeout=max(0, deadline - scope.now()))
+            for worker in workers:
+                worker.join(timeout=max(0, deadline - scope.now()))
+            assert not any(worker.is_alive() for worker in workers)
+            assert failures == []
+            assert callbacks == [(request.decision, request.error)]
+            if request.error is not None:
+                with pytest.raises(ValueError) as caught:
+                    resolved.wait_sync(
+                        deadline=deadline, description="competing result"
+                    )
+                assert caught.value is error is request.error
+            else:
+                assert (
+                    resolved.wait_sync(
+                        deadline=deadline, description="competing result"
+                    )
+                    is request.decision
+                )
+            outcome = resolved.snapshot()
+            request.resolve(True)
+            request.fail(RuntimeError("late losing failure"))
+            assert resolved.snapshot() is outcome
+            assert callbacks == [(request.decision, request.error)]
+        finally:
+            ready.abort()
+            for worker in workers:
+                worker.join(timeout=2)
+                assert not worker.is_alive()
+
+
+def test_confirmation_completion_does_not_drive_the_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from taut_summon import TerminalAttachNotice
+    from textual.widgets import Button
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test() as pilot:
+
+            async def forbidden_pause(*args: Any, **kwargs: Any) -> None:
+                raise AssertionError("completion observer must not drive the pilot")
+
+            monkeypatch.setattr(pilot, "pause", forbidden_pause)
+            request = TerminalAttachConfirmationRequest(
+                TerminalAttachNotice(
+                    member="member", provider="scripted", detach_hint="x"
+                )
+            )
+            deadline = time.monotonic() + 2
+            app.post_message(request)
+            screen = await _pushed_confirmation(pilot, app, deadline=deadline)
+            assert screen.query_one("#confirmation-confirm", Button).is_mounted
+            request.resolve(False)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("ready_before_start_return", [False, True])
+def test_owned_run_completion_ignores_other_tokens_and_futures(
+    monkeypatch: pytest.MonkeyPatch, ready_before_start_return: bool
+) -> None:
+    import asyncio
+    from concurrent.futures import Future
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import OwnedSummonRun, TuiSummonOperations
+
+    allow_ready = Event()
+
+    class HeldController(_Controller):
+        def run_foreground(self, *args: Any, **kwargs: Any) -> None:
+            assert allow_ready.wait(5)
+            super().run_foreground(*args, **kwargs)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        probe: SummonObservations = cast(Any, app)._summon_test_observations
+        probe.observe_owned_run()
+        controller = HeldController()
+        if ready_before_start_return:
+            allow_ready.set()
+            original_submit = TuiSummonOperations._submit_foreground
+
+            def submit(owner: Any, run: Any) -> Any:
+                future = original_submit(owner, run)
+                assert controller.started.wait(5)
+                app._accept_summon_ready_from_worker(
+                    OwnedSummonRun("early-stale", False, "other", "other")
+                )
+                return future
+
+            monkeypatch.setattr(TuiSummonOperations, "_submit_foreground", submit)
+        async with app.run_test():
+            operations = TuiSummonOperations(
+                controller=controller,
+                ready_callback=app._accept_summon_ready_from_worker,
+            )
+            app._summon = operations
+            try:
+                request = object()
+                token, future = operations.start(request, object())
+                origin_before_stale = probe.ready_started_at
+                assert (origin_before_stale is not None) is ready_before_start_return
+                unrelated = OwnedSummonRun("stale", False, "other", "other")
+                app._accept_summon_ready_from_worker(unrelated)
+                app._apply_summon_ready(unrelated)
+                other: Future[None] = Future()
+                other.set_result(None)
+                app._apply_summon_return("stale", other)
+                app._apply_summon_return(token, other)
+                assert probe.ready is not None and probe.ready.snapshot() is None
+                assert probe.returned is not None and probe.returned.snapshot() is None
+                assert probe.ready_started_at == origin_before_stale
+
+                app._owned_summon_tokens.add(token)
+                deadline = probe.scope.now() + 5
+                allow_ready.set()
+                run = await probe.ready.wait(
+                    deadline=deadline, description="exact ready"
+                )
+                assert run.token == token
+                first_handoff = probe.ready_started_at
+                assert first_handoff is not None
+                controller.release.set()
+                finished = probe.scope.observe_future(
+                    future, owner=operations, phase="test.worker_returned"
+                )
+                await finished.wait(
+                    deadline=deadline, description="exact worker returned"
+                )
+                app._apply_summon_return(token, future)
+                returned_token, returned_future = await probe.returned.wait(
+                    deadline=deadline, description="exact return applied"
+                )
+                assert returned_token == token and returned_future is future
+                assert probe.ready_started_at == first_handoff
+            finally:
+                allow_ready.set()
+                controller.release.set()
+                operations.close()
+
+    asyncio.run(exercise())
 
 
 class _Member:
@@ -462,6 +727,7 @@ class _LeaseApp:
         self.accept = accept
         self.confirmation_decision = confirmation_decision
         self.messages: list[Any] = []
+        self.confirmation_posted = Event()
         self.suspended = Event()
         self.restored = Event()
         self.refreshed = Event()
@@ -486,6 +752,7 @@ class _LeaseApp:
 
         self.messages.append(message)
         if isinstance(message, TerminalAttachConfirmationRequest):
+            self.confirmation_posted.set()
             if self.confirmation_decision is not None:
                 message.resolve(self.confirmation_decision)
             return True
@@ -545,11 +812,10 @@ def test_terminal_attach_confirmation_is_exclusive_and_precedes_lease(
             failures.append(exc)
 
     worker = Thread(target=run, daemon=True)
+    deadline = time.monotonic() + 2.0
     worker.start()
     try:
-        deadline = time.monotonic() + 2.0
-        while not app.messages and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert app.confirmation_posted.wait(max(0.0, deadline - time.monotonic()))
         assert len(app.messages) == 1
         request = app.messages[0]
         assert isinstance(request, tui_summon.TerminalAttachConfirmationRequest)
@@ -593,6 +859,7 @@ def test_terminal_lease_ownership_survives_distinct_driver_phase_threads(
     interaction = tui_summon.TuiSummonInteraction(app, timeout=2.0)
     operation = interaction.operation_scope()
     decisions: list[bool] = []
+    confirmation_done = Event()
     keep_confirmation_thread = Event()
 
     def confirm_on_first_phase() -> None:
@@ -605,16 +872,16 @@ def test_terminal_lease_ownership_survives_distinct_driver_phase_threads(
                 )
             )
         )
+        confirmation_done.set()
         assert keep_confirmation_thread.wait(timeout=2.0)
 
     confirmation = Thread(
         target=confirm_on_first_phase,
         daemon=True,
     )
-    confirmation.start()
     deadline = time.monotonic() + 2.0
-    while not decisions and time.monotonic() < deadline:
-        time.sleep(0.01)
+    confirmation.start()
+    assert confirmation_done.wait(max(0.0, deadline - time.monotonic()))
     assert decisions == [True]
     assert confirmation.is_alive()
 
@@ -697,10 +964,9 @@ def test_terminal_attach_confirmation_close_and_post_failure_fail_closed(
         target=lambda: decisions.append(interaction.confirm_terminal_attach(notice)),
         daemon=True,
     )
-    worker.start()
     deadline = time.monotonic() + 2.0
-    while not app.messages and time.monotonic() < deadline:
-        time.sleep(0.01)
+    worker.start()
+    assert app.confirmation_posted.wait(max(0.0, deadline - time.monotonic()))
     assert len(app.messages) == 1
 
     interaction.close()
@@ -757,10 +1023,9 @@ def test_host_shutdown_requests_the_run_stop_before_refusing(
         observed.append((decision, shutdown.is_set()))
 
     thread = Thread(target=worker, daemon=True)
-    thread.start()
     deadline = time.monotonic() + 2.0
-    while not app.messages and time.monotonic() < deadline:
-        time.sleep(0.01)
+    thread.start()
+    assert app.confirmation_posted.wait(max(0.0, deadline - time.monotonic()))
     assert len(app.messages) == 1
 
     interaction.close()
@@ -1073,38 +1338,50 @@ def test_lease_exception_records_failure_and_exits_app_completely() -> None:
     assert not app.refreshed.is_set()
 
 
-def test_real_app_lease_suspension_failure_exits_instead_of_lingering() -> None:
+def test_real_app_lease_suspension_failure_exits_instead_of_lingering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A suspend failure inside the real handler exits the TUI completely."""
 
     import asyncio
 
+    from _summon_completion import request_phase
+    from textual.app import SuspendNotSupported
+
     from taut_tui.app import TautApp
     from taut_tui.summon import TerminalLeaseRequest
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            del pilot
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
             request = TerminalLeaseRequest()
+            restored = request_phase(probe.scope, monkeypatch, request, "restored")
+            assert app._task is not None
+            exited = probe.scope.observe_future(app._task, owner=app, phase="app.run")
+            deadline = probe.scope.now() + 5
             app.post_message(request)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if request.restored.is_set():
-                    break
+            with pytest.raises(SuspendNotSupported) as caught:
+                await restored.wait(
+                    deadline=deadline, description="failed lease restored"
+                )
+            assert caught.value is request.error
             assert request.error is not None
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if not app.is_running:
-                    return
-            raise AssertionError("app kept running after a failed lease")
+            await exited.wait(deadline=deadline, description="failed lease app exit")
+            assert not app.is_running
 
     asyncio.run(exercise())
 
 
-def test_stale_or_shutdown_lease_request_never_suspends_or_exits() -> None:
+def test_stale_or_shutdown_lease_request_never_suspends_or_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A lease request whose worker already gave up is refused inertly."""
 
     import asyncio
+
+    from _summon_completion import request_phase
 
     from taut_tui.app import TautApp
     from taut_tui.summon import TerminalLeaseRequest
@@ -1112,18 +1389,22 @@ def test_stale_or_shutdown_lease_request_never_suspends_or_exits() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            del pilot
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
             request = TerminalLeaseRequest()
             request.release.set()  # worker timed out and moved on
+            restored = request_phase(probe.scope, monkeypatch, request, "restored")
+            deadline = probe.scope.now() + 5
             app.post_message(request)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if request.restored.is_set():
-                    break
+            with pytest.raises(
+                RuntimeError, match="terminal lease request is stale"
+            ) as caught:
+                await restored.wait(
+                    deadline=deadline, description="stale lease refused"
+                )
+            assert caught.value is request.error
             assert request.restored.is_set()
             assert request.error is not None
-            assert app.is_running
-            await pilot.pause(0.05)
             assert app.is_running
 
     asyncio.run(exercise())
@@ -1253,16 +1534,18 @@ def test_quit_with_pending_run_offers_cancel_and_quit_dialog() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         stub = PendingStub()
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            del pilot
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            assert app._task is not None
+            exited = probe.scope.observe_future(app._task, owner=app, phase="app.run")
             app._summon = stub  # type: ignore[assignment]
+            deadline = probe.scope.now() + 5
             app.action_quit_tui()
-            await pilot.pause()
+            await probe.screens.ready(app.screen, deadline=deadline)
             assert isinstance(app.screen, ConfirmationScreen)
+            deadline = probe.scope.now() + 5
             app.screen.action_confirm()
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if not app.is_running:
-                    break
+            await exited.wait(deadline=deadline, description="confirmed app exit")
             assert stub.stop_calls == 1
 
     asyncio.run(exercise())
@@ -1286,19 +1569,17 @@ def test_cancelled_attach_confirmation_dismisses_stale_dialog() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(_Notice())
+            deadline = time.monotonic() + 5
             app.post_message(request)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if isinstance(app.screen, ConfirmationScreen):
-                    break
+            screen = await _pushed_confirmation(pilot, app, deadline=deadline)
             assert isinstance(app.screen, ConfirmationScreen)
+            deadline = time.monotonic() + 5
             request.resolve(False)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if not isinstance(app.screen, ConfirmationScreen):
-                    break
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(screen).wait(
+                deadline=deadline, description="stale confirmation removed"
+            )
             assert not isinstance(app.screen, ConfirmationScreen)
             assert app.is_running
 
@@ -1311,6 +1592,7 @@ def test_cancelled_attach_dismiss_failure_cannot_replace_resolution(
     """A deferred presentation failure stays subordinate to the decision."""
 
     import asyncio
+    from concurrent.futures import Future
 
     from textual.await_complete import AwaitComplete
 
@@ -1325,13 +1607,16 @@ def test_cancelled_attach_dismiss_failure_cannot_replace_resolution(
         screen_excerpt: str | None = None
 
     dismiss_calls = 0
+    dismiss_failure: Future[None] = Future()
 
     class FailingOnceConfirmation(ConfirmationScreen):
         def dismiss(self, result: bool | None = None) -> AwaitComplete:
             nonlocal dismiss_calls
             dismiss_calls += 1
             if dismiss_calls == 1:
-                raise RuntimeError("dismiss failed")
+                error = RuntimeError("dismiss failed")
+                dismiss_failure.set_exception(error)
+                raise error
             return super().dismiss(result)
 
     monkeypatch.setattr(tui_app, "ConfirmationScreen", FailingOnceConfirmation)
@@ -1339,26 +1624,31 @@ def test_cancelled_attach_dismiss_failure_cannot_replace_resolution(
     async def exercise() -> None:
         app = tui_app.TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            failed = probe.scope.observe_future(
+                dismiss_failure, owner=app, phase="confirmation.dismiss_failed"
+            )
             request = TerminalAttachConfirmationRequest(_Notice())
+            deadline = time.monotonic() + 5
             app.post_message(request)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if isinstance(app.screen, FailingOnceConfirmation):
-                    break
+            screen = await _pushed_confirmation(pilot, app, deadline=deadline)
             assert isinstance(app.screen, FailingOnceConfirmation)
+            deadline = time.monotonic() + 5
             request.resolve(False)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if dismiss_calls == 1:
-                    break
+            with pytest.raises(RuntimeError, match="dismiss failed"):
+                await failed.wait(
+                    deadline=deadline, description="subordinate dismissal failure"
+                )
             assert dismiss_calls == 1
             assert request.decision is False
             assert request.resolved.is_set()
             assert app.is_running
             assert isinstance(app.screen, FailingOnceConfirmation)
+            deadline = time.monotonic() + 5
             app.screen.dismiss(False)
-            await pilot.pause()
+            await probe.screens.retired(screen).wait(
+                deadline=deadline, description="confirmation removed"
+            )
 
     asyncio.run(exercise())
 
@@ -1383,7 +1673,8 @@ def test_attach_resolution_during_push_retries_failed_dismiss_schedule(
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+            del pilot
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
             request = TerminalAttachConfirmationRequest(_Notice())
             real_push_screen = app.push_screen
             real_call_later = app.call_later
@@ -1414,13 +1705,14 @@ def test_attach_resolution_during_push_retries_failed_dismiss_schedule(
 
             monkeypatch.setattr(app, "call_later", flaky_call_later)
             monkeypatch.setattr(app, "push_screen", resolving_push)
+            deadline = time.monotonic() + 5
             app.post_message(request)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if schedule_attempts >= 2 and not isinstance(
-                    app.screen, ConfirmationScreen
-                ):
-                    break
+            screen = await probe.first.wait(
+                deadline=deadline, description="resolved-during-push presentation"
+            )
+            await probe.screens.retired(screen).wait(
+                deadline=deadline, description="resolved-during-push removal"
+            )
             assert request.decision is False
             assert schedule_attempts == 2
             assert not isinstance(app.screen, ConfirmationScreen)
@@ -1445,29 +1737,19 @@ async def _pushed_confirmation(
     app: Any,
     *,
     replacing: Any = None,
-    timeout: float = 2.0,
+    deadline: float,
 ) -> Any:
-    """Wait for the next confirmation modal that is not ``replacing``."""
-
-    from taut_tui.screens import ConfirmationScreen
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        await pilot.pause(0.01)
-        screen = app.screen
-        if isinstance(screen, ConfirmationScreen) and screen is not replacing:
-            return screen
-    raise AssertionError("no confirmation modal was presented")
+    """Await the exact request's actual mounted presentation, without driving it."""
+    del pilot
+    probe: SummonObservations = cast(Any, app)._summon_test_observations
+    return await probe.confirmation(deadline=deadline, replacing=replacing)
 
 
-async def _settled_decision(pilot: Any, request: Any) -> bool | None:
-    for _ in range(200):
-        await pilot.pause(0.01)
-        if request.resolved.is_set():
-            break
-    assert request.resolved.is_set()
-    decision: bool | None = request.decision
-    return decision
+async def _settled_decision(
+    pilot: Any, request: Any, *, deadline: float
+) -> bool | None:
+    probe: SummonObservations = pilot.app._summon_test_observations
+    return cast(bool | None, await probe.settled(request, deadline=deadline))
 
 
 def test_setup_recovery_offer_leads_with_member_and_escaped_excerpt() -> None:
@@ -1483,7 +1765,6 @@ def test_setup_recovery_offer_leads_with_member_and_escaped_excerpt() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(
                 TerminalAttachNotice(
                     member="kimi",
@@ -1492,8 +1773,9 @@ def test_setup_recovery_offer_leads_with_member_and_escaped_excerpt() -> None:
                     screen_excerpt=_GATE_EXCERPT,
                 )
             )
+            deadline = time.monotonic() + 2
             app.post_message(request)
-            offer = await _pushed_confirmation(pilot, app)
+            offer = await _pushed_confirmation(pilot, app, deadline=deadline)
 
             assert "Looks like kimi needs interaction." in offer.prompt
             assert "Trust this folder?" in offer.prompt
@@ -1504,8 +1786,11 @@ def test_setup_recovery_offer_leads_with_member_and_escaped_excerpt() -> None:
             assert "This is provider setup" not in offer.prompt
             assert not request.resolved.is_set()
 
+            deadline = time.monotonic() + 2
             offer.action_confirm()
-            acknowledgement = await _pushed_confirmation(pilot, app, replacing=offer)
+            acknowledgement = await _pushed_confirmation(
+                pilot, app, replacing=offer, deadline=deadline
+            )
             assert "This is provider setup, not Taut chat." in acknowledgement.prompt
             assert (
                 "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
@@ -1513,8 +1798,9 @@ def test_setup_recovery_offer_leads_with_member_and_escaped_excerpt() -> None:
             )
             assert not request.resolved.is_set()
 
+            deadline = time.monotonic() + 2
             acknowledgement.action_confirm()
-            assert await _settled_decision(pilot, request) is True
+            assert await _settled_decision(pilot, request, deadline=deadline) is True
 
     asyncio.run(exercise())
 
@@ -1533,7 +1819,6 @@ def test_setup_recovery_offer_decline_skips_the_acknowledgement_phase() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(
                 TerminalAttachNotice(
                     member="kimi",
@@ -1542,14 +1827,20 @@ def test_setup_recovery_offer_decline_skips_the_acknowledgement_phase() -> None:
                     screen_excerpt=_GATE_EXCERPT,
                 )
             )
+            deadline = time.monotonic() + 2
             app.post_message(request)
-            offer = await _pushed_confirmation(pilot, app)
+            offer = await _pushed_confirmation(pilot, app, deadline=deadline)
             assert "Attach?" in offer.prompt
 
+            started = time.monotonic()
+            deadline = started + 2
             offer.action_reject()
-            assert await _settled_decision(pilot, request) is False
-            for _ in range(20):
-                await pilot.pause(0.01)
+            assert await _settled_decision(pilot, request, deadline=deadline) is False
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(offer).wait(
+                deadline=started + 5, description="offer removed"
+            )
+            assert probe.presented == [offer]
             assert not isinstance(app.screen, ConfirmationScreen)
             assert app.is_running
 
@@ -1570,7 +1861,6 @@ def test_setup_recovery_acknowledgement_decline_resolves_false() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(
                 TerminalAttachNotice(
                     member="kimi",
@@ -1579,15 +1869,24 @@ def test_setup_recovery_acknowledgement_decline_resolves_false() -> None:
                     screen_excerpt=_GATE_EXCERPT,
                 )
             )
+            deadline = time.monotonic() + 2
             app.post_message(request)
-            offer = await _pushed_confirmation(pilot, app)
+            offer = await _pushed_confirmation(pilot, app, deadline=deadline)
+            deadline = time.monotonic() + 2
             offer.action_confirm()
-            acknowledgement = await _pushed_confirmation(pilot, app, replacing=offer)
+            acknowledgement = await _pushed_confirmation(
+                pilot, app, replacing=offer, deadline=deadline
+            )
+            started = time.monotonic()
+            deadline = started + 2
             acknowledgement.action_reject()
 
-            assert await _settled_decision(pilot, request) is False
-            for _ in range(20):
-                await pilot.pause(0.01)
+            assert await _settled_decision(pilot, request, deadline=deadline) is False
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(acknowledgement).wait(
+                deadline=started + 5, description="acknowledgement removed"
+            )
+            assert probe.presented == [offer, acknowledgement]
             assert not isinstance(app.screen, ConfirmationScreen)
             assert app.is_running
 
@@ -1608,7 +1907,6 @@ def test_worker_resolution_dismisses_the_pending_offer_modal() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(
                 TerminalAttachNotice(
                     member="kimi",
@@ -1617,15 +1915,17 @@ def test_worker_resolution_dismisses_the_pending_offer_modal() -> None:
                     screen_excerpt=_GATE_EXCERPT,
                 )
             )
+            deadline = time.monotonic() + 2
             app.post_message(request)
-            offer = await _pushed_confirmation(pilot, app)
+            offer = await _pushed_confirmation(pilot, app, deadline=deadline)
             assert "Attach?" in offer.prompt
 
+            deadline = time.monotonic() + 5
             request.resolve(False)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if not isinstance(app.screen, ConfirmationScreen):
-                    break
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(offer).wait(
+                deadline=deadline, description="decided offer removed"
+            )
             assert not isinstance(app.screen, ConfirmationScreen)
             assert request.decision is False
             assert app.is_running
@@ -1647,7 +1947,6 @@ def test_bootstrap_attach_confirmation_content_is_unchanged() -> None:
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
             request = TerminalAttachConfirmationRequest(
                 TerminalAttachNotice(
                     member="grok",
@@ -1655,17 +1954,22 @@ def test_bootstrap_attach_confirmation_content_is_unchanged() -> None:
                     detach_hint="Ctrl-\\ Ctrl-\\",
                 )
             )
+            deadline = time.monotonic() + 2
             app.post_message(request)
-            acknowledgement = await _pushed_confirmation(pilot, app)
+            acknowledgement = await _pushed_confirmation(pilot, app, deadline=deadline)
 
             assert acknowledgement.prompt == _BOOTSTRAP_ATTACH_PROMPT
             assert "Control-Backslash" not in acknowledgement.prompt
             assert "Looks like" not in acknowledgement.prompt
 
+            started = time.monotonic()
+            deadline = started + 2
             acknowledgement.action_confirm()
-            assert await _settled_decision(pilot, request) is True
-            for _ in range(20):
-                await pilot.pause(0.01)
+            assert await _settled_decision(pilot, request, deadline=deadline) is True
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(acknowledgement).wait(
+                deadline=started + 5, description="acknowledgement removed"
+            )
             assert not isinstance(app.screen, ConfirmationScreen)
 
     asyncio.run(exercise())
@@ -1702,12 +2006,9 @@ def test_confirm_owner_contention_declines_instead_of_raising() -> None:
             first_done.set()
 
     worker = Thread(target=first)
+    deadline = time.monotonic() + 2.0
     worker.start()
-    for _ in range(200):
-        with interaction._lock:
-            if interaction._terminal_owner is not None:
-                break
-        time.sleep(0.01)
+    assert app.confirmation_posted.wait(max(0.0, deadline - time.monotonic()))
     second = interaction.confirm_terminal_attach(notice)
     assert second is False
     first_blocked.set()
@@ -1726,8 +2027,7 @@ def test_summon_status_transitions_do_not_clobber_unrelated_operation() -> None:
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
+        async with app.run_test(size=(100, 30)):
             app._owned_summon_tokens.add("tok")
             run = OwnedSummonRun(
                 token="tok", pending=False, member_id="m", member_name="grok"
@@ -1830,35 +2130,6 @@ def _gate_menu_answers(log: Path) -> list[str]:
     ]
 
 
-def _wait_until(
-    predicate: Callable[[], bool],
-    *,
-    message: str,
-    timeout: float = 30.0,
-) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {message}")
-
-
-async def _await_until(
-    pilot: Any,
-    predicate: Callable[[], bool],
-    *,
-    message: str,
-    timeout: float = 45.0,
-) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        await pilot.pause(0.02)
-    raise AssertionError(f"timed out waiting for {message}")
-
-
 class _GateHostInteraction:
     """Shell-equivalent host owning the wiring run's real terminal fds."""
 
@@ -1891,24 +2162,26 @@ class _GateHostInteraction:
 class _GateAnswerer(Thread):
     """Answer the provider's trust gate through the leased terminal fds."""
 
-    def __init__(self, terminal: HostTerminal, *, lease_acquired: Event) -> None:
+    def __init__(self, terminal: HostTerminal, *, lease_acquired: LeaseOrStop) -> None:
         super().__init__(daemon=True, name="tui-gate-answerer")
         self._terminal = terminal
         self._lease_acquired = lease_acquired
-        self._stop_requested = Event()
         self.failures: list[str] = []
         self.answered = Event()
         self.finished = Event()
+        from concurrent.futures import Future
+
+        self.completion: Future[None] = Future()
         self.stage = "waiting for terminal lease"
+        self.detach_started_at: float | None = None
 
     def request_stop(self) -> None:
-        self._stop_requested.set()
+        self._lease_acquired.stop()
 
     def run(self) -> None:
         try:
-            while not self._lease_acquired.is_set():
-                if self._stop_requested.wait(0.01):
-                    return
+            if not self._lease_acquired.wait():
+                return
             self.stage = "terminal lease acquired; waiting for gate menu"
             output = self._terminal.read_until(b"Trust this folder?")
             if b"Trust this folder?" not in output:
@@ -1927,6 +2200,7 @@ class _GateAnswerer(Thread):
                 return
             self.answered.set()
             self.stage = "chat prompt reached; sending detach"
+            self.detach_started_at = time.monotonic()
             self._terminal.write(b"\x1c\x1c")
             self.stage = "waiting for detach reset"
             output = self._terminal.read_until(b"\x1b[?2004l")
@@ -1936,8 +2210,90 @@ class _GateAnswerer(Thread):
                 )
                 return
             self.stage = "detach reset reached"
+        except BaseException as error:
+            self.completion.set_exception(error)
+            raise
         finally:
             self.finished.set()
+            if self.completion.done():
+                pass
+            elif self.failures:
+                self.completion.set_exception(AssertionError("; ".join(self.failures)))
+            else:
+                self.completion.set_result(None)
+
+
+@pytest.mark.parametrize(
+    ("transitions", "acquired", "stopped", "proceed"),
+    [
+        (("set",), True, False, True),
+        (("stop",), False, True, False),
+        (("set", "stop"), True, True, False),
+        (("stop", "set"), True, True, False),
+    ],
+)
+def test_gate_answerer_wake_retains_lease_and_stop_as_distinct_sources(
+    transitions: tuple[str, ...], acquired: bool, stopped: bool, proceed: bool
+) -> None:
+    signal = LeaseOrStop()
+    for transition in transitions:
+        getattr(signal, transition)()
+    assert signal.wait() is proceed
+    assert signal.acquired is acquired
+    assert signal.stopped is stopped
+
+
+def test_gate_answerer_preserves_terminal_failure_in_its_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal = HostTerminal.open()
+    signal = LeaseOrStop()
+    answerer = _GateAnswerer(terminal, lease_acquired=signal)
+    error = RuntimeError("terminal read failed")
+
+    def fail_read(*args: Any, **kwargs: Any) -> bytes:
+        raise error
+
+    monkeypatch.setattr(terminal, "read_until", fail_read)
+    signal.set()
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            answerer.run()
+        assert caught.value is error
+        assert answerer.completion.exception() is error
+        assert answerer.finished.is_set()
+    finally:
+        terminal.close()
+
+
+def test_provider_consumption_retains_success_but_surfaces_later_injection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _completion import CompletionKey
+
+    handle = object()
+    failure = RuntimeError("inject failed after child acknowledgement")
+    with (
+        pytest.raises(RuntimeError) as teardown,
+        ProviderConsumption(monkeypatch, "bounded-marker", 5) as probe,
+    ):
+        consumed = probe.scope.expect(CompletionKey(handle, "provider.consumed", probe))
+
+        def inject() -> None:
+            consumed.succeed(consumed.key, handle)
+            raise failure
+
+        with pytest.raises(RuntimeError) as source:
+            probe._orient(inject, consumed)
+        assert source.value is failure
+        assert (
+            consumed.wait_sync(
+                deadline=probe.scope.now() + 5,
+                description="actual child consumption",
+            )
+            is handle
+        )
+    assert teardown.value is failure
 
 
 def _gate_db(tmp_path: Path) -> Path:
@@ -1989,19 +2345,19 @@ def _wire_gate_member(
             failures.append(exc)
 
     thread = Thread(target=run, daemon=True, name="tui-gate-wiring")
-    thread.start()
-    try:
-        assert b"chat>" in terminal.read_until(b"chat>")
-        terminal.write(b"\x1c\x1c")
-        assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
-        _wait_until(
-            lambda: any(marker in raw for raw in _gate_inputs(log)),
-            message="wiring-run orientation injection",
-        )
-        SummonController(db_path=db).stop(name)
-    finally:
-        thread.join(timeout=20.0)
-    assert not thread.is_alive()
+    with ProviderConsumption(monkeypatch, marker, 30) as consumed:
+        thread.start()
+        try:
+            assert b"chat>" in terminal.read_until(b"chat>")
+            deadline = time.monotonic() + 30
+            terminal.write(b"\x1c\x1c")
+            assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
+            consumed.wait_sync(deadline=deadline)
+            assert any(marker in raw for raw in _gate_inputs(log))
+            SummonController(db_path=db).stop(name)
+        finally:
+            thread.join(timeout=20.0)
+        assert not thread.is_alive()
     assert failures == []
     assert len(interaction.notices) == 1
     assert interaction.notices[0].screen_excerpt is None
@@ -2087,7 +2443,7 @@ def _prepare_gate_recovery(
     name: str,
     marker: str,
     terminal: HostTerminal,
-    lease_acquired: Event | None = None,
+    lease_acquired: LeaseOrStop | None = None,
 ) -> tuple[Path, Path, Path]:
     """Wire the member, then arm the un-trusted re-summon the TUI will own."""
 
@@ -2140,7 +2496,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
 
     marker = "tui-gate-orientation-probe"
     terminal = HostTerminal.open()
-    lease_acquired = Event()
+    lease_acquired = LeaseOrStop()
     try:
         db, prompt_path, log = _prepare_gate_recovery(
             tmp_path,
@@ -2153,79 +2509,107 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
 
         async def exercise() -> None:
             app = _gate_app(db)
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            probe.observe_owned_run()
             answerer = _GateAnswerer(terminal, lease_acquired=lease_acquired)
+            answerer_finished = probe.scope.observe_future(
+                answerer.completion, owner=answerer, phase="answerer.finished"
+            )
             answerer.start()
             try:
-                async with app.run_test(size=(100, 30)) as pilot:
-                    await pilot.pause()
-                    app._complete_summon_start(_gate_submission("gated", prompt_path))
-                    offer = await _pushed_confirmation(pilot, app, timeout=45.0)
-                    assert "Looks like gated needs interaction." in offer.prompt
-                    assert "Trust this folder?" in offer.prompt
-                    assert "Attach?" in offer.prompt
-                    assert "This is provider setup" not in offer.prompt
-                    # The offer precedes readiness: the run is still pending-owned
-                    # and nothing has been injected into the menu.
-                    assert [run.pending for run in app._summon.owned_runs()] == [True]
-                    assert app._operation_state == "summon gated starting"
-                    assert _gate_starts(log) == 1
-                    assert _gate_inputs(log) == []
-                    assert _gate_menu_answers(log) == []
+                with ProviderConsumption(monkeypatch, marker, 45) as consumed:
+                    async with app.run_test(size=(100, 30)) as pilot:
+                        deadline = time.monotonic() + 45
+                        app._complete_summon_start(
+                            _gate_submission("gated", prompt_path)
+                        )
+                        offer = await _pushed_confirmation(
+                            pilot, app, deadline=deadline
+                        )
+                        assert "Looks like gated needs interaction." in offer.prompt
+                        assert "Trust this folder?" in offer.prompt
+                        assert "Attach?" in offer.prompt
+                        assert "This is provider setup" not in offer.prompt
+                        # The offer precedes readiness: the run is still pending-owned
+                        # and nothing has been injected into the menu.
+                        assert [run.pending for run in app._summon.owned_runs()] == [
+                            True
+                        ]
+                        assert app._operation_state == "summon gated starting"
+                        assert _gate_starts(log) == 1
+                        assert _gate_inputs(log) == []
+                        assert _gate_menu_answers(log) == []
 
-                    offer.action_confirm()
-                    acknowledgement = await _pushed_confirmation(
-                        pilot, app, replacing=offer, timeout=10.0
-                    )
-                    assert (
-                        "This is provider setup, not Taut chat."
-                        in acknowledgement.prompt
-                    )
-                    assert (
-                        "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
-                        in acknowledgement.prompt
-                    )
-                    acknowledgement.action_confirm()
+                        deadline = time.monotonic() + 10
+                        offer.action_confirm()
+                        acknowledgement = await _pushed_confirmation(
+                            pilot, app, replacing=offer, deadline=deadline
+                        )
+                        assert (
+                            "This is provider setup, not Taut chat."
+                            in acknowledgement.prompt
+                        )
+                        assert (
+                            "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
+                            in acknowledgement.prompt
+                        )
+                        deadline = time.monotonic() + 45
+                        acknowledgement.action_confirm()
 
-                    try:
-                        await _await_until(
-                            pilot,
-                            answerer.finished.is_set,
-                            message="terminal answerer completion",
+                        try:
+                            await answerer_finished.wait(
+                                deadline=deadline,
+                                description="terminal answerer completion",
+                            )
+                        except (AssertionError, TimeoutError) as exc:
+                            exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                            exc.add_note(
+                                f"terminal answerer failures: {answerer.failures!r}"
+                            )
+                            exc.add_note(f"gate events: {_gate_events(log)!r}")
+                            raise
+                        assert answerer.failures == []
+                        assert answerer.answered.is_set()
+                        try:
+                            assert answerer.detach_started_at is not None
+                            await consumed.wait(
+                                deadline=answerer.detach_started_at + 45
+                            )
+                            assert any(marker in raw for raw in _gate_inputs(log))
+                        except (AssertionError, TimeoutError) as exc:
+                            exc.add_note(f"terminal answerer stage: {answerer.stage}")
+                            exc.add_note(f"gate events: {_gate_events(log)!r}")
+                            exc.add_note(f"operation state: {app._operation_state!r}")
+                            exc.add_note(f"owned runs: {app._summon.owned_runs()!r}")
+                            raise
+                        assert probe.ready is not None
+                        assert probe.ready_handoff is not None
+                        deadline = probe.scope.now() + 45
+                        ready_origin = await probe.ready_handoff.wait(
+                            deadline=deadline, description="exact ready handoff"
                         )
-                    except AssertionError as exc:
-                        exc.add_note(f"terminal answerer stage: {answerer.stage}")
-                        exc.add_note(
-                            f"terminal answerer failures: {answerer.failures!r}"
+                        run = await probe.ready.wait(
+                            deadline=min(deadline, ready_origin + 45),
+                            description="post-recovery readiness",
                         )
-                        exc.add_note(f"gate events: {_gate_events(log)!r}")
-                        raise
-                    assert answerer.failures == []
-                    assert answerer.answered.is_set()
-                    try:
-                        await _await_until(
-                            pilot,
-                            lambda: any(marker in raw for raw in _gate_inputs(log)),
-                            message="post-recovery orientation injection",
+                        assert probe.ready_started_at is not None
+                        ready_outcome = probe.ready.snapshot()
+                        assert ready_outcome is not None
+                        assert ready_outcome.published_at <= probe.ready_started_at + 45
+                        assert run.token in app._owned_summon_tokens
+                        assert app._operation_state == "summon live"
+                        assert app.suspensions == 1
+                        assert [run.pending for run in app._summon.owned_runs()] == [
+                            False
+                        ]
+                        deadline = time.monotonic() + 45
+                        app._summon.request_owned_stops()
+                        assert probe.returned is not None
+                        token, future = await probe.returned.wait(
+                            deadline=deadline, description="owned worker return"
                         )
-                    except AssertionError as exc:
-                        exc.add_note(f"terminal answerer stage: {answerer.stage}")
-                        exc.add_note(f"gate events: {_gate_events(log)!r}")
-                        exc.add_note(f"operation state: {app._operation_state!r}")
-                        exc.add_note(f"owned runs: {app._summon.owned_runs()!r}")
-                        raise
-                    await _await_until(
-                        pilot,
-                        lambda: app._operation_state == "summon live",
-                        message="post-recovery readiness",
-                    )
-                    assert app.suspensions == 1
-                    assert [run.pending for run in app._summon.owned_runs()] == [False]
-                    app._summon.request_owned_stops()
-                    await _await_until(
-                        pilot,
-                        lambda: not app._owned_summon_tokens,
-                        message="owned worker return",
-                    )
+                        assert token == run.token and future.done()
+                        assert not app._owned_summon_tokens
 
             finally:
                 answerer.request_stop()
@@ -2294,26 +2678,34 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
         async def exercise() -> None:
             app = _gate_app(db)
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
+                probe: SummonObservations = cast(Any, app)._summon_test_observations
+                deadline = time.monotonic() + 45
                 future = _start_owned_gate_run(app, "declined", prompt_path)
-
-                offer = await _pushed_confirmation(pilot, app, timeout=45.0)
-                assert "Trust this folder?" in offer.prompt
-                offer.action_reject()
-
-                modals: list[Any] = []
-
-                def finished() -> bool:
-                    if isinstance(app.screen, ConfirmationScreen):
-                        modals.append(app.screen)
-                    return bool(future.done())
-
-                await _await_until(
-                    pilot, finished, message="declined run completion", timeout=90.0
+                returned = probe.scope.observe_future(
+                    future, owner=app._summon, phase="declined.run_returned"
                 )
-                assert modals == []
+                offer = await _pushed_confirmation(pilot, app, deadline=deadline)
+                assert "Trust this folder?" in offer.prompt
+                seen = len(probe.screens.history)
+                deadline = time.monotonic() + 90
+                offer.action_reject()
+                from taut_summon import SummonOperationError
+
+                with pytest.raises(SummonOperationError) as caught:
+                    await returned.wait(
+                        deadline=deadline, description="declined run completion"
+                    )
+                await probe.screens.retired(offer).wait(
+                    deadline=deadline, description="declined offer removed"
+                )
+                assert not any(
+                    isinstance(screen, ConfirmationScreen)
+                    for screen in probe.screens.history[seen:]
+                )
+                assert probe.presented == [offer]
                 assert app.suspensions == 0
                 error = future.exception()
+                assert caught.value is error
                 assert error is not None
                 errors.append(error)
 
@@ -2355,9 +2747,9 @@ def test_host_shutdown_during_offer_spawns_nothing_further(
         async def exercise() -> None:
             app = _gate_app(db)
             async with app.run_test(size=(100, 30)) as pilot:
-                await pilot.pause()
+                deadline = time.monotonic() + 45
                 futures.append(_start_owned_gate_run(app, "stopped", prompt_path))
-                offer = await _pushed_confirmation(pilot, app, timeout=45.0)
+                offer = await _pushed_confirmation(pilot, app, deadline=deadline)
                 assert "Trust this folder?" in offer.prompt
                 assert _gate_starts(log) == 1
                 app.exit()

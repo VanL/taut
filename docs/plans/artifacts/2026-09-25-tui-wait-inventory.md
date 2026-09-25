@@ -17,6 +17,20 @@ Related plan:
 
 ## Conversion ledger
 
+- 2026-09-25, Summon: 21 helper callers, 14 counted/negative-drain loops,
+  four elapsed loops and the answerer lease/stop poll are converted. There
+  are no remaining pauses, sleeps or liveness loops in the module. The named
+  driver orientation handoff binds the actual adapter and existing output
+  reader. Consumption uses the minimum of the original outer detach/reset
+  window and actual orientation-start plus 30 s (wiring) or 45 s (recovery).
+  Ready application has its own original post-consumption outer 45 s window
+  and exact first-ready-handoff plus 45 s. The offer retains its end-to-end
+  45 s run-start cap. Exact request/token/future checks, immutable decision
+  races, error propagation, terminal reads and actual thread retirement are
+  preserved. The 56-case instrumented run passed; one subsequent competing
+  resolution case and the main seven-case review subset passed separately.
+  Main review SUM-OBS-1/2/3 is resolved; native Windows remains unqualified.
+
 - 2026-09-25, action handlers/routes: all 33 handler and five route counted
   callers now observe exact named requests and applied phases. Both old helper
   definitions are removed; every final assertion and supported route remains.
