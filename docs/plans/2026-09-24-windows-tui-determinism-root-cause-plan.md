@@ -770,6 +770,17 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Added the real SQLite ordering probes: older navigation work
+  stays serialized; reordered real UI callbacks both retain a DM committed
+  before their source reads; older real search results cannot replace the
+  newest DM result. Parallel-worker and removed-search-guard scratch mutants
+  each fired semantic assertions. Main review moved initial NAV deadlines
+  from app construction to the actual refresh submission. Three probes pass
+  with scoped Ruff/mypy. Native isolation also gains the explicit reused-host
+  mutant, independently reviewed with no P1–P3 finding. Local native cases
+  skip honestly; the new mutant still requires Windows execution. Details
+  and limitations are in the elicitation-results artifact.
+
 - 2026-09-25 — Integration found SCREEN-R2: the result observer invoked a
   bound built-in differently from Textual's real `ResultCallback.call_next`
   path. Eight/nine screen neighbors exposed `list.append` parameter inspection

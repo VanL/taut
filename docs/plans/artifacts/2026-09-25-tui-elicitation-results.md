@@ -3,7 +3,7 @@
 Status: slice-2 portable proof checkpoint; native qualification and S4 closure
 remain open. Owner: Windows TUI determinism plan implementer. Boundary:
 source-owned test observations over real app/session/framework/lease work.
-Required action: complete the remaining native and old/new-generation probes,
+Required action: complete native execution and integration review,
 then run the unchanged full retained suite five times on one Windows job/SHA.
 
 ## Portable proof register
@@ -17,6 +17,7 @@ then run the unchanged full retained suite five times on one Windows job/SHA.
 | (e), mount/focus | Real Textual mount and focus policy handlers are held while the screen/widget already exists. | Publishing mount at object creation fails the pending-mount assertion. Looking up lifecycle after an old held focus handler wrongly completes a repushed screen's new generation. | Ten framework tests cover actual input after readiness, pop-before-ready, generation reuse, errors, and cleanup. Separate result/removal mutation fails the held-retirement assertion (M3). |
 | (g), stale UI event | Queue a real old `OptionHighlighted`, arm search ownership before yielding, then let the actual Textual dispatcher deliver it. | Remove the current `viewport.search_owned` guard in a copied product package: selected message becomes 3 instead of exact hit 2. | Current guard preserves selected hit, viewport anchor and search owner. |
 | S4 boundary diagnostics | DM is committed using real `TautClient` before the real session snapshot. Source read, future return, queued callback, owner application and actual widget option are separately observed. | Drop source membership: “source missing committed DM”. Raise after real read: original `ValueError` from the source future. Drop owner application: `navigation.applied` timeout. Clear actual options after apply: “rendered DM row missing”. | Two held-order variants pass. Navigation has no generation field or rejection guard; conversation/search own those contracts. These mutations distinguish diagnostic boundaries but do not establish S4's historical schedule or cause. |
+| S4 ordering / real generation boundary | Hold the real older SQLite navigation worker, then submit a newer read. Separately hold older/newer real navigation UI callbacks and apply newer first. Commit the DM before both reads. At the actual search generation boundary, hold two real SQLite search callbacks and deliver old after new. | Increasing the actual session executor to two workers breaks the assertion that the newer request cannot run while the older worker is held. Removing the real search-generation guard replaces the newest DM result with the old channel hit. | Three real-source tests pass in `test_tui_navigation_ordering.py`. Navigation workers are serialized and navigation callbacks have no generation guard: both snapshots contain the committed DM, which survives both callback orders. Actual search generation rejection preserves the newest DM and its rendered label. These exercised schedules do not identify historical S4. |
 
 The portable probe files are
 `extensions/taut_tui/tests/test_tui_determinism_probes.py`,
@@ -29,12 +30,20 @@ the main plan.
 
 ## Native probe checkpoint (not native qualification)
 
-`extensions/taut_tui/tests/test_tui_native_determinism.py` adds two Windows-only
-cases. Quiet natural exit must publish status 7 after real monitor retirement
+`extensions/taut_tui/tests/test_tui_native_determinism.py` covers three
+Windows-only executions. Quiet natural exit must publish status 7 after real monitor retirement
 and before the output drain starts; only then may the one event consumer run.
 The two-provider case retains actual host terminals, log paths and provider
 creation identities, leaves first-run echo/reset bytes unread, and checks
 second-run input/output isolation after both attach readers retire.
+
+The isolation case now has an explicit reused-host fixture mutant. It runs
+both real providers and requires actual cancellation evidence before checking
+the expected semantic failure: the first run's unread tagged bytes appear in
+the second run's host output. Only that exact isolation assertion is caught;
+source errors, missing cancellation and teardown failures remain failures.
+Local checks report three Windows skips with this parametrization. The hosted
+diagnostic at `d2ffea5` predates it and exercises only the two positive cases.
 
 The cancelled-read probe records the exact session, duplicated input handle
 and retained reader object. It holds cleanup until the reader reaches its
@@ -45,11 +54,15 @@ those events is explicitly “native cancellation proof not established”, not
 a diagnosed product defect. There is no OS polling or repeated cancellation.
 
 Main source review checked real read/write/cancel delegation, single-reader
-ownership, bounded records and teardown. Local checks report two honest
-Windows skips; Ruff/mypy pass. Exercises with the existing fake Win32 API
+ownership, bounded records and teardown. An independent separate-role review
+of the reused-host addition found no P1–P3 issue and confirmed that the exact
+cancellation and retirement checks remain outside the expected-failure block.
+Local Ruff/mypy pass. Exercises with the existing fake Win32 API
 validate callback wiring through real monitor/attach owner code only. A
 deferred-publication mutant failed the pre-drain exit-publication assertion
-there, but actual ConPTY green and native mutation red are still open.
+there, but actual ConPTY qualification and the native reused-host mutation
+remain open. No new quiet-exit defect is diagnosed, so row (h) requires
+native lifecycle qualification rather than inventing a new causal correction.
 The next hosted dispatch is a one-repetition diagnostic, not the five-run
 acceptance attempt.
 

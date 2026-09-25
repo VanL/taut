@@ -361,8 +361,9 @@ def _native_gate_run(
 @pytest.mark.skipif(
     os.name != "nt", reason="requires native Windows cancelled ReadFile"
 )
+@pytest.mark.parametrize("reuse_host", [False, True], ids=["isolated", "reuse-mutant"])
 def test_cancelled_native_attach_cannot_leak_unread_output_into_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reuse_host: bool
 ) -> None:
     from taut_summon._pty_windows import _DETACH_RESET
     from test_tui_summon import _gate_db, _gate_inputs
@@ -373,7 +374,9 @@ def test_cancelled_native_attach_cannot_leak_unread_output_into_recovery(
     first_terminal = HostTerminal.open()
     second_terminal: HostTerminal | None = None
     try:
-        second_terminal = HostTerminal.open()
+        # This narrow fixture mutant restores the former shared host session.
+        # Both cases still run real providers, reads, cancellation and cleanup.
+        second_terminal = first_terminal if reuse_host else HostTerminal.open()
         with monkeypatch.context() as first_patch:
             first = _native_gate_run(
                 patch=first_patch,
@@ -396,12 +399,6 @@ def test_cancelled_native_attach_cannot_leak_unread_output_into_recovery(
         # Check only after both source-owned retirements, never after a quiet
         # interval. A reused host object exposes the first run's unread bytes.
         second_bytes = second_terminal.read_available()
-        first_bytes = first_terminal.read_available()
-        assert new_marker.encode() in second_bytes
-        assert old_marker.encode() not in second_bytes
-        assert old_marker.encode() in first_bytes
-        assert _DETACH_RESET in first_bytes
-        assert first.terminal is not second.terminal
         assert first.log != second.log
         assert first.provider_identity != second.provider_identity
         assert any(
@@ -419,7 +416,25 @@ def test_cancelled_native_attach_cannot_leak_unread_output_into_recovery(
         assert first.probe.aborted_reads == [identity], (
             "native cancellation proof not established: no matching aborted ReadFile"
         )
+
+        def assert_output_isolation() -> None:
+            assert new_marker.encode() in second_bytes
+            assert old_marker.encode() not in second_bytes, (
+                "old unread host output crossed into the recovery session"
+            )
+
+        if reuse_host:
+            assert first.terminal is second.terminal
+            assert _DETACH_RESET in second_bytes
+            with pytest.raises(AssertionError, match="old unread host output crossed"):
+                assert_output_isolation()
+        else:
+            assert_output_isolation()
+            first_bytes = first_terminal.read_available()
+            assert old_marker.encode() in first_bytes
+            assert _DETACH_RESET in first_bytes
+            assert first.terminal is not second.terminal
     finally:
         first_terminal.close()
-        if second_terminal is not None:
+        if second_terminal is not None and second_terminal is not first_terminal:
             second_terminal.close()
