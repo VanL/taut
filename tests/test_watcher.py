@@ -24,6 +24,7 @@ from simplebroker.ext import (
     StopWatching as BrokerStopWatching,
 )
 
+import taut.watcher as watcher_module
 from taut import WatcherRejected
 from taut._exceptions import EmptyResultError, MembershipError
 from taut.client import Message, Notification, TautClient
@@ -3778,13 +3779,24 @@ def test_reactor_restoration_has_no_universal_maintenance_deadline(
 def test_reactor_restoration_native_wait_receives_remaining_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    class FixedClock:
+        now = 100.0
+
+        @classmethod
+        def monotonic(cls) -> float:
+            return cls.now
+
+    observed_waits: list[float] = []
+
     class QuietWaiter(FakeWaiter):
         def wait(self, timeout: float | None) -> bool:
             assert timeout is not None and 0 < timeout <= 0.02
-            threading.Event().wait(timeout)
-            return False
+            observed_waits.append(timeout)
+            FixedClock.now = 101.0
+            return True
 
     waiter = QuietWaiter()
+    monkeypatch.setattr(watcher_module, "time", FixedClock)
     monkeypatch.setattr(
         "taut.watcher.create_activity_waiter_for_queues",
         lambda *_args, **_kwargs: waiter,
@@ -3792,10 +3804,21 @@ def test_reactor_restoration_native_wait_receives_remaining_budget(
     reactor = BaseReactor(
         {"input": {"handler": lambda *_: None}}, db=tmp_path / "budget.db"
     )
+    strategy_waits: list[float | None] = []
+    real_strategy_wait = reactor._strategy.wait_for_activity
+
+    def observe_strategy_wait(*, timeout: float | None = None) -> None:
+        strategy_waits.append(timeout)
+        real_strategy_wait(timeout=timeout)
+
+    monkeypatch.setattr(reactor._strategy, "wait_for_activity", observe_strategy_wait)
     try:
-        reactor.wait_for_activity(0.02)
+        reactor.wait_for_activity(1.0)
     finally:
         reactor.stop(join=False)
+    assert strategy_waits == pytest.approx([1.0])
+    assert len(observed_waits) == 1
+    assert 0 < observed_waits[0] <= 0.02
     assert waiter.close_calls == 1
 
 

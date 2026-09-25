@@ -1850,7 +1850,20 @@ def snapshot():
     return json.loads(completed.stdout)
 
 
-joined = taut("--json", "join", "general")
+other_token = None
+if verb in {"list", "list-dms"}:
+    other_joined = taut("--json", "--as", "other", "join", "general")
+    other_token = next(
+        json.loads(line)["token"]
+        for line in other_joined.stdout.splitlines()
+        if "token" in json.loads(line)
+    )
+
+joined = (
+    taut("--json", "join", "general", "--new")
+    if other_token is not None
+    else taut("--json", "join", "general")
+)
 created = next(
     json.loads(line)
     for line in joined.stdout.splitlines()
@@ -1858,11 +1871,13 @@ created = next(
 )
 
 if verb == "list":
-    assert taut("--as", "other", "join", "general").returncode == 0
-    assert taut("--as", "other", "say", "general", "unread").returncode == 0
+    assert other_token is not None
+    assert taut("--token", other_token, "say", "general", "unread").returncode == 0
 elif verb == "list-dms":
-    assert taut("--as", "other", "join", "general").returncode == 0
-    assert taut("--as", "other", "say", "@" + created["name"], "direct").returncode == 0
+    assert other_token is not None
+    assert taut(
+        "--token", other_token, "say", "@" + created["name"], "direct"
+    ).returncode == 0
 
 commands = {
     "whoami": ("--json", "whoami"),

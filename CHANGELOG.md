@@ -24,7 +24,8 @@
   process identity instead of a scheduler-dependent child startup record;
   Windows SIGINT cleanup probes raise the installed Python signal handler
   rather than invoking Windows process-termination semantics. Read-only CLI
-  probes build only the unread state required by each command.
+  probes isolate peer setup from the process-ancestry claim under test, and
+  native-wait budget coverage uses a controlled monotonic clock.
 
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it
