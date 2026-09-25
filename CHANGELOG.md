@@ -13,6 +13,10 @@
   summaries without changing test behavior deadlines. Missing, conflicting,
   or incomplete evidence fails qualification; the historical initial-DM cause
   remains an open diagnosis.
+- POSIX host-terminal teardown now waits for the owned child-reap event after
+  `SIGKILL` instead of failing against a scheduler-dependent polling deadline,
+  while preserving the pre-signal PID-ownership check. New broad-exception
+  sites were narrowed or refactored, reducing the approved Ruff inventory.
 
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it

@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import termios
@@ -18,7 +19,7 @@ import pytest
 from conftest import _base_env
 
 from taut.identity import capture_process
-from tests.helpers.terminal_probe import PosixHostShell  # type: ignore[import-untyped]
+from tests.helpers.terminal_probe import PosixHostShell
 
 pytestmark = pytest.mark.posix_only
 
@@ -100,6 +101,62 @@ def test_host_shell_cleanup_kills_term_ignoring_foreground_child(
         lambda: capture_process(child_pid) is None,
         message="term-ignoring host child retirement",
     )
+
+
+def test_host_shell_reap_does_not_signal_after_child_was_already_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell = PosixHostShell(
+        pid=1234,
+        master_fd=-1,
+        slave_fd=-1,
+        leader_create_time=0.0,
+        prompt="unused",
+    )
+
+    def already_reaped(_pid: int, _flags: int) -> tuple[int, int]:
+        raise ChildProcessError
+
+    monkeypatch.setattr(os, "waitpid", already_reaped)
+
+    def unexpected_kill(_pid: int, _sig: int) -> None:
+        pytest.fail("already-reaped child PID must not be signalled")
+
+    monkeypatch.setattr(os, "kill", unexpected_kill)
+
+    shell._reap_shell()
+
+
+def test_host_shell_reap_waits_for_the_owned_child_exit_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = 4321
+    shell = PosixHostShell(
+        pid=pid,
+        master_fd=-1,
+        slave_fd=-1,
+        leader_create_time=0.0,
+        prompt="unused",
+    )
+    events: list[tuple[str, int, int]] = []
+
+    def waitpid(observed_pid: int, flags: int) -> tuple[int, int]:
+        events.append(("waitpid", observed_pid, flags))
+        return (0, 0) if flags == os.WNOHANG else (pid, 0)
+
+    def kill(observed_pid: int, sig: int) -> None:
+        events.append(("kill", observed_pid, sig))
+
+    monkeypatch.setattr(os, "waitpid", waitpid)
+    monkeypatch.setattr(os, "kill", kill)
+
+    shell._reap_shell()
+
+    assert events == [
+        ("waitpid", pid, os.WNOHANG),
+        ("kill", pid, signal.SIGKILL),
+        ("waitpid", pid, 0),
+    ]
 
 
 def _run(

@@ -281,20 +281,22 @@ class PosixHostShell:
         return False
 
     def _reap_shell(self) -> None:
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                waited, _status = os.waitpid(self.pid, os.WNOHANG)
-            except ChildProcessError:
-                return
-            if waited == self.pid:
-                return
-            try:
-                os.kill(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            time.sleep(0.02)
-        raise RuntimeError("host shell leader survived SIGKILL cleanup")
+        try:
+            waited, _status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if waited == self.pid:
+            return
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            waited, _status = os.waitpid(self.pid, 0)
+        except ChildProcessError:
+            return
+        if waited != self.pid:  # pragma: no cover - waitpid's blocking contract
+            raise RuntimeError(f"waitpid reaped {waited}, expected {self.pid}")
 
     def _close_fds(self) -> None:
         for fd in (self.master_fd, self.slave_fd):
