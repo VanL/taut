@@ -46,6 +46,18 @@ def _case(
 
 CASES = (
     _case(
+        "reflow-unowned-startup-render",
+        "tests/test_tui_app.py",
+        "test_real_transcript_viewport_anchor_survives_width_reflow[True]",
+        "AssertionError",
+        "requested conversation must finish before capture",
+        Edit(
+            "tests/test_tui_app.py",
+            "            await observed(app).conversation(opening, deadline=opening_deadline)",
+            "            # Mutant: treat the unrelated startup render as readiness.",
+        ),
+    ),
+    _case(
         "operation-thread-authority",
         "tests/test_tui_summon.py",
         "test_terminal_lease_ownership_survives_distinct_driver_phase_threads",

@@ -993,6 +993,10 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   effect can finish while older highlight events remain queued. Keep test
   actions on the real UI producer path and observe the exact applied event.
   Do not use direct private state changes to race ahead of pending owner work.
+  Startup can render the same rows as a later requested open. That render is
+  not proof the requested open finished: bind readiness to its exact intent
+  before capturing a viewport baseline. A legitimate later render advances
+  the effect generation even when every semantic anchor field is unchanged.
 
 - 2026-09-25: A foreground run is not a provider generation. Setup recovery
   retires an initial detached provider and starts an attached successor.

@@ -2,7 +2,9 @@
 
 Status: active — implementation authorized 2026-09-25; slice 1 diagnostic,
 model and cap gates passed. Slice 2 implementation and local gates pass;
-slice 3 immutable-SHA hosted qualification is next. S4 remains open.
+slice 3's first immutable-SHA qualification failed a viewport-generation
+assertion in Windows repetition 1. Exact-owner setup correction and local
+gates pass; five-run qualification must restart. S4 remains open.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -463,6 +465,7 @@ observed defect. Reuse an existing firing test when it already proves the row.
 | (g) Superseded UI event, E5 | Queue a real old-generation selection/highlight event, establish the newer search ownership, then deliver the old event. Assert the exact hit/selection and viewport owner survive. Choose the current transcript adapter, preserving the participation-loop contracts. | Remove the active stale-event guard at that adapter. Portable. If later code eliminated the path, document that removal and its replacement firing proof rather than resurrecting obsolete widgets. |
 | (h) ConPTY delivery hypothesis | On native Windows, hold provider readiness, release it, observe the fixture's consumption acknowledgement through the production adapter, then assert the existing log and final readiness. Exercise quiet child exit versus output EOF, detach/cancel, and complete adapter retirement without a second reader. | Existing native lifecycle tests may supply these cases. If a delivery defect is discovered, name and mutate its correction; otherwise record native qualification, no confirmed new cause. POSIX counterpart tests qualify only their own PTY path. |
 | (i) Render feedback overwrites user selection, diagnostic 5 | Hold the real resize callback until real transcript activation is posted. Release it through Textual, then await actual admitted input handlers. Real Home plus single-click must retain the clicked message in both model and widget. Queued input must follow its message across row shifts and be ignored when that message is absent or belongs to another thread. Three relative key actions must survive older application and an intervening render. | Re-enable render highlight publication; separately remove pending-input projection or replace stable identity with the old row index. Each must fail its semantic assertion. Preserve pending search selection across an unrelated old-row render. Portable product regression under [TUI-9.2]–[TUI-9.3]. |
+| (j) Unrelated startup render mistaken for requested conversation completion, qualification 1 follow-up | Hold Enter's actual optional-conversation callback while startup renders the same rows. The requested completion must remain pending. Release through Textual, await the exact conversation, initial resize and viewport effect under one five-second budget, then capture and exercise real reflow. | Original setup fails full viewport equality when the pending callback is released after capture (generation 6 versus 5, identical semantic fields). Scratch mutant removes the exact conversation wait and fails the callback-applied assertion. Normal and delayed cases retain the original viewport and geometry assertions. This proves a matching harness defect, not the uncaptured exact producer in the hosted failure. |
 | S4: source → callback → generation → widget | Keep real SQLite/session/app. Commit the DM before requesting its snapshot; hold worker return and owner application separately; retain source membership, future outcome, callback delivery, stale decision, and rendered DM. Exercise an older request returning after a newer request and verify the latest valid DM is applied. | Mutations at each boundary must produce distinct phase diagnostics and retain final-state assertions. Green candidate probes eliminate only the exercised schedules. A red synthetic mutant is not evidence that the historical incident used that schedule. |
 
 ### Slice 3 — Hosted qualification and honest closure
@@ -771,6 +774,56 @@ the one additional M2 case passed afterward. Scoped Ruff/mypy pass. Native
 Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
+
+- 2026-09-25 — Reflow setup candidate passes the full retained local gate:
+  **762 passed, three native-only skips, 765 total, 165.55 s**. All 762 phase
+  files and whole-result verification pass at
+  `/tmp/taut-tui-reflow-final.yoKDdk`. This is working-tree evidence at base
+  `7aa6638`, not immutable-SHA qualification. Twenty semantic mutants pass
+  in the full gate; the new target also passes unmutated in isolated scratch.
+  Independent review has no findings. Freeze code/fixtures/workflow/lock for
+  a targeted commit and restart all five Windows repetitions plus four
+  non-Windows lanes on its exact SHA; historical S4 stays open.
+
+- 2026-09-25 — Scoped independent reflow-setup review: **no blocker**, no
+  actionable findings. Separate-role reviewer reran both reflow parameters
+  and the exact-wait-removal mutation gate (three passes), checked the real
+  producer/observer path, shared deadline, unchanged equality and teardown.
+  The previously recorded cross-family invocation failures still require
+  the disclosed same-family fallback. Ruff, changed-file format and mypy
+  (56 files) pass; 114 documentation/workflow/recorder tests pass. Debugging
+  and review skill guidance remains adequate; the existing phase-readiness
+  lesson now includes unrelated startup-render completion.
+
+- 2026-09-25 — Qualification follow-up reproduced a concrete wrong-owner
+  setup race: startup `_apply_conversation` renders could satisfy the generic
+  row-render event while Enter's `_apply_optional_conversation` was pending.
+  Holding that real callback and releasing it after capture made the original
+  assertion fail only on generation (6 versus 5). The fix waits for the exact
+  requested conversation and its presentation before capture, sharing the
+  existing five-second opening budget. No product behavior or viewport
+  assertion is weakened. Ordinary and forced-delay cases pass; removing the
+  exact wait produces the required semantic red in the retained mutation
+  gate. Windows evidence did not record that exact callback producer, so this
+  reproduction is not claimed as a complete historical trace.
+
+- 2026-09-25 — Qualification attempt 1 failed Windows repetition 1:
+  **762 passed, one failed, zero skips, 763 total**. The reflow test's full
+  viewport equality differed only in generation (5 versus 4), not mode,
+  message, offset or intent. All 763 Windows phase files validate; the
+  complete-result verifier correctly rejects the failing JUnit. Repetitions
+  2–5 were skipped. All four non-Windows lanes pass with 760 passes and
+  three native-only skips each. This is no qualifying streak. Investigate
+  the exact pending producer before changing the oracle or implementation;
+  any correction restarts all five repetitions on a new immutable SHA.
+
+- 2026-09-25 — Targeted correction committed and pushed as
+  `7aa6638afd1032175a54ad2bc23c9e870628ac7e`. Dispatched
+  [qualification run 36157177791](https://github.com/VanL/taut/actions/runs/36157177791),
+  attempt 1, at 15:53:15 UTC with `windows_repeat=5`; the observed `headSha`
+  exactly matches the commit. Four non-Windows lanes each run once.
+  Code/fixture/workflow/lock remain frozen; only evidence documentation may
+  change while this run proceeds. Dispatch is not a passing gate.
 
 - 2026-09-25 — Current selection candidate passes full instrumented local
   integration: **760 passed, three native-only skips, 763 total, 160.26 s**.

@@ -596,9 +596,44 @@ def test_too_small_shields_a_nested_modal_stack_and_restores_exact_focus(
     asyncio.run(exercise())
 
 
+class _DeferredConversationApply:
+    """Hold an actual open callback without holding Textual's message loop."""
+
+    def __init__(self, app: Any, patch: pytest.MonkeyPatch, *, delay: bool) -> None:
+        self.app = app
+        self.delay = delay
+        self.applied = False
+        self.seen = asyncio.Event()
+        self.held: list[Any] = []
+        self.original = app._apply_optional_conversation
+        patch.setattr(app, "_apply_optional_conversation", self.observe)
+
+    def observe(self, *args: Any, **kwargs: Any) -> None:
+        self.seen.set()
+        if self.delay:
+            self.held.append((args, kwargs))
+        else:
+            self.original(*args, **kwargs)
+            self.applied = True
+
+    def release(self, opening: Completion[Any]) -> None:
+        if self.delay:
+            # A startup render is not completion of this requested open.
+            assert opening.snapshot() is None
+            assert len(self.held) == 1
+            self.app.call_later(self._apply)
+
+    def _apply(self) -> None:
+        args, kwargs = self.held.pop()
+        self.original(*args, **kwargs)
+        self.applied = True
+
+
+@pytest.mark.parametrize("delay_open_callback", [False, True])
 def test_real_transcript_viewport_anchor_survives_width_reflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    delay_open_callback: bool,
 ) -> None:
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
@@ -619,6 +654,9 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
         async with app.run_test(size=(100, 24)) as pilot:
             transcript_rendered = asyncio.Event()
             render_messages = app._render_messages
+            opening_apply = _DeferredConversationApply(
+                app, monkeypatch, delay=delay_open_callback
+            )
 
             def observe_transcript_render(
                 messages: tuple[Any, ...],
@@ -638,8 +676,24 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             assert _has_option_containing(navigation, "#general")
             navigation.highlighted = _option_index_containing(navigation, "#general")
             navigation.focus()
+            opening = observed(app).opening()
+            opening_deadline = observed(app).scope.now() + 5
             await pilot.press("enter")
-            await asyncio.wait_for(transcript_rendered.wait(), timeout=5)
+            await asyncio.wait_for(
+                transcript_rendered.wait(),
+                timeout=max(0, opening_deadline - observed(app).scope.now()),
+            )
+            await asyncio.wait_for(
+                opening_apply.seen.wait(),
+                timeout=max(0, opening_deadline - observed(app).scope.now()),
+            )
+            opening_apply.release(opening)
+            await observed(app).conversation(opening, deadline=opening_deadline)
+            assert opening_apply.applied, (
+                "requested conversation must finish before capture"
+            )
+            await observed(app).resize_render(deadline=opening_deadline)
+            await observed(app).viewport(deadline=opening_deadline)
             transcript = app.query_one("#transcript", TautOptionList)
             scroll_applied = asyncio.Event()
             transcript.scroll_to(

@@ -329,3 +329,52 @@ Local copy: `/tmp/taut-tui-native-diagnostic5.4xlke6`.
 The later selection/lease-writer changes at `b817c8e` are not included in
 this hosted SHA. Neither this one-pass native evidence nor the three green
 Linux jobs meets the five-run/five-lane qualification criterion or closes S4.
+
+## Qualification attempt 1 at the selection correction
+
+[Run 36157177791](https://github.com/VanL/taut/actions/runs/36157177791),
+attempt 1, started at 15:53:15 UTC on
+`7aa6638afd1032175a54ad2bc23c9e870628ac7e` with five Windows repetitions
+requested. Windows repetition 1 failed; repetitions 2–5 were skipped.
+No completed five-run gate is claimed.
+
+Windows job `108144463937`, artifact `10874397247`: **762 passed, one failed,
+zero skips, 763 total**, JUnit 753.539 s, launcher 757.6767004 s. The sole
+failure is `test_real_transcript_viewport_anchor_survives_width_reflow` at
+the full viewport equality after `resize_render`: generation 5 versus 4,
+with all four semantic fields identical. This is an assertion failure,
+not a timeout. Native cases and the new transcript-selection regressions
+passed within this attempt; that does not supply the missing repetitions.
+All 763 phase files validate on Python 3.13.15 / Windows Server 2025 build
+26100. Recorded child and launcher exit codes are both 1; whole-result
+verification correctly rejects `JUnit reports failing tests`.
+
+All four non-Windows lanes passed. Each has 763 cases, 760 passes, exactly
+three declared Windows-only skips, and 760 validated phase files. Whole-result
+verification passes for each downloaded artifact.
+
+| Lane | Actual pytest Python | JUnit seconds | Artifact |
+|---|---|---:|---|
+| Ubuntu 3.11 | 3.11.16 | 264.526 | 10874340971 |
+| Ubuntu 3.13 | 3.13.15 | 187.676 | 10873579460 |
+| Ubuntu 3.14 | 3.14.7 | 180.675 | 10873644093 |
+| macOS 3.13 | 3.13.15 | 218.109 | 10874695959 |
+
+Local evidence: `/tmp/taut-tui-qualification1.fPJuMr`. Their raw lock hash is
+`97f246df18d978bbe90fae05dd41031c095039706b2dd708e78fb9b34bd46962`.
+The prior Windows raw hash `489cb1c034c41c0aaeb1a1312f1c31ce9b1d4b706a51e12a17e320658c549093`
+is reproduced exactly by CRLF conversion of the same committed lock blob;
+the lock has not changed since `33205d7`. The downloaded Windows result
+records that CRLF hash and the exact requested SHA.
+
+Follow-up forced a matching defect through real callbacks: hold Enter's
+optional-conversation application while startup renders the same rows, then
+release it through Textual after scroll capture. The original assertion fails
+only on generation (6 versus 5). The callback's real render legitimately
+advances the effect fence. Setup now awaits the exact requested conversation,
+initial resize return and viewport application before capturing history,
+using one unchanged five-second opening budget. Ordinary and forced-delay
+variants pass without weakening full viewport equality or geometry checks;
+the exact-wait-removal mutant fails its semantic callback-applied assertion.
+The hosted log does not identify its exact callback producer, so the forced
+reproduction is evidence of this matching defect, not a reconstructed trace.

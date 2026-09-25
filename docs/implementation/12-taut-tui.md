@@ -651,6 +651,11 @@ unchanged. Formerly counted app/application waits use the reviewed five-second
 cap; pure decision waits use their neighboring two-second cap. Watcher startup
 has its own five-second initial-drain budget. Framework bootstrap, native
 terminal reads and cleanup retain their separate source-owned containment.
+The reflow fixture binds Enter's requested conversation before input and
+awaits its application, initial resize return and accepted viewport effect
+under one opening budget before capturing history. Startup rendering the
+same rows is only a causal witness, not requested-open readiness. Its delayed
+callback variant and exact-wait-removal mutant enforce that distinction.
 The inventory records every preserved exception and finite input sequence.
 Progress cannot reset a deadline, and no Windows-wide multiplier is used.
 
