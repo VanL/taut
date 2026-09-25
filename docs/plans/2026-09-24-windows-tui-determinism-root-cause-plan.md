@@ -727,6 +727,25 @@ verdict: **PASS, no residual blocker**. The reviewer independently ran all
 checks. No second loop or cancellation of shared producer work was found.
 This review gate covers the foundation, not later caller migrations or S4.
 
+### Action-caller migration review
+
+The main agent independently inspected the delegated action adapter and
+handler/route diffs. Finding ACT-R1 (P2): the focus observer published again
+for later legitimate focus events while still installed, including after
+retained readiness had already succeeded. The completion interface correctly
+reported duplicate publication, but the adapter had mistaken a repeatable
+source for a once-only producer. Disposition: publish the first matching
+committed focus transition once. Both fresh-focus and retained-readiness
+cases failed before and passed after the adapter correction; the underlying
+duplicate-outcome tripwire is unchanged.
+
+The implementation also added causal held-apply and real synchronous-refusal
+proofs: worker completion cannot claim application, and a caught/rendered
+producer refusal retains its original exception instead of turning into a
+missing-request timeout. Main re-verification of handlers, routes, viewport
+and screen neighbors: **135 passed** at `-n 2 --dist loadfile`. Scoped Ruff,
+mypy and whitespace gates pass. No blocker remains in this migration slice.
+
 ## Execution Log
 
 (append-only)
@@ -863,6 +882,15 @@ This review gate covers the foundation, not later caller migrations or S4.
   without source cancellation, pop-before-ready, repeated lifecycle,
   callback failure, and detached focus during teardown. These are causal
   harness proofs for (e)/M3, not native ConPTY or historical S4 evidence.
+- 2026-09-25 — Foundation and aligned implementation/lesson notes committed
+  as `b194381`; `git log` verified the targeted commit. Action handlers and
+  routes now use exact named producer/application, modal lifecycle and focus
+  observations. All 33 handler and five route counted-wait callers and both
+  polling helpers are removed. Three finite framework fences remain with
+  inline rationale: post-search geometry, an already-issued exit event, and
+  route fixture layout before input. No test assertions or supported routes
+  were removed. New five-second caps apply only to former counted waits;
+  existing explicit limits are unchanged. Main review ACT-R1 is resolved.
 
 ## Fresh-Eyes Review
 

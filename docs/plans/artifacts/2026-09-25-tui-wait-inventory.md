@@ -1,6 +1,7 @@
 # TUI wait inventory and completion seams
 
-Status: slice-1 diagnosis input, not conversion or qualification evidence.
+Status: baseline inventory with slice-2 conversion evidence appended below.
+Neither the baseline counts nor completed individual rows are soak qualification.
 
 Owner: Windows TUI determinism plan implementer. Boundary: TUI test
 observations and their existing producer callbacks. Verification: AST inventory
@@ -13,6 +14,21 @@ inventory baseline, not promises about lines after migration.
 
 Related plan:
 `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md`.
+
+## Conversion ledger
+
+- 2026-09-25, action handlers/routes: all 33 handler and five route counted
+  callers now observe exact named requests and applied phases. Both old helper
+  definitions are removed; every final assertion and supported route remains.
+  `AppliedRequest` distinguishes source completion from owner application and
+  retains synchronous refusal as the original error. Mount, result, retirement
+  and focus use separate real lifecycle fences. Main review ACT-R1 corrected
+  repeatable focus publication; fresh and retained-refocus regressions both
+  fired red before the fix. Main verification: 135 handler/route/viewport/screen
+  neighbors pass at two workers with loadfile scheduling; scoped Ruff/mypy pass.
+  Remaining three bare pauses are finite framework fences, not liveness
+  sampling: post-search geometry, already-requested app exit, and fixture
+  composer/layout before input. Each has an inline ownership comment.
 
 ## Scope and counts
 
