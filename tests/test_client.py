@@ -301,9 +301,7 @@ def test_touch_identity_activity_changes_only_last_active_timestamp(
     assert touched.last_active_ts > before_member["last_active_ts"]
     assert {
         key: value for key, value in after_member.items() if key != "last_active_ts"
-    } == {
-        key: value for key, value in before_member.items() if key != "last_active_ts"
-    }
+    } == {key: value for key, value in before_member.items() if key != "last_active_ts"}
     assert actor._state.list_memberships(created.member_id) == before_memberships
     assert actor._state.get_identity_claim(moved_claim.claim_hash) is None
     after_records = state.persistence_records()

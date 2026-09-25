@@ -249,9 +249,7 @@ def test_capture_identity_selects_agent_anchor_from_captured_chain(
     monkeypatch.setattr(
         identity,
         "capture_host_identity",
-        lambda: identity.HostIdentity(
-            "host:test", "test-host", "test host identity"
-        ),
+        lambda: identity.HostIdentity("host:test", "test-host", "test host identity"),
     )
     monkeypatch.setattr(identity.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(identity.os, "getppid", lambda: 123)
@@ -454,11 +452,13 @@ def test_capture_host_identity_windows_invalid_machine_guid_falls_back(
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "windows-fallback")
 
     if error is not None:
+
         def load_registry() -> object:
             raise error
 
         monkeypatch.setattr(identity, "_load_windows_registry", load_registry)
     else:
+
         class Key:
             def __enter__(self) -> Self:
                 return self
@@ -1700,7 +1700,7 @@ def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     assert created == _expected_name_from_anchor(anchor_argv0)
 
 
-_NESTED_AGENT_HARNESS = '''
+_NESTED_AGENT_HARNESS = """
 import json
 import os
 import subprocess
@@ -1733,7 +1733,7 @@ join_args = ("--json", "join", "general", "--new") if force_new else (
 )
 print(json.dumps({"join": taut(*join_args),
                   "whoami": taut("--json", "whoami", "--explain")}))
-'''
+"""
 
 
 @pytest.mark.skipif(
@@ -1804,7 +1804,7 @@ def test_nested_agent_first_contact_does_not_bind_parent_member(
     assert parent_claims_after == parent_claims_before
 
 
-_READ_ONLY_CHILD_HARNESS = '''
+_READ_ONLY_CHILD_HARNESS = """
 import json
 import os
 import subprocess
@@ -1878,7 +1878,7 @@ print(json.dumps({
     "stderr": completed.stderr,
     "unchanged": before == after,
 }))
-'''
+"""
 
 
 @pytest.mark.skipif(

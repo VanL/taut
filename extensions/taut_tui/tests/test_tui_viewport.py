@@ -130,9 +130,7 @@ def test_stale_effect_completion_cannot_change_any_state(
     viewport: TranscriptViewport,
 ) -> None:
     authorized_intent = 7 if viewport.mode is ViewportMode.SEARCH_OWNED else None
-    planned, effect = viewport.plan_render(
-        authorized_search_intent=authorized_intent
-    )
+    planned, effect = viewport.plan_render(authorized_search_intent=authorized_intent)
     assert effect is not None
 
     newer = planned.user_intent_started()
