@@ -673,7 +673,10 @@ def test_base_reactor_stop_join_false_does_not_close_active_turn(
     thread = threading.Thread(target=watcher.run_until_stopped)
     thread.start()
     try:
-        assert entered.wait(timeout=3.0)
+        # Entering the worker is setup, not the stop/cleanup behavior under test.
+        # Windows CI process and filesystem contention can delay the first turn.
+        setup_timeout = 10.0 if sys.platform == "win32" else 3.0
+        assert entered.wait(timeout=setup_timeout)
         watcher.stop(join=False)
         assert close_threads == []
     finally:

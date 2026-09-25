@@ -32,6 +32,10 @@
   both persistent and generation-local wired state, preventing a stale attach
   decision from falsely reporting that onboarding is still pending.
 
+- Windows watcher lifecycle probes allow platform-scaled setup time for the
+  worker to enter its first turn while retaining the same event handshake and
+  assertions for the active-turn cleanup behavior.
+
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it
   bypasses. The release gate now has a five-minute PyPI visibility retry sleep
