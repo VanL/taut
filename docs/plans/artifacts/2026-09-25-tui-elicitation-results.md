@@ -1,0 +1,45 @@
+# TUI determinism elicitation results
+
+Status: slice-2 portable proof checkpoint; native qualification and S4 closure
+remain open. Owner: Windows TUI determinism plan implementer. Boundary:
+source-owned test observations over real app/session/framework/lease work.
+Required action: complete the remaining native and old/new-generation probes,
+then run the unchanged full retained suite five times on one Windows job/SHA.
+
+## Portable proof register
+
+| Class | Real boundary and forced ordering | Observed red | Current green / limitation |
+|---|---|---|---|
+| (a), run ownership | Existing `test_terminal_lease_ownership_survives_distinct_driver_phase_threads` retains the confirmation thread while another real thread leases under the same operation. | In a copied product package, replace operation-token authority in confirmation/lease with `threading.current_thread()`. The later lease raises “not acknowledged by this worker”; `leased.is_set()` fails. | Original scoped authority passes. No thread-id reuse is awaited or assumed. |
+| (b), headless loop blocking | `_lease_probe_child.py` uses the real recovery app fixture and real `TuiSummonInteraction`. Confirmation precedes lease acquisition. | Select the mutant that posts the blocking body onto Textual instead of the existing headless lease thread. Flushed file contains exactly `confirmed`, `acquired`; pilot release never runs. Parent watchdog terminates and reaps that exact child. | Correct fixture additionally records pilot release, restoration and retirement; all lease/foreground owners join. Two parent cases pass. Production's intentional UI suspension is unchanged. |
+| (c), counted liveness | Hold real SQLite navigation worker return, then hold real owner application. Run the retired 200-attempt `Pilot.pause(0.01)` observer with only this Pilot's yield seam controlled. | Its original “condition did not become true” failure occurs while the same five-second absolute deadline is still live. | Release real application and await its pre-registered completion under that same deadline; committed DM and real option label render. This proves a harness class, not historical S4. |
+| (d), deadline origin/reset | Real serialized client bootstrap and navigation read are held at separate barriers; only the observer clock advances. | Charging behavior from setup origin fails at `navigation.read`; resetting the deadline after progress lets late behavior through and fails the required timeout assertion. | Timely behavior after slow setup passes; late behavior fails without cancelling its real future. Actual session cleanup still retires the worker. |
+| (e), mount/focus | Real Textual mount and focus policy handlers are held while the screen/widget already exists. | Publishing mount at object creation fails the pending-mount assertion. Looking up lifecycle after an old held focus handler wrongly completes a repushed screen's new generation. | Ten framework tests cover actual input after readiness, pop-before-ready, generation reuse, errors, and cleanup. Separate result/removal mutation fails the held-retirement assertion (M3). |
+| (g), stale UI event | Queue a real old `OptionHighlighted`, arm search ownership before yielding, then let the actual Textual dispatcher deliver it. | Remove the current `viewport.search_owned` guard in a copied product package: selected message becomes 3 instead of exact hit 2. | Current guard preserves selected hit, viewport anchor and search owner. |
+| S4 boundary diagnostics | DM is committed using real `TautClient` before the real session snapshot. Source read, future return, queued callback, owner application and actual widget option are separately observed. | Drop source membership: “source missing committed DM”. Raise after real read: original `ValueError` from the source future. Drop owner application: `navigation.applied` timeout. Clear actual options after apply: “rendered DM row missing”. | Two held-order variants pass. Navigation has no generation field or rejection guard; conversation/search own those contracts. These mutations distinguish diagnostic boundaries but do not establish S4's historical schedule or cause. |
+
+The portable probe files are
+`extensions/taut_tui/tests/test_tui_determinism_probes.py`,
+`extensions/taut_tui/tests/test_tui_lease_probe.py`, and
+`extensions/taut_tui/tests/_lease_probe_child.py`. A separate-role reviewer
+ran all seven cases and found no new P1–P3 blocker, then rechecked the (c)
+correction against the unchanged retired observer body. Scoped Ruff and mypy
+pass. The foundation's independent review and 82-case verification are in
+the main plan.
+
+## Mutation reproduction notes
+
+Scratch copies, not the working product, were modified. At this checkpoint
+the local evidence directories are `/tmp/taut-screen-mutations.QcT2L2` and
+`/tmp/taut-owner-mutations.kMoxCS`. They are temporary convenience, not the
+durable authority. Reproduce from the named tests by making the single
+boundary changes in the table. Run with the extension's locked environment;
+the mutation must fail the named semantic assertion, not import or collection.
+The source/application/widget variants each fired on both navigation variants.
+The wrong-origin mutant failed both budget variants; the reset mutant wrongly
+passed late work and failed its `pytest.raises(CompletionTimeout)` assertion.
+
+No production behavior correction is justified by these synthetic S4
+mutations. Native cancelled-I/O/ConPTY evidence and the complete five-run
+acceptance attempt are still required. A green soak cannot manufacture the
+missing cause or owner acceptance.

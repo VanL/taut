@@ -891,6 +891,15 @@ mypy and whitespace gates pass. No blocker remains in this migration slice.
   route fixture layout before input. No test assertions or supported routes
   were removed. New five-second caps apply only to former counted waits;
   existing explicit limits are unchanged. Main review ACT-R1 is resolved.
+- 2026-09-25 — Action migration committed as `aef5758`, verified in `git log`.
+  Portable elicitation checkpoint is recorded in
+  `docs/plans/artifacts/2026-09-25-tui-elicitation-results.md`: actual live
+  owner mutation (a), contained headless deadlock (b), counted observer (c),
+  split-budget origin/reset (d), framework readiness (e), queued stale UI
+  event (g), and distinct S4 source/apply/widget diagnostic mutations. Seven
+  new app/lease probes pass; independent review and scoped lint/types pass.
+  Native (f)/(h), remaining generation diagnosis and hosted qualification
+  are still open. No synthetic mutation is presented as S4's historical cause.
 
 ## Fresh-Eyes Review
 
