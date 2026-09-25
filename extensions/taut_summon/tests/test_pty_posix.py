@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+
+if os.name == "nt":
+    pytest.skip("POSIX PTY contract", allow_module_level=True)
+
 import taut_summon._process_domain_posix as process_domain_module
 import taut_summon._pty_posix as pty_posix_module
 from taut_summon._adapter import AdapterError, ExitEvent

@@ -1757,13 +1757,20 @@ def test_pty_detached_pre_pump_failure_reaps_child(
         tag="pty-prepump-second",
     )
     assert failed.wait(timeout=30.0) == 1
-    starts = [
-        entry for entry in _fake_tui_entries(second_log) if entry["event"] == "start"
-    ]
-    assert starts
-    child_pid = int(starts[-1]["pid"])
+    spawned = re.search(
+        r"spawned harness child \(pid (?P<pid>\d+), start (?P<start>[^)]+)\)",
+        failed.stderr_tail(),
+    )
+    assert spawned is not None
+    child_pid = int(spawned.group("pid"))
+    child_start = spawned.group("start")
+
+    def _spawned_child_retired() -> bool:
+        evidence = capture_process(child_pid)
+        return evidence is None or evidence.start_time != child_start
+
     wait_until(
-        lambda: capture_process(child_pid) is None,
+        _spawned_child_retired,
         timeout=10.0,
         message="pre-pump child reaped",
     )

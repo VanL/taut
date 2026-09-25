@@ -1594,6 +1594,13 @@ class SummonDriver:
         capture = _agent_capture(
             handle.pid, rule=f"summon harness child for {boot.member_name}"
         )
+        anchor = capture.anchor
+        assert anchor is not None
+        logger.debug(
+            "spawned harness child (pid %s, start %s)",
+            anchor.pid,
+            anchor.start_time,
+        )
         rejoin_client = TautClient(
             db_path=self._db_path,
             token=boot.token,

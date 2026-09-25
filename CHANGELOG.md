@@ -19,6 +19,12 @@
   It preserves the pre-signal PID-ownership check and releases the parent's PTY
   descriptors before waiting for terminal-session exit. New broad-exception
   sites were narrowed or refactored, reducing the approved Ruff inventory.
+- Platform-specific Summon tests now stop before importing unavailable POSIX
+  modules on Windows. PTY failure cleanup is checked against parent-captured
+  process identity instead of a scheduler-dependent child startup record;
+  Windows SIGINT cleanup probes raise the installed Python signal handler
+  rather than invoking Windows process-termination semantics. Read-only CLI
+  probes build only the unread state required by each command.
 
 - Release dry-runs now warn instead of stopping when the target version is not
   in the changelog, and `--skip-checks` help names the external live harness it

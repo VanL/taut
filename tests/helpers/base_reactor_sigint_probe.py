@@ -187,7 +187,7 @@ def _run_broker_io_probe() -> dict[str, object]:
             nonlocal signal_delivered
             if session is process_session and not signal_delivered:
                 signal_delivered = True
-                os.kill(os.getpid(), signal.SIGINT)
+                signal.raise_signal(signal.SIGINT)
             original_release(session, active_failure=active_failure)
 
         interrupted = False

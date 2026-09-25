@@ -10,12 +10,17 @@ import shutil
 import signal
 import subprocess
 import sys
-import termios
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if os.name == "nt":
+    pytest.skip("POSIX host PTY contract", allow_module_level=True)
+
+import termios
+
 from conftest import _base_env
 
 from taut.identity import capture_process

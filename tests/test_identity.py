@@ -1856,9 +1856,13 @@ created = next(
     for line in joined.stdout.splitlines()
     if "token" in json.loads(line)
 )
-assert taut("--as", "other", "join", "general").returncode == 0
-assert taut("--as", "other", "say", "general", "unread").returncode == 0
-assert taut("--as", "other", "say", "@" + created["name"], "direct").returncode == 0
+
+if verb == "list":
+    assert taut("--as", "other", "join", "general").returncode == 0
+    assert taut("--as", "other", "say", "general", "unread").returncode == 0
+elif verb == "list-dms":
+    assert taut("--as", "other", "join", "general").returncode == 0
+    assert taut("--as", "other", "say", "@" + created["name"], "direct").returncode == 0
 
 commands = {
     "whoami": ("--json", "whoami"),
