@@ -1052,7 +1052,7 @@ class TautApp(App[None]):
         previous_clipboard = self._clipboard
         try:
             self.copy_to_clipboard(selected)
-        except Exception as exc:  # noqa: BLE001 approved [TUI-12.1] presentation boundary
+        except (OSError, RuntimeError) as exc:
             self._clipboard = previous_clipboard
             self.notify(f"Unable to copy selection: {exc}", severity="error")
             return

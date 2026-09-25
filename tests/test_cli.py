@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
 from typing import TextIO, cast
@@ -3309,7 +3310,6 @@ def test_cli_watch_sigint_under_concurrent_writer_always_exits_130(
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
     stop_writer = threading.Event()
-    writer_failure: list[BaseException] = []
 
     def write_continuously() -> None:
         peer = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
@@ -3319,13 +3319,11 @@ def test_cli_watch_sigint_under_concurrent_writer_always_exits_130(
                 peer.say("general", f"interrupt stress {sequence}")
                 sequence += 1
                 time.sleep(0.002)
-        except BaseException as exc:  # noqa: BLE001 - surfaced on the owner
-            writer_failure.append(exc)
         finally:
             peer.close()
 
-    writer = threading.Thread(target=write_continuously)
-    writer.start()
+    writer_pool = ThreadPoolExecutor(max_workers=1)
+    writer = writer_pool.submit(write_continuously)
     offsets = random.Random(0)
     try:
         for iteration in range(60):
@@ -3373,10 +3371,10 @@ def test_cli_watch_sigint_under_concurrent_writer_always_exits_130(
                 assert not pump.is_alive()
     finally:
         stop_writer.set()
-        writer.join(10)
-
-    assert not writer.is_alive()
-    assert writer_failure == []
+        try:
+            writer.result(timeout=10)
+        finally:
+            writer_pool.shutdown()
 
 
 def test_cli_watch_policy_failure_stops_without_advancing_cursor(

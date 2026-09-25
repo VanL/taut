@@ -22,7 +22,7 @@ pytestmark = pytest.mark.sqlite_only
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows ConPTY")
 def test_quiet_native_exit_is_published_before_output_drain_starts() -> None:
-    from taut_summon._adapter import AdapterEvent, ExitEvent
+    from taut_summon._adapter import AdapterError, AdapterEvent, ExitEvent
     from taut_summon._pty import PtyAdapter, PtySpec
     from taut_summon._pty_windows import WindowsPtyHandle
 
@@ -37,13 +37,13 @@ def test_quiet_native_exit_is_published_before_output_drain_starts() -> None:
     ).spawn(system_prompt="unused", env={})
     assert isinstance(handle, WindowsPtyHandle)
     events: list[AdapterEvent] = []
-    failures: list[BaseException] = []
+    failures: list[AdapterError] = []
     consumer: threading.Thread | None = None
 
     def consume_events() -> None:
         try:
             events.extend(handle.events())
-        except BaseException as exc:  # noqa: BLE001 - retain for the observing test
+        except AdapterError as exc:
             failures.append(exc)
 
     try:
@@ -428,12 +428,14 @@ def test_native_observer_retains_both_real_recovery_provider_generations(
 def _gate_driver(
     controller: Any, request: Any, interaction: Any
 ) -> tuple[threading.Thread, Future[None]]:
+    from taut_summon import SummonOperationError
+
     finished: Future[None] = Future()
 
     def run() -> None:
         try:
             controller.run_foreground(request, interaction)
-        except BaseException as error:  # noqa: BLE001 - retain for the observing test
+        except SummonOperationError as error:
             finished.set_exception(error)
         else:
             finished.set_result(None)

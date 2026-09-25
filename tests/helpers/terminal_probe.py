@@ -456,7 +456,9 @@ def run_terminal_child(
         if errors:
             raise RuntimeError("real-terminal attach failed") from errors[0]
         returncodes = [
-            event.returncode for event in handle.events() if isinstance(event, ExitEvent)
+            event.returncode
+            for event in handle.events()
+            if isinstance(event, ExitEvent)
         ]
         if len(returncodes) != 1:
             raise RuntimeError(f"terminal probe emitted exit codes {returncodes!r}")
@@ -469,6 +471,8 @@ def _start_terminal_attach(
     shutdown: threading.Event,
     errors: list[BaseException],
 ) -> threading.Thread:
+    from taut_summon._adapter import AdapterError
+
     def attach() -> None:
         try:
             handle.attach(
@@ -476,7 +480,7 @@ def _start_terminal_attach(
                 input_fd=terminal.lease_input_fd,
                 output_fd=terminal.lease_output_fd,
             )
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
+        except AdapterError as exc:
             errors.append(exc)
 
     thread = threading.Thread(target=attach, name="tui-terminal-probe", daemon=True)

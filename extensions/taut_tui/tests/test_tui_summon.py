@@ -117,14 +117,10 @@ def test_request_completion_preserves_competing_resolve_and_fail(
         lambda: request.fail(error),
     )
     ready = Barrier(len(contenders) + 1)
-    failures: list[BaseException] = []
 
     def compete(action: Callable[[], None]) -> None:
-        try:
-            ready.wait(timeout=2)
-            action()
-        except BaseException as failure:  # noqa: BLE001 - retain test thread outcome
-            failures.append(failure)
+        ready.wait(timeout=2)
+        action()
 
     with CompletionScope() as scope:
         resolved = request_phase(scope, monkeypatch, request, "resolved")
@@ -139,7 +135,6 @@ def test_request_completion_preserves_competing_resolve_and_fail(
             for worker in workers:
                 worker.join(timeout=max(0, deadline - scope.now()))
             assert not any(worker.is_alive() for worker in workers)
-            assert failures == []
             assert callbacks == [(request.decision, request.error)]
             if request.error is not None:
                 with pytest.raises(ValueError) as caught:

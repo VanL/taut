@@ -207,12 +207,11 @@ class Completion(Generic[T]):
             if source.cancelled():
                 self.cancel(self.key)
                 return
-            try:
-                value = source.result()
-            except BaseException as error:  # noqa: BLE001 - retain for the observing caller
+            error = source.exception()
+            if error is not None:
                 self.fail(self.key, error)
             else:
-                self.succeed(self.key, value)
+                self.succeed(self.key, source.result())
 
     def _raise_if_invalid(self) -> None:
         with self._condition:

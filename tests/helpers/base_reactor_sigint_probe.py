@@ -16,6 +16,7 @@ from unittest.mock import patch
 from simplebroker import _broker_session
 from simplebroker.ext import PollingStrategy
 
+from taut._cleanup import capture_cleanup_failure
 from taut.client import TautClient
 from taut.watcher import BaseReactor
 
@@ -202,16 +203,15 @@ def _run_broker_io_probe() -> dict[str, object]:
                 interrupted = True
                 interrupt_notes = tuple(getattr(exc, "__notes__", ()))
 
-        cleanup_error: str | None = None
-        try:
-            watcher.stop(join=False)
-        except Exception as exc:  # noqa: BLE001 - structured child-process evidence
-            cleanup_error = f"{type(exc).__name__}: {exc}"
-        try:
-            client.close()
-        except Exception as exc:  # noqa: BLE001 - structured child-process evidence
-            if cleanup_error is None:
-                cleanup_error = f"client close: {type(exc).__name__}: {exc}"
+        cleanup_failure = capture_cleanup_failure(
+            None, lambda: watcher.stop(join=False)
+        )
+        cleanup_failure = capture_cleanup_failure(cleanup_failure, client.close)
+        cleanup_error = (
+            None
+            if cleanup_failure is None
+            else f"{type(cleanup_failure).__name__}: {cleanup_failure}"
+        )
 
         return {
             "cleanup_error": cleanup_error,

@@ -806,12 +806,12 @@ class _CleanupProcess(Protocol):
 def _cleanup_driver_processes(procs: Iterable[_CleanupProcess]) -> None:
     """Attempt every owned cleanup before reporting teardown failures."""
 
+    from taut._cleanup import cleanup_failure
+
     failures: list[Exception] = []
     for proc in procs:
-        try:
-            proc.cleanup()
-        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            failures.append(exc)
+        if (failure := cleanup_failure(proc.cleanup)) is not None:
+            failures.append(failure)
     if failures:
         raise ExceptionGroup("driver fixture cleanup failed", failures)
 
