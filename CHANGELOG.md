@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.10 - 2026-09-25
+
 - Transcript redraws no longer overwrite newer user selections. Queued input
   follows the original message across row changes and cannot select a different
   message at a reused row index.
