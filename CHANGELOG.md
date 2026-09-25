@@ -12,7 +12,8 @@
   one SHA, retaining bounded owner-phase diagnostics and content-free result
   summaries without changing test behavior deadlines. Missing, conflicting,
   or incomplete evidence fails qualification; the historical initial-DM cause
-  remains an open diagnosis.
+  remains an open diagnosis. MCP fault-isolation coverage starts its behavior
+  deadline after Windows filesystem and SQLite fixture setup completes.
 - POSIX host-terminal teardown now waits for the owned child-reap event after
   `SIGKILL` instead of failing against a scheduler-dependent polling deadline.
   It preserves the pre-signal PID-ownership check and releases the parent's PTY

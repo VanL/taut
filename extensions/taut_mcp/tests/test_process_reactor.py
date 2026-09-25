@@ -1444,7 +1444,6 @@ def test_normal_shutdown_does_not_report_child_fault(tmp_path: Path) -> None:
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(10)
 def test_child_fault_is_isolated_and_reported_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1497,7 +1496,7 @@ def test_child_fault_is_isolated_and_reported_once(
         finally:
             await reactor.aclose()
 
-    asyncio.run(scenario())
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 
     events = _debug_events(failed_workspace)
     assert len(events) == 1
