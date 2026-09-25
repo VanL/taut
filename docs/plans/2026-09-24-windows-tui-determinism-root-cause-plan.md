@@ -800,6 +800,17 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Owner-directed closure is a Class 2 documentation-only
+  disposition: record acceptance/scope/reopen condition, align both plans,
+  participation reference, index and evidence registers, then verify and
+  commit. Independent closure review: no blocker, no actionable findings.
+  Fifteen documentation-reference tests, path/status gates and diff checks
+  pass. No runtime code or qualified evidence changed. Traceability runbook
+  remains adequate; no new skill or lesson is needed for this disposition.
+  Coalescing checked-deferred for this targeted closure: nine completed
+  non-exemplar, unretired plans against threshold eight; archive maintenance
+  is a separate unit, not folded into the owner's targeted closure commit.
+
 - 2026-09-25 — Final scoped evidence audit: **no blocker**, no actionable
   findings. Independent reviewer revalidated all nine results (five Windows,
   four non-Windows), phase coverage, runtime/lock/SHA identities, native
