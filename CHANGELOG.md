@@ -14,8 +14,9 @@
   or incomplete evidence fails qualification; the historical initial-DM cause
   remains an open diagnosis.
 - POSIX host-terminal teardown now waits for the owned child-reap event after
-  `SIGKILL` instead of failing against a scheduler-dependent polling deadline,
-  while preserving the pre-signal PID-ownership check. New broad-exception
+  `SIGKILL` instead of failing against a scheduler-dependent polling deadline.
+  It preserves the pre-signal PID-ownership check and releases the parent's PTY
+  descriptors before waiting for terminal-session exit. New broad-exception
   sites were narrowed or refactored, reducing the approved Ruff inventory.
 
 - Release dry-runs now warn instead of stopping when the target version is not

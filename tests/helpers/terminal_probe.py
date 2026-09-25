@@ -233,8 +233,8 @@ class PosixHostShell:
                 if self._retire_session(sig, timeout=wait_seconds):
                     break
         finally:
-            self._reap_shell()
             self._close_fds()
+            self._reap_shell()
 
     def _live_session_members(self) -> list[tuple[psutil.Process, float]]:
         try:

@@ -82,15 +82,16 @@ def test_host_shell_cleanup_kills_term_ignoring_foreground_child(
     child_pid: int | None = None
     try:
         shell.wait_for_prompt()
+        ready_marker = "TERM-IGNORING-READY"
         command = (
             "import os,signal,time,pathlib;"
             "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
             f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()));"
-            "print('TERM-IGNORING-READY',flush=True);"
+            f"print(bytes.fromhex({ready_marker.encode().hex()!r}).decode(),flush=True);"
             "time.sleep(60)"
         )
         shell.run(shlex.join([sys.executable, "-c", command]))
-        shell.wait_for_text("TERM-IGNORING-READY")
+        shell.wait_for_text(ready_marker)
         child_pid = int(pid_file.read_text(encoding="utf-8"))
         assert capture_process(child_pid) is not None
     finally:
@@ -157,6 +158,26 @@ def test_host_shell_reap_waits_for_the_owned_child_exit_event(
         ("kill", pid, signal.SIGKILL),
         ("waitpid", pid, 0),
     ]
+
+
+def test_host_shell_close_releases_pty_before_waiting_for_reap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell = PosixHostShell(
+        pid=1234,
+        master_fd=-1,
+        slave_fd=-1,
+        leader_create_time=0.0,
+        prompt="unused",
+    )
+    events: list[str] = []
+    monkeypatch.setattr(shell, "_retire_session", lambda _sig, *, timeout: True)
+    monkeypatch.setattr(shell, "_close_fds", lambda: events.append("close_fds"))
+    monkeypatch.setattr(shell, "_reap_shell", lambda: events.append("reap_shell"))
+
+    shell.close()
+
+    assert events == ["close_fds", "reap_shell"]
 
 
 def _run(
