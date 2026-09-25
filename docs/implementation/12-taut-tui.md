@@ -594,6 +594,10 @@ deadline accepts on-time publication even if wake delivery is delayed, but
 never accepts a late publication merely because the timeout callback ran late.
 Timeout or observing-task cancellation disposes only observation. Product
 stop and retirement remain separate test responsibilities.
+Each scope admits at most 4096 records. Overflow fails closed without evicting
+earlier outcomes or cancelling the attempted source; the violation survives
+scope cleanup. This bounds repeatable focus/highlight observation within a
+test, in addition to the per-test teardown boundary.
 
 `_screen_completion.py` observes Textual's already-scheduled `AwaitMount`
 and existing removal future. It does not start an extra mount task. Result

@@ -34,6 +34,27 @@ def test_completion_retains_success_before_any_wait() -> None:
     assert outcome.published_at == 12.5
 
 
+def test_scope_history_is_bounded_without_touching_the_producer() -> None:
+    scope = CompletionScope()
+    owner = object()
+    first = scope.expect(CompletionKey(owner, "first", request=object()))
+    for generation in range(4095):
+        scope.expect(CompletionKey(owner, "phase", generation=generation))
+    source: Future[str] = Future()
+    with pytest.raises(AssertionError, match="completion history capacity"):
+        scope.observe_future(source, owner=owner, phase="overflow")
+    assert len(scope._records) == 4096
+    assert source.cancelled() is False
+    source.set_result("real producer still completes")
+    assert source.result() == "real producer still completes"
+    first.succeed(first.key, "retained")
+    assert first.wait_sync(deadline=scope.now() + 1, description="first") == "retained"
+    scope.close()
+    assert not scope._records
+    with pytest.raises(AssertionError, match="completion history capacity"):
+        scope.raise_if_invalid()
+
+
 @pytest.mark.parametrize("mismatch", ["owner", "request", "generation", "phase"])
 def test_wrong_identity_never_completes_a_registered_phase(mismatch: str) -> None:
     scope = CompletionScope()

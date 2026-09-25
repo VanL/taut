@@ -770,6 +770,16 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Main integration audit found that a per-test scope released
+  history on teardown but had no fixed admission bound while repeatable
+  focus/highlight events were observed. A 4096-record overflow regression
+  fired `DID NOT RAISE` before the correction. Scope admission now fails
+  closed under its existing lock, preserves earlier outcomes and leaves the
+  producer untouched; teardown clears records but retains the violation.
+  Independent review passed and independently ran all 84 foundation/screen
+  cases. Main Ruff/mypy pass. This enforces the existing bounded-history
+  invariant; no domain scheduler or deadline changed.
+
 - 2026-09-25 — Added the real SQLite ordering probes: older navigation work
   stays serialized; reordered real UI callbacks both retain a DM committed
   before their source reads; older real search results cannot replace the

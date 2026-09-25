@@ -302,7 +302,9 @@ class CompletionScope:
     """Finite test/run ownership; successful context exit checks protocol errors.
 
     Optional/background records need not finish. Only an explicit wait requires a
-    phase by its deadline. The scope drops its record references when closed.
+    phase by its deadline. At most 4096 records are retained per scope; overflow
+    fails the test rather than evicting an outcome or growing without bound.
+    The scope drops its record references when closed.
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -323,6 +325,9 @@ class CompletionScope:
             if existing is not None:
                 existing._invalidate("already registered")
                 return existing
+            if len(self._records) >= 4096:
+                self._violation = "completion history capacity exceeded (4096)"
+                raise CompletionProtocolError(self._violation)
             record: Completion[Any] = Completion(key, self._clock)
             self._records[key] = record
             return record
