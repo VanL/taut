@@ -770,6 +770,20 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Native-probe generation correction is causal over the real
+  recovery driver: the first detached provider is retired before the second
+  is spawned; orientation consumption belongs to that exact second handle.
+  Reintroducing the one-provider cap raises the original public
+  `SummonOperationError` → `DriverError` → `AssertionError`, not an attach
+  timeout. Early driver error/cancellation/return are now retained by the
+  attach observer. Failure cleanup requests public STOP before closing all
+  captured handles and checked joins; regressions cover failure after real
+  recovery and a first close failure without skipping the second provider.
+  Main retained-lock run: nine portable passed, three native-only skipped
+  (60.41 s). Independent combined native/selection review: 21 passed, three
+  native skips, exactly 21 complete phase files (60.69 s); Ruff/mypy passed.
+  Native cancellation/995 remains unqualified until hosted execution.
+
 - 2026-09-25 — The implementation note now contains the complete owner /
   publication / observation model, including generic worker actions,
   navigation, watcher initial drain, conversation, viewport/search/resize,

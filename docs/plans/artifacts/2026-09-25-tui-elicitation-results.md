@@ -33,12 +33,20 @@ the main plan.
 `extensions/taut_tui/tests/test_tui_native_determinism.py` covers three
 Windows-only executions. Quiet natural exit must publish status 7 after real monitor retirement
 and before the output drain starts; only then may the one event consumer run.
-The two-provider case retains actual host terminals, log paths and provider
+The two-run case retains actual host terminals, log paths and provider
 creation identities, leaves first-run echo/reset bytes unread, and checks
 second-run input/output isolation after both attach readers retire.
+The recovery run itself has two provider generations: initial detached and
+subsequent attached. Its observer now retains both actual handles, requires
+the first to retire before replacement, and binds attachment by exact owner.
+Portable real-driver baseline, one-provider-cap mutant and failure-after-
+recovery scenarios exercise this same observer. The mutant must retain the
+original source exception chain; it cannot pass via a startup timeout.
+Cleanup STOPs pending driver work before closing every captured provider and
+joining, including when the first close raises after real retirement.
 
 The isolation case now has an explicit reused-host fixture mutant. It runs
-both real providers and requires actual cancellation evidence before checking
+both real runs and requires actual cancellation evidence before checking
 the expected semantic failure: the first run's unread tagged bytes appear in
 the second run's host output. Only that exact isolation assertion is caught;
 source errors, missing cancellation and teardown failures remain failures.

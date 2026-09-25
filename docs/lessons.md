@@ -994,6 +994,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   actions on the real UI producer path and observe the exact applied event.
   Do not use direct private state changes to race ahead of pending owner work.
 
+- 2026-09-25: A foreground run is not a provider generation. Setup recovery
+  retires an initial detached provider and starts an attached successor.
+  A test observer that assumes one process per run can cause the failure
+  it reports as an attach timeout. Retain actual spawned handles, bind
+  attachment to its exact owner, and race observation against the retained
+  producer outcome so a source failure is not relabeled as missing progress.
+  Terminal screen output is also not an event log: prove semantic hooks with
+  receipts from those hooks, and keep real input/exit evidence independent.
+  Fixing that observation does not establish why a historical frame was lost.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
