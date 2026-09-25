@@ -68,6 +68,29 @@ acceptance attempt.
 
 ## Mutation reproduction notes
 
+The portable mutants are now committed-source pytest gates in
+`extensions/taut_tui/tests/test_tui_mutation_gates.py` and
+`extensions/taut_tui/tests/_mutation_probe_child.py`, so every retained
+platform executes the same fourteen semantic reds. Each child copies the
+current selected tests/helpers and product package into scratch space, applies
+exactly matched source edits, and runs one declared node. The parent accepts
+only exit 1, that exact node, passing setup/teardown, and the expected call
+exception plus semantic marker. Collection/internal failures, wrong markers,
+extra tests, missing reports, and timeouts fail the gate. Child output is
+discarded; the retained report contains phase/outcome/marker booleans only.
+The 45-second child containment starts before process creation; expiry kills
+and reaps the exact child and is never accepted as a causal red. The separate
+timeout probe proves containment/reaping, not arrival at its injected body.
+
+The serialization mutant uses an actual second-worker entry handshake, not
+a scheduler race. The portable host-reuse mutant writes tagged bytes to real
+`HostTerminal` instances and reads through their existing source-owned reader;
+it proves unread-output ownership, not native cancelled-I/O behavior. Negative
+children cannot emit parent phase artifacts. All 24 parent cases pass, with
+exactly 24 instrumented phase files; all eleven unique isolated targets also
+pass unmutated. Independent review reran the 24 gates (14.22 s) and found no
+blocker. Hosted execution and the native probe remain separate requirements.
+
 Scratch copies, not the working product, were modified. At this checkpoint
 the local evidence directories are `/tmp/taut-screen-mutations.QcT2L2` and
 `/tmp/taut-owner-mutations.kMoxCS`. They are temporary convenience, not the
