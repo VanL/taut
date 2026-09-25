@@ -126,7 +126,7 @@ class TuiDomainActions:
         *,
         persona: str | None = None,
         new: bool = False,
-    ) -> Future[Message]:
+    ) -> Future[Message | None]:
         return self._session.submit_client_operation(
             lambda client: client.join(channel, persona=persona, new=new)
         )

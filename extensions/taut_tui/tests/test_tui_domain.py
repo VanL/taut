@@ -65,6 +65,9 @@ def test_native_identity_channel_message_search_and_context_flow(
         assert actions.show_identity().result(timeout=5).name == "alice"
         assert actions.set_persona("reviewer").result(timeout=5).persona == "reviewer"
         assert actions.members("general").result(timeout=5)
+        joined = actions.join_channel("reviews").result(timeout=5)
+        assert joined is not None and joined.thread == "reviews"
+        assert actions.join_channel("reviews").result(timeout=5) is None
         topic = actions.set_topic("general", "Release coordination").result(timeout=5)
         assert topic.topic == "Release coordination"
         assert actions.show_topic("general").result(timeout=5) == topic
