@@ -498,16 +498,16 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "8.4.0"
+version = "8.4.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c7/05/8eb39afc5d55253bc5dcbcf1902ef5d678323dca2e702edad260aaf16d45/simplebroker-8.4.0.tar.gz", hash = "sha256:96f549c584d333127bf8ee092cc4f44ca02d5c60d00654906f948837f64ec3ef", size = 227995, upload-time = "2026-09-18T15:59:38.393Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/0e/90cf32f3a5403e4879d0f80293f3bd5ebb1432f6ddabb67733597611ad73/simplebroker-8.4.1.tar.gz", hash = "sha256:061063fa552b96963dd8ccccdf968d7bbb57e3928a052e2867b71a176d6ec708", size = 227993, upload-time = "2026-09-24T17:58:11.996Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/41/33/b0a47fa8d6c432f55a23e283f024cd1dbee65d8523a1b1bb59cf53ce26a8/simplebroker-8.4.0-py3-none-any.whl", hash = "sha256:1b6e68d7d57b96a30b04ed7ac2613ca60071c0a60a6a3fa700bea590eee89ca2", size = 253428, upload-time = "2026-09-18T15:59:36.627Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/73/6326f59a662eafcf49de1a11a12d7693972d80be0f64aaa48fc763283e1a/simplebroker-8.4.1-py3-none-any.whl", hash = "sha256:ca65009298fc67ab527f4b36cc89948dcd62915a43f58d08639eda15c768f396", size = 253426, upload-time = "2026-09-24T17:58:10.278Z" },
 ]
 
 [[package]]
 name = "taut-chat"
-version = "0.9.9"
+version = "0.9.10"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -542,7 +542,7 @@ provides-extras = ["all", "tui", "dev"]
 
 [[package]]
 name = "taut-summon"
-version = "0.9.9"
+version = "0.9.10"
 source = { editable = "." }
 dependencies = [
     { name = "taut-chat" },
