@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from _completion import Completion, CompletionKey, CompletionScope
+from _completion import Completion, CompletionKey, CompletionScope, CompletionTimeout
 from tests.helpers.terminal_probe import HostTerminal
 
 pytestmark = pytest.mark.sqlite_only
@@ -238,12 +238,30 @@ class _NativeAttachProof:
             assert len(self.output) <= 32768, "bounded native host transcript"
             for record, needle in (
                 (self.menu, b"Trust this folder?"),
-                (self.chat, b"chat> "),
+                (self.chat, b"chat>"),
                 (self.echo, b"echo:" + self.marker),
             ):
                 assert record is not None
                 if record.snapshot() is None and needle in self.output:
                     record.succeed(record.key, None)
+
+
+def test_native_host_prompt_observer_does_not_require_terminal_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ConPTY presents a terminal screen, not the provider's original write
+    # bytes. The prompt token is stable; a trailing blank is not its identity.
+    with CompletionScope() as scope:
+        proof = _NativeAttachProof(monkeypatch, scope, b"marker")
+        proof.menu = scope.expect(CompletionKey(proof, "host.menu", proof))
+        proof.chat = scope.expect(CompletionKey(proof, "host.chat", proof))
+        proof.echo = scope.expect(CompletionKey(proof, "host.echo", proof))
+        deadline = scope.now() + 2
+        proof._host_write(b"\x1b[?2004h\r\ncha")
+        assert proof.chat.snapshot() is None
+        proof._host_write(b"t>")
+        proof.chat.wait_sync(deadline=deadline, description="complete chat prompt")
+        assert proof.echo.snapshot() is None
 
 
 @dataclass(frozen=True)
@@ -312,9 +330,21 @@ def _native_gate_run(
                     deadline=deadline, description="recovery menu write"
                 )
                 terminal.write(b"\x14")
-            proof.chat.wait_sync(
-                deadline=deadline, description="native chat prompt write"
-            )
+            try:
+                proof.chat.wait_sync(
+                    deadline=deadline, description="native chat prompt write"
+                )
+            except CompletionTimeout as error:
+                # Content-free boundary diagnostics, not timeout-based blame.
+                error.add_note(str({
+                    "host_bytes": len(proof.output),
+                    "prompt_token_seen": b"chat>" in proof.output,
+                    "padded_prompt_seen": b"chat> " in proof.output,
+                    "driver_returned": finished.done(),
+                    "attach_retired": proof.retired.snapshot() is not None
+                    if proof.retired is not None else False,
+                }))
+                raise
             echo_deadline = scope.now() + 15
             terminal.write(marker.encode() + b"\r")
             assert proof.echo is not None

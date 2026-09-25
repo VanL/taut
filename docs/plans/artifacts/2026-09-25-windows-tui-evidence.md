@@ -223,3 +223,31 @@ The model's budget firing pair must still show delayed setup followed by
 timely behavior succeeds, while late behavior fails at the unchanged deadline.
 The sample neither proves these caps sufficient under every schedule nor
 closes S4. Conversion may proceed only after scoped model/cap review.
+
+## Diagnostic 3: foundation, action/Summon migration and native probes
+
+[Run 36149242970](https://github.com/VanL/taut/actions/runs/36149242970),
+attempt 1 at `d2ffea525c5c93a41004ba4a3c0ba6324a01be45`, ran one repetition,
+not the five-run qualification. All four non-Windows jobs passed 681 tests
+with two declared native-only skips. Their JUnit durations were 143.807 s
+(Ubuntu 3.11), 141.496 s (Ubuntu 3.13), 142.785 s (Ubuntu 3.14), and
+149.792 s (macOS 3.13).
+
+Windows passed 682 and failed one of 683 tests in 306.678 s, with zero skips.
+The quiet native process-exit probe passed. The new cross-run isolation
+probe timed out at `host.chat` on its first provider, before cancellation or
+recovery. It therefore supplies no cancelled-I/O or isolation qualification.
+This timeout alone does not classify a product defect.
+
+The probe required a trailing blank after `chat>`, unlike the established
+native harness reader's stable `chat>` token. A portable split-chunk prompt
+without padding fires the same observer timeout and passes after matching
+the stable token. This corrects an overly strict test observer; it remains
+a candidate explanation for the hosted failure because raw host bytes were
+not retained. The next run adds content-free byte-count/token/retirement
+diagnostics and must reach actual cancellation before claiming that proof.
+
+All phase files validate directly: 683 Windows and 681 in each other lane.
+The full repetition verifier correctly rejects Windows for the failing test.
+[Windows artifact](https://github.com/VanL/taut/actions/runs/36149242970/artifacts/10870697765).
+Local copy: `/tmp/taut-tui-native-diagnostic3.iK5xYU`.
