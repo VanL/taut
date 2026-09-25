@@ -27,6 +27,32 @@ correction against the unchanged retired observer body. Scoped Ruff and mypy
 pass. The foundation's independent review and 82-case verification are in
 the main plan.
 
+## Native probe checkpoint (not native qualification)
+
+`extensions/taut_tui/tests/test_tui_native_determinism.py` adds two Windows-only
+cases. Quiet natural exit must publish status 7 after real monitor retirement
+and before the output drain starts; only then may the one event consumer run.
+The two-provider case retains actual host terminals, log paths and provider
+creation identities, leaves first-run echo/reset bytes unread, and checks
+second-run input/output isolation after both attach readers retire.
+
+The cancelled-read probe records the exact session, duplicated input handle
+and retained reader object. It holds cleanup until the reader reaches its
+next read after detach, but does not treat entry as pending I/O. Qualification
+requires both a real successful cancellation and matching
+`ERROR_OPERATION_ABORTED`, plus reader retirement. A clean retirement without
+those events is explicitly “native cancellation proof not established”, not
+a diagnosed product defect. There is no OS polling or repeated cancellation.
+
+Main source review checked real read/write/cancel delegation, single-reader
+ownership, bounded records and teardown. Local checks report two honest
+Windows skips; Ruff/mypy pass. Exercises with the existing fake Win32 API
+validate callback wiring through real monitor/attach owner code only. A
+deferred-publication mutant failed the pre-drain exit-publication assertion
+there, but actual ConPTY green and native mutation red are still open.
+The next hosted dispatch is a one-repetition diagnostic, not the five-run
+acceptance attempt.
+
 ## Mutation reproduction notes
 
 Scratch copies, not the working product, were modified. At this checkpoint
