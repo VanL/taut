@@ -614,9 +614,48 @@ not narrow the callback forms accepted by the real framework.
 The helper and real-framework regressions live in `test_tui_determinism.py`
 and `test_screen_completion.py`. They cover early/late completion, wrong
 identity, duplicate outcomes, cancellation, weak callback lifetime, real
-held mount/focus/removal, screen reuse and teardown. Caller migrations and
-native qualification remain tracked by the active plan; these tests alone
-neither diagnose historical S4 nor close its release gate.
+held mount/focus/removal, screen reuse and teardown.
+
+The determinism model is one scheduling/wake owner per execution context
+under [TAUT-8.5], not one new test control loop per event type. Textual applies
+UI policy, the serialized session owns client work, and Summon's existing
+reactor owns foreground transitions. Their source adapters keep their real
+I/O and thread lifetimes. Test observers are installed before the initiating
+action, then bind exact identities created by the source submission. Retained
+Futures preserve completion that precedes callback registration. No observer polls domain
+state, schedules a competing driver, or cancels shared producer futures.
+
+| Required phase | Publisher and identity | Observation boundary |
+|---|---|---|
+| Navigation source and application | Session Future, then Textual with that exact Future | `_app_completion.py` retains source outcome separately from real `_apply_navigation_result` return and rendered targets. Navigation has no generation guard. |
+| Worker action and application | Named domain method, exact Future and original `_watch_future` callback | `_action_completion.py` retains source, refusal and callback return separately. App send completion additionally retains its pending-send token; inspector/action assertions remain after actual owner application. |
+| Conversation and live delivery | Session generation/thread/message, then Textual conversation intent | `_chat_completion.py` retains accepted delivery; `_app_completion.py` distinguishes stale/superseded intent from current application. |
+| Watcher initial drain | Actual watcher and its existing ready Event | `_chat_completion.py` installs `InitialDrainEvent` before watcher start and retains the first real `set()` timestamp. Open-result completion does not prove initial drain. |
+| Transcript render and search jump | Named viewport owner, intent, model generation and effect identity | Rows are not settled geometry. Observe the accepted restore effect or final measured tail reapplication; a newer unrelated effect cannot satisfy the old request. |
+| Resize | Textual resize generation and its viewport owner | Latest `_render_latest_resize` return plus the corresponding accepted viewport effect. The rapid burst keeps a negative late-work window only after these real completions. |
+| Input, presentation and focus | Exact posted message, named action or screen-push lifecycle | Actual handler return, mount and committed focus are distinct. Initial queued highlights must run before real widget activation; direct private selection is not a queue fence. |
+| Confirmation and recovery offer | Exact Summon request and existing resolution callback | `_summon_completion.py` preserves the production callback and records only the first real decision, including competing resolution attempts. |
+| Terminal lease | Exact operation/request and existing lease owner | Acquisition, restoration and real hold return are separate. Headless tests retain the established lease-thread seam; production suspension remains blocking. |
+| Orientation consumption and readiness | Actual adapter at orientation handoff, then app-owned run token | Match bounded fixture echo on the existing provider output reader, after its input log closes. Injection return alone is not consumption; app-ready and foreground return are separate exact-token callbacks. |
+| Retirement | Actual screen Future, session, adapter, reader or foreground thread | Await the source-owned result, then close/join the actual owner as required. Observation disposal never proves retirement. |
+
+Behavior deadlines begin at the named action or producer handoff, not at
+observer registration or a later wait. Existing explicit bounds remain
+unchanged. Formerly counted app/application waits use the reviewed five-second
+cap; pure decision waits use their neighboring two-second cap. Watcher startup
+has its own five-second initial-drain budget. Framework bootstrap, native
+terminal reads and cleanup retain their separate source-owned containment.
+The inventory records every preserved exception and finite input sequence.
+Progress cannot reset a deadline, and no Windows-wide multiplier is used.
+
+`test_tui_mutation_gates.py` runs the portable causal mutants on every retained
+platform. Its scratch-only child runner accepts only a declared test's exact
+semantic call failure with successful setup and teardown. Collection errors,
+timeouts, extra tests or wrong failures never count as elicitation. The child
+cannot write parent phase evidence. Real native cancelled-I/O and ConPTY
+qualification remain Windows-only. These tests and a bounded green soak
+neither diagnose historical S4 nor close its release gate without the plan's
+separate causal proof or explicit owner disposition.
 
 ## Related Plans
 

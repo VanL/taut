@@ -56,7 +56,7 @@ not independently revalidate the historical hosted runs.
 
 ## Requested Outcomes
 
-- [ ] A written determinism model in `docs/implementation/12-taut-tui.md`:
+- [x] A written determinism model in `docs/implementation/12-taut-tui.md`:
   for every timing-sensitive phase (attach confirmation, terminal lease,
   recovery offer, orientation injection, navigation apply, transcript
   render, search jump, focus transition, resize), the event that completes
@@ -769,6 +769,20 @@ the one additional M2 case passed afterward. Scoped Ruff/mypy pass. Native
 Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
+
+- 2026-09-25 — The implementation note now contains the complete owner /
+  publication / observation model, including generic worker actions,
+  navigation, watcher initial drain, conversation, viewport/search/resize,
+  presentation/focus, confirmation, lease, orientation and retirement.
+  Independent review corrected the distinction between installing an
+  observer before action and binding a Future created by submission, then
+  passed the model and budget table. The diagnostic tests' two remaining
+  broad pauses now await exact navigation and callback-return completions;
+  all 65 diagnostic cases pass, independently repeated (0.81 s), with
+  Ruff/mypy clean. This is observation-only migration using the already
+  red/green-tested completion interface and unchanged semantic assertions,
+  not a newly claimed product fix. Selection/native negative-proof sweep
+  remains open before qualification.
 
 - 2026-09-25 — Diagnostic 4 at `e91a435` was red: Windows 686 passed,
   three failed; all four other lanes passed 686 with three native skips.

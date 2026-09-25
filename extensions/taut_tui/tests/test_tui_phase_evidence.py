@@ -90,6 +90,7 @@ def test_navigation_records_real_source_and_applied_dm_with_the_same_request(
     import asyncio
 
     import pytest
+    from _app_completion import AppCompletions
     from _phase_evidence import PhaseEvidence, install_phase_observers
 
     from taut import TautClient
@@ -111,8 +112,12 @@ def test_navigation_records_real_source_and_applied_dm_with_the_same_request(
 
         async def exercise() -> None:
             app = TautApp(db_path=str(database), as_name="alice", continuity_token=None)
-            async with app.run_test() as pilot:
-                await pilot.pause()
+            observed = AppCompletions(app, patch)
+            try:
+                async with app.run_test():
+                    await observed.navigation()
+            finally:
+                observed.close()
 
         asyncio.run(exercise())
     evidence.close(test_kind="navigation")
@@ -214,6 +219,7 @@ def test_source_errors_and_cancellation_survive_successful_ui_callbacks(
     import asyncio
 
     import pytest
+    from _completion import CompletionKey, CompletionScope
     from _phase_evidence import PhaseEvidence, install_phase_observers
 
     from taut_tui.app import TautApp
@@ -231,10 +237,26 @@ def test_source_errors_and_cancellation_survive_successful_ui_callbacks(
 
         async def exercise() -> None:
             app = TautApp(db_path=None, as_name=None, continuity_token=None)
-            async with app.run_test() as pilot:
-                app._watch_future(failed, applied.append)
-                app._watch_future(cancelled, applied.append)
-                await pilot.pause()
+            with CompletionScope() as scope:
+                records = {
+                    future: scope.expect(
+                        CompletionKey(app, "callback.returned", future)
+                    )
+                    for future in (failed, cancelled)
+                }
+
+                def completed(future: Future[None]) -> None:
+                    applied.append(future)
+                    records[future].succeed(records[future].key, None)
+
+                async with app.run_test():
+                    deadline = scope.now() + 5
+                    app._watch_future(failed, completed)
+                    app._watch_future(cancelled, completed)
+                    for record in records.values():
+                        await record.wait(
+                            deadline=deadline, description="exact UI callback return"
+                        )
 
         asyncio.run(exercise())
     evidence.close()
