@@ -770,6 +770,16 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Integration found SCREEN-R2: the result observer invoked a
+  bound built-in differently from Textual's real `ResultCallback.call_next`
+  path. Eight/nine screen neighbors exposed `list.append` parameter inspection
+  errors. A new real-framework test fired the same `AttributeError` before
+  the correction, then passed with `invoke(partial(callback, value))`.
+  Main verification: all 11 screen lifecycle cases pass, with scoped Ruff and
+  mypy clean. The source callback, its exception, result application and
+  independent removal completion remain distinct. This is a test-adapter
+  integration correction, not a product or S4 cause.
+
 (append-only)
 
 - 2026-09-24 — Plan opened on owner direction after the 0.9.9 Windows

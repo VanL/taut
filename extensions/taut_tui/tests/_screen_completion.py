@@ -6,6 +6,7 @@ import asyncio
 import weakref
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 import pytest
@@ -103,7 +104,9 @@ class ScreenCompletions:
             assert life is not None
             try:
                 if callback is not None:
-                    await invoke(callback, value)
+                    # ResultCallback.call_next prebinds the result before
+                    # invoke. Preserve that convention for bound built-ins.
+                    await invoke(partial(callback, value))
             except BaseException as error:
                 life.result.fail(life.result.key, error)
                 raise

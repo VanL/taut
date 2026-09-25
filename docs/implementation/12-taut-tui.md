@@ -602,6 +602,10 @@ Textual discovers event handlers on classes, so focus is observed after real
 app message dispatch, not by assigning an instance `on_descendant_focus`.
 Capture the push lifecycle before dispatch and retain that identity across
 an awaited handler; a reused screen object does not authorize a newer push.
+The result observer also preserves Textual's prebinding convention:
+`invoke(partial(callback, result))`. Calling `invoke(callback, result)` is
+not equivalent for bound built-ins such as `list.append`; the observer must
+not narrow the callback forms accepted by the real framework.
 
 The helper and real-framework regressions live in `test_tui_determinism.py`
 and `test_screen_completion.py`. They cover early/late completion, wrong

@@ -284,6 +284,34 @@ def test_detached_focus_during_teardown_does_not_replace_the_test_failure(
     asyncio.run(exercise())
 
 
+def test_result_observation_preserves_builtin_bound_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        app: App[None] = App()
+        received: list[int | None] = []
+        with CompletionScope() as scope:
+            screens = ScreenCompletions(app, scope, monkeypatch)
+            try:
+                async with app.run_test():
+                    screen: Screen[int] = Screen()
+                    app.push_screen(screen, received.append)
+                    deadline = scope.now() + 2
+                    await screens.ready(screen, deadline=deadline)
+                    screen.dismiss(7)
+                    assert await screens.result_applied(screen).wait(
+                        deadline=deadline, description="built-in result callback"
+                    ) == 7
+                    assert received == [7]
+                    await screens.retired(screen).wait(
+                        deadline=deadline, description="screen retired"
+                    )
+            finally:
+                screens.close()
+
+    asyncio.run(exercise())
+
+
 def test_result_callback_error_remains_visible_to_framework_and_observer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
