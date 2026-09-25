@@ -457,8 +457,16 @@ def test_retained_textual_selection_and_osc52_contract(
 def test_shipped_tui_translates_real_pty_quit_control_bytes(
     control_byte: bytes,
     label: str,
+    tmp_path: Path,
 ) -> None:
-    child_source = textwrap.dedent(
+    _assert_real_pty_quit_control_bytes(control_byte, label, tmp_path)
+
+
+def _assert_real_pty_quit_control_bytes(
+    control_byte: bytes, label: str, tmp_path: Path
+) -> None:
+    receipt_path = tmp_path / "quit-control-receipts.txt"
+    child_source = f"PROBE_RECEIPT = {str(receipt_path)!r}\n" + textwrap.dedent(
         r"""
         import os
         import platform
@@ -468,6 +476,13 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
         import taut_tui.app as app_module
         from taut_tui._launch import run_tui
         from taut_tui.actions import ActionId
+
+
+        def record(marker: str) -> None:
+            # Rendered frames are not a lossless write/event log.
+            # Closing each write publishes it before the real quit continues.
+            with open(PROBE_RECEIPT, "a", encoding="utf-8") as receipt:
+                receipt.write(marker + "\n")
 
 
         class ProbeApp(app_module.TautApp):
@@ -481,11 +496,13 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
                 os.write(1, b"TAUT-TUI-QUIT-CONTROL-PROBE-MOUNTED")
 
             def action_quit_tui_anywhere(self) -> None:
+                record("DECODED-QUIT-BINDING")
                 os.write(1, b"DECODED-QUIT-BINDING")
                 super().action_quit_tui_anywhere()
 
             def _dispatch_action_invocation(self, invocation) -> None:
                 if invocation.action_id is ActionId.APPLICATION_QUIT:
+                    record("GUARDED-QUIT")
                     os.write(1, b"GUARDED-QUIT")
                 super()._dispatch_action_invocation(invocation)
 
@@ -511,8 +528,67 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
     captured = result.output
     assert result.input_sent, captured.decode(errors="replace")
     assert result.returncode == 0, captured.decode(errors="replace")
-    assert b"DECODED-QUIT-BINDING" in captured
-    assert b"GUARDED-QUIT" in captured
+    # The real child and its attach have retired. Read once; no file polling or
+    # second control loop, and no claim that a screen frame is an event log.
+    assert receipt_path.exists(), captured.decode(errors="replace")
+    receipts = receipt_path.read_text(encoding="utf-8").splitlines()
+    assert "DECODED-QUIT-BINDING" in receipts
+    assert "GUARDED-QUIT" in receipts
+
+
+def test_quit_control_probe_retains_hooks_when_terminal_markers_are_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_run = run_terminal_child
+
+    def suppress_live_markers(source: str, **kwargs: Any) -> Any:
+        # ConPTY reports screen frames, not every write. Force the corresponding
+        # observation loss without changing the real app, input, or dispatch.
+        source = (
+            textwrap.dedent(
+                """
+            import os
+
+            original_write = os.write
+
+            def write_without_live_markers(fd, data):
+                if data in (b"DECODED-QUIT-BINDING", b"GUARDED-QUIT"):
+                    return len(data)
+                return original_write(fd, data)
+
+            os.write = write_without_live_markers
+            """
+            )
+            + source
+        )
+        result = real_run(source, **kwargs)
+        assert b"DECODED-QUIT-BINDING" not in result.output
+        assert b"GUARDED-QUIT" not in result.output
+        return result
+
+    monkeypatch.setitem(globals(), "run_terminal_child", suppress_live_markers)
+    _assert_real_pty_quit_control_bytes(b"\x03", "Ctrl-C", tmp_path)
+
+
+@pytest.mark.parametrize("missing_marker", ("DECODED-QUIT-BINDING", "GUARDED-QUIT"))
+def test_quit_control_probe_rejects_missing_hook_receipt(
+    missing_marker: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_run = run_terminal_child
+
+    def drop_hook_receipt(source: str, **kwargs: Any) -> Any:
+        marker_call = f'record("{missing_marker}")'
+        assert source.count(marker_call) == 1
+        # Keep the real handler, its live marker, PTY delivery, and successful
+        # exit. None can substitute for the missing exact hook receipt.
+        return real_run(source.replace(marker_call, "pass"), **kwargs)
+
+    monkeypatch.setitem(globals(), "run_terminal_child", drop_hook_receipt)
+    with pytest.raises(AssertionError, match=missing_marker):
+        _assert_real_pty_quit_control_bytes(b"\x03", "Ctrl-C", tmp_path)
 
 
 def test_retained_textual_ctrl_d_binding_reaches_guarded_quit() -> None:

@@ -770,6 +770,20 @@ Windows revalidation remains separate from this portable review acceptance.
 
 ## Execution Log
 
+- 2026-09-25 — Diagnostic 4 at `e91a435` was red: Windows 686 passed,
+  three failed; all four other lanes passed 686 with three native skips.
+  Every phase file validates. The first native provider now completes, but
+  recovery exposed the probe's false one-provider-per-run assumption; a
+  real two-spawn test fires that assertion. Generation-aware observation is
+  being corrected and does not change the driver. Separately, real Ctrl-C
+  input and exit zero lacked a transient terminal marker. The probe now
+  retains closed per-child receipts from the exact decoded-binding and
+  guarded-dispatch hooks, read once after real child retirement. Suppressed
+  terminal-marker execution passes; removing either receipt is rejected.
+  Independent review passed all 19 textual-contract cases (6.25 s), Ruff
+  and mypy. This proves the observation correction, not the historical
+  native transport cause. Caps, real PTY delivery and quit assertions remain.
+
 - 2026-09-25 — Final app/chat/screen migration review passed after three
   observer corrections: presentation deadlines start at the named producer;
   watcher readiness is timestamped at actual initial-drain publication under

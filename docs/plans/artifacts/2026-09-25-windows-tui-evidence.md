@@ -251,3 +251,37 @@ All phase files validate directly: 683 Windows and 681 in each other lane.
 The full repetition verifier correctly rejects Windows for the failing test.
 [Windows artifact](https://github.com/VanL/taut/actions/runs/36149242970/artifacts/10870697765).
 Local copy: `/tmp/taut-tui-native-diagnostic3.iK5xYU`.
+
+## Diagnostic 4: deeper native progress, still red
+
+[Run 36150401173](https://github.com/VanL/taut/actions/runs/36150401173),
+attempt 1 at `e91a4352cc4d2eac81c3b92e6469fdc7d098fbfc`, again ran one
+repetition, not qualification. Windows passed 686 and failed three of 689
+tests, with zero skips, in 429.080 JUnit seconds. All four non-Windows jobs
+passed 686 with three declared native-only skips: Ubuntu 3.11/3.13/3.14
+took 142.910/146.786/156.655 s, and macOS 3.13 took 151.567 s.
+
+Quiet native exit passed again. Both isolation variants passed the first
+provider's prompt, echo, detach, orientation consumption and driver return,
+then timed out awaiting the second run's initial attach. Cancellation proof
+assertions were after the second run and were not reached, so this is still
+not native cancellation qualification. Inspection found that the test
+observer asserted one provider per run, whereas real setup recovery retires
+the first detached provider and spawns its attached successor. A portable
+two-real-PTY-spawn test fires that exact observer assertion. The correction
+must retain both generations and bind the attach to its actual owner, without
+changing the driver. Native confirmation of that explanation remains pending.
+
+The retained Ctrl-C quit probe also failed: real input was sent and the child
+returned zero, but the captured terminal stream lacked the decoded-binding
+marker. Ctrl-D passed. This alone cannot distinguish terminal rendering from
+tail-drain loss or a missing semantic hook. The next probe observes exact hook
+receipts outside the rendered stream, read once after actual child retirement;
+controlled display suppression and missing-hook mutations qualify that
+observer. The historical transport cause remains unconfirmed.
+
+Every phase file validates directly: 689 Windows and 686 per other lane.
+The Windows result preserves exit 1 and `JUnit reports failing tests`; it is
+not accepted by the repetition verifier.
+[Windows artifact](https://github.com/VanL/taut/actions/runs/36150401173/artifacts/10871467361).
+Local copy: `/tmp/taut-tui-native-diagnostic4.ihMLdY`.
