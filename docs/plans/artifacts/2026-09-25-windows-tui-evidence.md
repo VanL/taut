@@ -421,3 +421,12 @@ Downloaded evidence: `/tmp/taut-tui-qualification2.6Amf2w`.
 | Ubuntu 3.13 | 3.13.15 | 204.369 | 10874174221 |
 | Ubuntu 3.14 | 3.14.7 | 211.497 | 10874518847 |
 | macOS 3.13 | 3.13.15 | 226.858 | 10874074527 |
+
+## Subsequent owner acceptance (2026-09-25)
+
+After the qualification and unresolved S4 cause were presented, the owner
+directed "Close it all with a targeted commit". S4: **cause unresolved;
+accepted by owner**. The successor plan records the narrow waiver of the
+historical reproduction/causal-fix prerequisite and the recurrence/new-causal-
+evidence reopen condition. This later decision closes the two owning plans;
+it does not change any test result or establish the historical cause.

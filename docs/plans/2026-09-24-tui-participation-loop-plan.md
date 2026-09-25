@@ -466,7 +466,10 @@ and any new defect they introduced.
    callback-order boundaries are tested rather than inventing one. The
    successor owns these proofs, five-repeat qualification, and S4 disposition:
    causal reproduction and correction, or explicit owner acceptance recorded
-   as "cause unresolved; accepted by owner". No such acceptance is inferred.
+   as "cause unresolved; accepted by owner". On 2026-09-25, after completed
+   qualification and disclosure of the unresolved cause, the owner directed
+   "Close it all with a targeted commit". The successor records that explicit
+   acceptance, its narrow waiver and recurrence/new-evidence reopen condition.
    This participation plan only converts the polling loops it touches.
 
 ## Deviation Log

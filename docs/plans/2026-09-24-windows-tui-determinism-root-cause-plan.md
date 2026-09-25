@@ -1,9 +1,9 @@
 # Windows TUI Determinism Root-Cause Plan
 
-Status: active — implementation and qualification passed on 2026-09-25.
-Attempt 2 at `3a0f30c` passed all five full Windows repetitions and all four
-non-Windows lanes with validated phase evidence. Only historical S4's causal
-closure or explicit owner disposition remains open; no acceptance is inferred.
+Status: completed — implementation, qualification, and owner disposition
+recorded 2026-09-25. Attempt 2 at `3a0f30c` passed all five full Windows
+repetitions and all four non-Windows lanes. S4: cause unresolved; accepted
+by owner. See the explicit scope and reopen condition below.
 
 Class: 4 (risky) under [DOM-5]: the work diagnoses and corrects asynchronous
 TUI/Summon lifecycle behavior that runs in more than one execution context
@@ -75,10 +75,36 @@ not independently revalidate the historical hosted runs.
   immutable SHA, with two workers and `loadfile`, pass the acceptance gate.
   The new dispatch input controls repetitions within one Windows job;
   phase evidence is retained for every repetition.
-- [ ] S4 of `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md`
-  is inherited here as an open diagnosis. Close it only by causal
-  reproduction and correction, or an explicit owner acceptance of the
-  unresolved cause; the latter is not a root-cause claim.
+- [x] S4 of `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md`
+  closed by explicit owner disposition on 2026-09-25: cause unresolved;
+  accepted by owner. This is residual-risk acceptance, not a root-cause claim.
+
+## Final Owner Disposition (2026-09-25)
+
+After being presented with the completed qualification, the unresolved S4
+cause, and the choice to accept that risk or keep S4 open, the owner directed:
+"Close it all with a targeted commit". Disposition: **cause unresolved;
+accepted by owner**. This closes this plan and the inherited Windows
+lifecycle plan; the participation plan was already complete.
+
+Scope: waive only the predecessor S4 requirement to reproduce the historical
+initial-DM-navigation failure, identify its causal owner, and fix that owner
+before closure/release. No causal fix is asserted. Existing runtime tests,
+native coverage, CI/release checks and future regression requirements remain
+in force. This decision does not authorize a release, tag or publication.
+
+Evidence: run `36159590581`, attempt 1, immutable implementation SHA
+`3a0f30c725b3385c3c2136b8afbf846242fd5d05`; five Windows repetitions each
+765 passes and zero skips, all four non-Windows lanes green, validated
+result/phase artifacts, real forced-order/mutation probes and independent
+reviews. Evidence documentation is committed in `5b2a374`.
+
+Reopen S4 on a recurrence of the missing initial DM/navigation result under
+the retained tests or ordinary use, or new source/future/application evidence
+that identifies a causal defect. The implementing engineer must retain that
+phase evidence, reopen the diagnosis, and restore a causal regression/fix
+gate for the recurrence rather than treating this acceptance as a waiver
+for new failures. Historical open-status log entries below remain history.
 
 ## Source Documents
 

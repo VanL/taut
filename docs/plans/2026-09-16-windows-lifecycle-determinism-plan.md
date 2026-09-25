@@ -1,7 +1,9 @@
 # Windows Lifecycle and Test Determinism
 
 Date: 2026-09-16
-Status: active — independently reviewed; implementation in progress.
+Status: completed — implementation and native qualification passed; S4
+closed by explicit owner acceptance on 2026-09-25: cause unresolved;
+accepted by owner. Scope and reopen condition are recorded below.
 Class: 4. Async native-I/O cancellation, deferred viewport ownership, and
 cross-process test coordination trigger risky-work hardening under [DOM-5]
 and [DOM-15]. No intended product behavior or normative spec text changes.
@@ -194,11 +196,15 @@ as a separate routine release action after this work qualifies.
   for test_direct_message_header_and_composer_use_actor_scoped_label. Record
   request ID, future error or DM targets, generation/stale decision and rendered
   navigation. Keep real TautClient/SQLite/session and navigation worker.
-- [ ] Reproduce on focused Windows CI with concurrent suite pressure retained.
+- [x] Disposition: historical reproduction requirement waived by explicit owner
+  acceptance on 2026-09-25; reproduction is not claimed. Original requirement:
+  reproduce on focused Windows CI with concurrent suite pressure retained.
   Classify missing source DM, missing callback, stale result rejection or widget
   application failure from positive phase evidence. A timeout stack alone and
   a subsequent green run do not choose a cause.
-- [ ] Add the forced-order failing regression at the identified boundary, fix
+- [x] Disposition: historical causal-fix requirement waived by the same owner
+  decision, not asserted fulfilled. Original requirement: add the forced-order
+  failing regression at the identified boundary, fix
   that owner, and preserve actor-scoped labels and unrelated navigation entries.
   Record the concrete implementation choice and independent review before its
   code change. If no causal reproduction emerges, this slice and release stay
@@ -229,11 +235,15 @@ as a separate routine release action after this work qualifies.
   without changing normative requirements. Record a factual lesson on mistaken
   completion evidence; evaluate existing runbooks/skill for improvement, but no
   new process rule is needed where current rules already cover the failure.
-- [ ] Run exact commands below and independent final diff review. Record SHA,
+- [x] Verification completed through the successor's retained full-suite,
+  native and independent-review gates at `3a0f30c`; see its evidence register.
+  Original requirement: run exact commands below and independent final diff review. Record SHA,
   OS/Python, test counts, elapsed time and failures per qualification run. Compare
   focused/full job times to baseline runs only under matching configurations;
   do not claim speedup from fewer tests or reduced concurrency.
-- [ ] Close only after W1–W6 have concrete dispositions and no unresolved native
+- [x] W1–W6 disposition complete: S1–S3/S5 implemented and qualified; S4
+  explicitly accepted by owner with cause unresolved. No native qualification
+  remains open. Original requirement: close only after W1–W6 have concrete dispositions and no unresolved native
   qualification. Mark the plan/index complete only after verification and commit.
 
 ## Verification Commands and Gates
@@ -440,7 +450,24 @@ deadline now supplies remaining budgets throughout. No new blocker found.
   reconstruction of the original uninstrumented failure. S4 remains open;
   no owner acceptance or release-gate waiver is recorded.
 
-## Fresh-Eyes Check
+## Final Owner Disposition (2026-09-25)
+
+After receiving the five-run qualification evidence and explicit unresolved
+S4 risk, the owner directed "Close it all with a targeted commit".
+S4: **cause unresolved; accepted by owner**. Only S4's historical
+reproduction/causal-fix prerequisite to closure and release is waived.
+No historical cause or product fix is invented, and no other CI/release
+check is waived. No release, tag or publication is authorized here.
+
+The successor's run `36159590581` at `3a0f30c` passed five full Windows
+repetitions (765 passes each, no skips), all four non-Windows lanes, artifact
+verification and independent evidence review. Reopen S4 if missing initial
+DM/navigation recurs in retained tests or ordinary use, or new phase evidence
+identifies its causal defect. The implementing engineer must retain evidence
+and require a causal regression/fix for that recurrence. The full acceptance
+record is in `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md`.
+
+## Fresh-Eyes Check at Planning
 
 Owner boundaries, cancellation-before-I/O, user-scroll supersession, cleanup on
 failed probes, diagnostic redaction, and unresolved-cause gates are explicit.

@@ -1,11 +1,12 @@
 # TUI determinism elicitation results
 
-Status: proof register; five-run qualification passed at `3a0f30c`; S4 causal
-closure or owner disposition remains open. Native execution is recorded below. Owner: Windows TUI
+Status: completed proof register; five-run qualification passed at `3a0f30c`.
+S4: cause unresolved; accepted by owner on 2026-09-25 under the successor
+plan's scoped waiver and reopen condition. Native execution is recorded below. Owner: Windows TUI
 determinism plan implementer. Boundary:
 source-owned test observations over real app/session/framework/lease work.
-Required action: retain the qualified evidence and resolve S4's separate
-causal-closure or explicit owner-disposition gate without inferring its cause.
+Required action: retain the qualified evidence and reopen S4 on recurrence
+or new causal phase evidence; do not infer its historical cause.
 
 ## Portable proof register
 
@@ -153,5 +154,7 @@ reflow variants and all twelve native-module cases. Each records 22 successful
 `attach.retired` outcomes. All result/phase artifacts validate locally and
 in Actions; independent evidence audit found no blocker. The above pending
 statements are historical checkpoints, now superseded for qualification.
-S4's original uninstrumented cause remains unresolved; its distinct causal
-closure or explicit owner-disposition gate is not satisfied by this soak.
+S4's original uninstrumented cause remains unresolved; this soak alone does
+not satisfy its disposition gate. Following disclosure, the owner's explicit
+"Close it all with a targeted commit" direction supplies the separate
+acceptance recorded in the successor plan: cause unresolved; accepted by owner.
