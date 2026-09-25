@@ -286,7 +286,7 @@ def test_driver_fixture_cleanup_hard_retires_provider_before_driver_kill(
             raise subprocess.TimeoutExpired(
                 driver.proc.args, 0.0 if timeout is None else timeout
             )
-        return real_wait(timeout=timeout)
+        return int(real_wait(timeout=timeout))
 
     def hard_retire(identity: tuple[int, str, int] | None) -> None:
         operations.append("provider-hard-retire")
