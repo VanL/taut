@@ -1225,6 +1225,173 @@ def test_command_execution_boundary_captures_before_preserving_diagnostic(
     )
 
 
+@pytest.mark.parametrize("error_type", ["domain_error", "command_error"])
+def test_expected_cli_failure_skips_debug_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: str,
+) -> None:
+    """An empty domain result is already rendered and needs no capture lookup."""
+
+    from taut.commands import CommandContext, CommandError
+    from taut.commands._dispatch import _PreparedInvocation, _run_prepared_invocation
+
+    class EmptyCommand:
+        def run(self, context: CommandContext, args: argparse.Namespace) -> int:
+            if error_type == "command_error":
+                raise CommandError("nothing to read")
+            raise TautError("nothing to read")
+
+    def unexpected_capture(*args: object, **kwargs: object) -> None:
+        raise AssertionError("expected outcome must not enter debug capture")
+
+    monkeypatch.setattr("taut.debug.capture_exception", unexpected_capture)
+    stderr = StringIO()
+    context = CommandContext(
+        db_path=str(tmp_path / "missing.db"),
+        as_name=None,
+        continuity_token=None,
+        json=False,
+        timestamps=False,
+        quiet=False,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+    assert (
+        _run_prepared_invocation(
+            _PreparedInvocation("read", EmptyCommand(), argparse.Namespace(), context)
+        )
+        == 1
+    )
+    assert stderr.getvalue() == "nothing to read\n"
+
+
+def test_command_capture_reuses_created_client_target(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected command failure reuses the selected target/config."""
+
+    from taut.commands import CommandContext
+    from taut.commands._dispatch import _PreparedInvocation, _run_prepared_invocation
+
+    class FailingCommand:
+        def run(self, context: CommandContext, args: argparse.Namespace) -> int:
+            context.client()
+            raise RuntimeError("selected target failed")
+
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    def fail_discovery(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("client target is already resolved")
+
+    monkeypatch.setattr("taut.debug.resolve_existing_target", fail_discovery)
+    context = CommandContext(
+        db_path=str(db_path),
+        as_name=None,
+        continuity_token=None,
+        json=False,
+        timestamps=False,
+        quiet=False,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert (
+        _run_prepared_invocation(
+            _PreparedInvocation(
+                "fixture", FailingCommand(), argparse.Namespace(), context
+            )
+        )
+        == 1
+    )
+    [payload] = _debug_messages(db_path)
+    assert json.loads(payload)["exception"]["message"] == "selected target failed"
+
+
+def test_keyboard_interrupt_from_local_repr_propagates(tmp_path: Path) -> None:
+    """A fresh interrupt during capture must remain a process-control event."""
+
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    class InterruptingLocal:
+        def __repr__(self) -> str:
+            raise KeyboardInterrupt
+
+    def capture_with_interrupting_local() -> None:
+        local = InterruptingLocal()
+        _ = local
+        try:
+            raise ValueError("capture interruption")
+        except ValueError as exc:
+            capture_exception(
+                exc,
+                db_path=db_path,
+                surface="test",
+                operation="debug.interrupt",
+            )
+
+    with pytest.raises(KeyboardInterrupt):
+        capture_with_interrupting_local()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX parent SIGINT fixture")
+def test_real_action_interrupt_reaches_capture_caller(tmp_path: Path) -> None:
+    """[TAUT-13.5] An action's real signal interrupts only an isolated driver."""
+
+    fixture = Path(__file__).parent / "fixtures" / "debug_action.py"
+    db_path = tmp_path / "workspace.db"
+    output = tmp_path / "action-must-not-exist.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import os
+import shlex
+import sys
+from pathlib import Path
+
+from taut import TautClient
+from taut.debug import capture_exception
+
+db_path, fixture, output = map(Path, sys.argv[1:])
+TautClient.init(db_path=db_path)
+TautClient.set_debug_capture(True, db_path=db_path)
+os.environ["TAUT_DEBUG_ACTION"] = " ".join(
+    shlex.quote(value)
+    for value in (sys.executable, str(fixture), str(output), "interrupt_parent")
+)
+try:
+    try:
+        raise ValueError("action interruption")
+    except ValueError as exc:
+        capture_exception(exc, db_path=db_path, surface="test", operation="debug.action")
+except KeyboardInterrupt:
+    raise SystemExit(0)
+raise SystemExit(5)
+""",
+            str(db_path),
+            str(fixture),
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not output.exists()
+
+
 def test_command_load_boundary_captures_and_preserves_selected_diagnostic(
     tmp_path: Path,
     clean_env: None,

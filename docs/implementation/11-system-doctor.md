@@ -97,9 +97,9 @@ broker/search totals, contributor containment, forbidden-call tripwires,
 non-mutation, missing-PostgreSQL installation guidance, and safe framework
 failure. `tests/test_debug_capture.py` adds exact setting-state and advisory
 sink coverage. `extensions/taut_summon/tests/
-test_persistence.py` covers active, incompatible, and missing-table Summon
-state without migration. The shared backend contract in
-`tests/test_shared_contract.py` runs healthy and failed-search reports against
+test_persistence.py` covers current, upgradeable, incompatible, and missing-table
+Summon state without migration. The shared backend contract in
+`tests/test_shared_contract.py` runs healthy and pending-search reports against
 real SQLite and PostgreSQL and verifies logical state plus target redaction.
 
 The owning specification is `docs/specs/09-system-doctor.md`; execution and

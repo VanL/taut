@@ -7,15 +7,16 @@ Spec references:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Generator, Sequence
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from itertools import islice
 from typing import cast
 
-from simplebroker import Queue
+from simplebroker import BrokerSession, Queue
 
 from taut import addressing
-from taut._constants import route_key, validate_member_name
+from taut._constants import META_QUEUE_NAME, route_key, validate_member_name
 from taut._exceptions import EmptyResultError, NotFoundError
 from taut.search import projection_segments, query_chunks
 from taut.search._discovery import load_search_provider
@@ -52,6 +53,28 @@ class _SearchRequest:
     before_ts: int | None
     limit: int
     reindex: bool
+
+
+def _probe_search_message(
+    job_ts: int,
+    names: Sequence[str],
+    queue_for: Callable[[str], Queue],
+    seen: set[str],
+) -> Message | None:
+    """Exact-peek each currently registered source once for one message ID."""
+
+    for thread in names:
+        if thread in seen:
+            continue
+        seen.add(thread)
+        found = queue_for(thread).peek_one(
+            exact_timestamp=job_ts,
+            with_timestamps=True,
+        )
+        if found is not None:
+            body, timestamp = found
+            return message_from_body(thread, body, timestamp)
+    return None
 
 
 class SearchingMixin(_ClientBase):
@@ -108,122 +131,161 @@ class SearchingMixin(_ClientBase):
                 raise EmptyResultError(f"member not found: {request.from_member}")
             author_id = author["member_id"]
 
-        provider = self._search_provider()
-        try:
-            provider.ensure_schema()
-            if request.reindex or provider.requires_rebuild():
-                self._rebuild_search_index(provider, rows)
-                # Establish the normal pre-query frontier after the generation
-                # switch as well. This closes work committed during the narrow
-                # drain-to-switch interval without weakening rebuild rollback.
-                self._drain_search_jobs(provider)
-            else:
-                self._drain_search_jobs(provider)
-                self._reconcile_search_index(provider, rows)
-            hits = self._query_search_hits(
-                provider=provider,
-                request=request,
-                scope=scope,
-                by_name=by_name,
-                actor=actor,
-                author_id=author_id,
-            )
-        finally:
-            provider.close()
+        with (
+            BrokerSession.connect(self.target, config=self.config),
+            self._search_source_queue(META_QUEUE_NAME) as meta,
+        ):
+            provider = self._search_provider(meta)
+            try:
+                self._ensure_search_schema(provider)
+                if request.reindex or provider.requires_rebuild():
+                    self._rebuild_search_index(provider, rows, meta=meta)
+                    # Close work committed during the drain-to-switch interval.
+                    self._drain_search_jobs(provider)
+                else:
+                    self._drain_search_jobs(provider)
+                    self._reconcile_search_index(provider, rows, meta=meta)
+                hits = self._query_search_hits(
+                    provider=provider,
+                    request=request,
+                    scope=scope,
+                    by_name=by_name,
+                    actor=actor,
+                    author_id=author_id,
+                )
+            finally:
+                provider.close()
         if not hits:
             raise EmptyResultError("no search results")
         return hits
 
-    def _drain_search_jobs(self, provider: SearchProvider) -> None:
+    def _ensure_search_schema(self, provider: SearchProvider) -> None:
+        """Advance the one supported prior work format before provider DDL."""
+
+        from taut.search._provider import SEARCH_SCHEMA_VERSION
+
+        version = provider.schema_version()
+        if version == 1:
+            self._upgrade_search_work_queues()
+        if version != SEARCH_SCHEMA_VERSION:
+            provider.ensure_schema()
+
+    def _upgrade_search_work_queues(self) -> None:
+        """Return old claimed work to pending under operator quiescence."""
+
+        from simplebroker import open_broker
+
         from taut.search._jobs import (
             CLAIMED_QUEUE_NAME,
             FAILED_QUEUE_NAME,
             PENDING_QUEUE_NAME,
-            JobQueues,
-            MessageJob,
-        )
-        from taut.search._worker import apply_claimed_snapshot, process_one
-
-        owned = (
-            Queue(PENDING_QUEUE_NAME, db_path=self.target, config=self.config),
-            Queue(CLAIMED_QUEUE_NAME, db_path=self.target, config=self.config),
-            Queue(FAILED_QUEUE_NAME, db_path=self.target, config=self.config),
-        )
-        jobs = JobQueues(
-            pending=owned[0],
-            claimed=owned[1],
-            failed=owned[2],
-            meta=self._meta_queue,
         )
 
-        def load_source(job: MessageJob) -> IndexedDocument | None:
-            rows = self._registered_searchable_rows(self._state.list_threads())
-            names = [row["name"] for row in rows]
-            candidates = (
-                [job.thread, *(name for name in names if name != job.thread)]
-                if job.thread in set(names)
-                else names
-            )
-            message: Message | None = None
-            for thread in candidates:
-                source = self.queue(thread)
+        with open_broker(self.target, config=self.config) as broker:
+            names = {item.queue for item in broker.list_queue_stats()}
+        if CLAIMED_QUEUE_NAME in names:
+            with BrokerSession.connect(self.target, config=self.config):
+                claimed = Queue(
+                    CLAIMED_QUEUE_NAME,
+                    db_path=self.target,
+                    persistent=True,
+                    config=self.config,
+                )
+                pending = Queue(
+                    PENDING_QUEUE_NAME,
+                    db_path=self.target,
+                    persistent=True,
+                    config=self.config,
+                )
                 try:
-                    found = source.peek_one(
-                        exact_timestamp=job.message_ts,
-                        with_timestamps=True,
-                    )
+                    while True:
+                        moved = claimed.move_one(pending, with_timestamps=True)
+                        if moved is None:
+                            break
                 finally:
-                    self._release_if_ephemeral(source)
-                if found is not None:
-                    body, timestamp = found
-                    message = message_from_body(thread, body, timestamp)
-                    break
-            if message is None:
-                return None
-            encoded = message.text.encode("utf-8")
-            return IndexedDocument(
-                message_ts=message.ts,
-                thread=message.thread,
-                text_sha256=hashlib.sha256(encoded).hexdigest(),
-                text_bytes=len(encoded),
-                segments=projection_segments(
-                    message.text,
-                    max_segment_bytes=_INDEX_SEGMENT_BYTES,
-                ),
-            )
+                    pending.close()
+                    claimed.close()
+        with open_broker(self.target, config=self.config) as broker:
+            for name in (CLAIMED_QUEUE_NAME, FAILED_QUEUE_NAME):
+                if name in names:
+                    broker.delete(name)
 
-        try:
-            jobs.ensure_schema()
+    def _drain_search_jobs(self, provider: SearchProvider) -> None:
+        from taut.search._jobs import PENDING_QUEUE_NAME, JobQueues, MessageJob
+        from taut.search._worker import process_one
+
+        with ExitStack() as owned:
+            handles: dict[str, Queue] = {}
+
+            def queue_for(name: str) -> Queue:
+                source = handles.get(name)
+                if source is None:
+                    source = Queue(
+                        name,
+                        db_path=self.target,
+                        persistent=True,
+                        config=self.config,
+                    )
+                    handles[name] = source
+                    owned.callback(source.close)
+                return source
+
+            pending = queue_for(PENDING_QUEUE_NAME)
+            jobs = JobQueues(pending=pending)
             frontier = jobs.work_frontier()
             if frontier is None:
                 return
-            jobs.reclaim_expired()
-            for job_ts in jobs.pending_ids_through(frontier):
-                process_one(
-                    jobs,
-                    provider,
-                    load_source,
-                    exact_timestamp=job_ts,
+            names = [
+                row["name"]
+                for row in self._registered_searchable_rows(self._state.list_threads())
+            ]
+            refreshed = False
+
+            def load_source(job: MessageJob) -> IndexedDocument | None:
+                nonlocal names, refreshed
+                candidates = (
+                    [job.thread, *(name for name in names if name != job.thread)]
+                    if job.thread in names
+                    else names
                 )
-            for body, job_ts in jobs.claimed_rows_through(frontier):
-                apply_claimed_snapshot(
-                    body,
-                    revision=job_ts,
-                    provider=provider,
-                    load_source=load_source,
+                seen: set[str] = set()
+                message = _probe_search_message(
+                    job.message_ts, candidates, queue_for, seen
                 )
-            # A timeout recovery may have returned an item to pending after the
-            # first snapshot. Exact IDs make this pass bounded by the frontier.
-            for job_ts in jobs.pending_ids_through(frontier):
-                process_one(
-                    jobs,
-                    provider,
-                    load_source,
-                    exact_timestamp=job_ts,
+                if message is None and not refreshed:
+                    names = [
+                        row["name"]
+                        for row in self._registered_searchable_rows(
+                            self._state.list_threads()
+                        )
+                    ]
+                    refreshed = True
+                    message = _probe_search_message(
+                        job.message_ts, names, queue_for, seen
+                    )
+                if message is None:
+                    return None
+                encoded = message.text.encode("utf-8")
+                return IndexedDocument(
+                    message_ts=message.ts,
+                    thread=message.thread,
+                    text_sha256=hashlib.sha256(encoded).hexdigest(),
+                    text_bytes=len(encoded),
+                    segments=projection_segments(
+                        message.text,
+                        max_segment_bytes=_INDEX_SEGMENT_BYTES,
+                    ),
                 )
-        finally:
-            for queue in owned:
-                queue.close()
+
+            with closing(jobs.pending_rows_through(frontier)) as pending_rows:
+                for row in pending_rows:
+                    process_one(
+                        jobs,
+                        provider,
+                        load_source,
+                        row=row,
+                        warn_malformed=self.last_search_warnings.append,
+                    )
 
     def _query_search_hits(
         self,
@@ -237,59 +299,86 @@ class SearchingMixin(_ClientBase):
     ) -> list[SearchHit]:
         hits: list[SearchHit] = []
         candidate_before = request.before_ts
-        while len(hits) < request.limit:
-            candidates = provider.query(
-                request.chunks,
-                before=candidate_before,
-                limit=_INDEX_QUERY_BATCH,
-            )
-            if not candidates:
-                break
-            hits.extend(
-                self._collect_search_hits(
-                    candidates=candidates,
-                    request=request,
-                    scope=scope,
-                    by_name=by_name,
-                    actor=actor,
-                    author_id=author_id,
+        with ExitStack() as owned:
+            handles: dict[str, Queue] = {}
+
+            def queue_for(thread: str) -> Queue:
+                queue = handles.get(thread)
+                if queue is None:
+                    queue = self._search_source_queue(thread)
+                    handles[thread] = queue
+                    owned.callback(queue.close)
+                return queue
+
+            while len(hits) < request.limit:
+                candidates = provider.query(
+                    request.chunks,
+                    before=candidate_before,
+                    limit=_INDEX_QUERY_BATCH,
                 )
-            )
-            if len(candidates) < _INDEX_QUERY_BATCH:
-                break
-            candidate_before = candidates[-1].message_ts
+                if not candidates:
+                    break
+                hits.extend(
+                    self._collect_search_hits(
+                        candidates=candidates,
+                        request=request,
+                        scope=scope,
+                        by_name=by_name,
+                        actor=actor,
+                        author_id=author_id,
+                        queue_for=queue_for,
+                    )
+                )
+                if len(candidates) < _INDEX_QUERY_BATCH:
+                    break
+                candidate_before = candidates[-1].message_ts
         return hits[: request.limit]
 
-    def _search_provider(self) -> SearchProvider:
+    def _search_provider(self, meta: Queue) -> SearchProvider:
         backend_name = (
             self.target.backend_name if not isinstance(self.target, str) else "sqlite"
         )
         if backend_name == "sqlite":
-            return SQLiteSearchProvider(sidecar=self._meta_queue.sidecar)
+            return SQLiteSearchProvider(sidecar=meta.sidecar)
         return load_search_provider(
             backend_name=backend_name,
-            sidecar=self._meta_queue.sidecar,
+            sidecar=meta.sidecar,
+        )
+
+    def _search_source_queue(self, thread: str) -> Queue:
+        """A short-lived handle on the operation's shared broker core."""
+
+        return Queue(
+            thread,
+            db_path=self.target,
+            persistent=True,
+            config=self.config,
         )
 
     def _rebuild_search_index(
         self,
         provider: SearchProvider,
         rows: list[ThreadRow],
+        *,
+        meta: Queue,
     ) -> None:
-        scan_revision = self._meta_queue.generate_timestamp()
+        scan_revision = meta.generate_timestamp()
         generation = provider.begin_rebuild(scan_revision)
         watermarks: dict[str, int | None] = {}
         try:
             for row in self._registered_searchable_rows(rows):
                 thread = row["name"]
-                queue = self.queue(thread)
-                watermarks[thread] = queue.latest_pending_timestamp()
-                for document in self._thread_source_documents(queue, thread=thread):
-                    provider.replace_rebuild_document(
-                        document,
-                        generation=generation,
-                        revision=scan_revision,
-                    )
+                with self._search_source_queue(thread) as queue:
+                    watermarks[thread] = queue.latest_pending_timestamp()
+                    with closing(
+                        self._thread_source_documents(queue, thread=thread)
+                    ) as documents:
+                        for document in documents:
+                            provider.replace_rebuild_document(
+                                document,
+                                generation=generation,
+                                revision=scan_revision,
+                            )
             self._drain_search_jobs(provider)
             provider.finish_rebuild(generation)
             for thread, watermark in watermarks.items():
@@ -306,18 +395,21 @@ class SearchingMixin(_ClientBase):
         self,
         provider: SearchProvider,
         rows: list[ThreadRow],
+        *,
+        meta: Queue,
     ) -> None:
         """Repair urgent watermarks, then fully reconcile one durable rotation."""
 
         searchable = self._registered_searchable_rows(rows)
         for row in searchable:
-            self._reconcile_search_thread(provider, row, force_full=False)
+            self._reconcile_search_thread(provider, row, meta=meta, force_full=False)
         by_name = {row["name"]: row for row in searchable}
         selected = provider.next_reconciliation_thread(tuple(by_name))
         if selected is not None:
             self._reconcile_search_thread(
                 provider,
                 by_name[selected],
+                meta=meta,
                 force_full=True,
             )
 
@@ -326,56 +418,60 @@ class SearchingMixin(_ClientBase):
         provider: SearchProvider,
         row: ThreadRow,
         *,
+        meta: Queue,
         force_full: bool,
     ) -> None:
         """Apply one revision-fenced public-queue scan to one thread."""
 
         thread = row["name"]
-        queue = self.queue(thread)
-        state = provider.thread_watermark(thread)
-        initial_latest = queue.latest_pending_timestamp()
-        if not force_full and state.known and initial_latest == state.message_ts:
-            return
+        with self._search_source_queue(thread) as queue:
+            state = provider.thread_watermark(thread)
+            initial_latest = queue.latest_pending_timestamp()
+            if not force_full and state.known and initial_latest == state.message_ts:
+                return
 
-        scan_revision = self._meta_queue.generate_timestamp()
-        source_latest = queue.latest_pending_timestamp()
-        if force_full or not state.known:
-            self._reconcile_full_thread(
-                provider,
-                queue,
-                thread=thread,
-                scan_revision=scan_revision,
-            )
-        elif _is_higher_watermark(source_latest, state.message_ts):
-            for document in self._thread_source_documents(
-                queue,
-                thread=thread,
-                after=state.message_ts,
-            ):
-                provider.replace_document(document, revision=scan_revision)
-        elif _is_lower_watermark(source_latest, state.message_ts):
-            assert state.message_ts is not None
-            found = queue.peek_one(
-                exact_timestamp=state.message_ts,
-                with_timestamps=True,
-            )
-            if found is None:
-                provider.delete_document(
-                    message_ts=state.message_ts,
+            scan_revision = meta.generate_timestamp()
+            source_latest = queue.latest_pending_timestamp()
+            if force_full or not state.known:
+                self._reconcile_full_thread(
+                    provider,
+                    queue,
                     thread=thread,
-                    revision=scan_revision,
+                    scan_revision=scan_revision,
                 )
-            else:
-                body, timestamp = found
-                provider.replace_document(
-                    self._search_document(thread, body, timestamp),
-                    revision=scan_revision,
+            elif _is_higher_watermark(source_latest, state.message_ts):
+                with closing(
+                    self._thread_source_documents(
+                        queue,
+                        thread=thread,
+                        after=state.message_ts,
+                    )
+                ) as documents:
+                    for document in documents:
+                        provider.replace_document(document, revision=scan_revision)
+            elif _is_lower_watermark(source_latest, state.message_ts):
+                assert state.message_ts is not None
+                found = queue.peek_one(
+                    exact_timestamp=state.message_ts,
+                    with_timestamps=True,
                 )
-        provider.record_reconciliation(
-            thread,
-            watermark=source_latest,
-            revision=scan_revision,
-        )
+                if found is None:
+                    provider.delete_document(
+                        message_ts=state.message_ts,
+                        thread=thread,
+                        revision=scan_revision,
+                    )
+                else:
+                    body, timestamp = found
+                    provider.replace_document(
+                        self._search_document(thread, body, timestamp),
+                        revision=scan_revision,
+                    )
+            provider.record_reconciliation(
+                thread,
+                watermark=source_latest,
+                revision=scan_revision,
+            )
 
     def _reconcile_full_thread(
         self,
@@ -386,9 +482,10 @@ class SearchingMixin(_ClientBase):
         scan_revision: int,
     ) -> None:
         source_ids: set[int] = set()
-        for document in self._thread_source_documents(queue, thread=thread):
-            source_ids.add(document.message_ts)
-            provider.replace_document(document, revision=scan_revision)
+        with closing(self._thread_source_documents(queue, thread=thread)) as documents:
+            for document in documents:
+                source_ids.add(document.message_ts)
+                provider.replace_document(document, revision=scan_revision)
         for message_ts in provider.indexed_message_ids(thread):
             if message_ts not in source_ids:
                 provider.delete_document(
@@ -414,7 +511,7 @@ class SearchingMixin(_ClientBase):
         *,
         thread: str,
         after: int | None = None,
-    ) -> Iterator[IndexedDocument]:
+    ) -> Generator[IndexedDocument]:
         cursor = after
         while True:
             generator = queue.peek_generator(
@@ -545,6 +642,7 @@ class SearchingMixin(_ClientBase):
         by_name: dict[str, ThreadRow],
         actor: MemberRow | None,
         author_id: str | None,
+        queue_for: Callable[[str], Queue],
     ) -> list[SearchHit]:
         hits: list[SearchHit] = []
         for candidate in candidates:
@@ -572,6 +670,7 @@ class SearchingMixin(_ClientBase):
                 row=row,
                 author_id=author_id,
                 kinds=request.kinds,
+                queue_for=queue_for,
             )
             if hit is not None:
                 hits.append(hit)
@@ -586,8 +685,9 @@ class SearchingMixin(_ClientBase):
         row: ThreadRow,
         author_id: str | None,
         kinds: frozenset[str],
+        queue_for: Callable[[str], Queue],
     ) -> SearchHit | None:
-        found = self.queue(candidate.thread).peek_one(
+        found = queue_for(candidate.thread).peek_one(
             exact_timestamp=candidate.message_ts,
             with_timestamps=True,
         )

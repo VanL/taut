@@ -9,7 +9,6 @@ from taut.commands.syntax import (
     core_command_syntax,
     merge_command_syntax,
 )
-from taut_tui.actions import ActionId
 from taut_tui.command_bindings import COMMAND_BINDINGS, binding_for
 from taut_tui.command_syntax import provide_syntax
 
@@ -28,15 +27,15 @@ def test_every_core_leaf_has_one_explicit_tui_disposition() -> None:
     assert all(binding_for(path) is not None for path in leaves)
 
 
-def test_cli_only_and_action_linked_bindings_are_explicit() -> None:
+def test_cli_only_and_native_bindings_are_explicit() -> None:
     watch = binding_for(("watch",))
     system_load = binding_for(("system", "load"))
     init = binding_for(("init",))
     summon = binding_for(("summon",))
     assert watch is not None and watch.cli_only is True
     assert system_load is not None and system_load.cli_only is True
-    assert init is not None and init.action_id is ActionId.WORKSPACE_INITIALIZE
-    assert summon is not None and summon.action_id is ActionId.SUMMON_START
+    assert init is not None and init.cli_only is False
+    assert summon is not None and summon.cli_only is False
     assert binding_for(("unknown",)) is None
 
 
@@ -56,5 +55,5 @@ def test_quit_aliases_are_tui_local_and_guarded_action_owned() -> None:
     quit_binding = binding_for(("quit",))
     assert q_binding is not None
     assert quit_binding is not None
-    assert q_binding.action_id is ActionId.APPLICATION_QUIT
-    assert quit_binding.action_id is ActionId.APPLICATION_QUIT
+    assert q_binding.cli_only is False
+    assert quit_binding.cli_only is False

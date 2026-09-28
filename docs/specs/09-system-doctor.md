@@ -306,22 +306,15 @@ report is returned and the CLI exits 1.
 
 ### [DOCT-4.6] `search_work`
 
-Read public statistics for exactly `taut.search_index`,
-`taut.search_index.claimed`, and `taut.search_index.failed` without creating,
-moving, decoding, deleting, or reclaiming records.
+Read public statistics for `taut.search_index` without creating or processing
+work.
 
 ```json
-{"claimed": 0, "failed": 0, "pending": 0}
+{"pending": 0}
 ```
 
-Each value is `int | null` and, when observed, is `QueueStats.total` for the
-corresponding named queue; absence from the public statistics list means zero.
-Thus `claimed` means rows in the search claimed-work queue, including any
-nested broker claim state in that queue's `total`, not the broker claimed count
-of the pending-work queue. Pending and claimed depth are informational and
-pass. Nonzero failed depth fails because [SRCH-8.2] and [SRCH-9] quarantine work
-there without automatic retry. No count implies expiration, provider health,
-index completeness, or freshness.
+`pending` is `QueueStats.total` for that queue, or zero when absent. Its depth
+is informational and passes. It does not prove index health or freshness.
 
 ### [DOCT-4.7] `debug_capture`
 
@@ -360,7 +353,7 @@ does not infer extension live-schema meaning from `schema_keys` or
 contributor can participate in dump/load. It supplies state to the one fixed
 core check and does not create an extension-contributed check registry.
 
-Search is observed only through the three public queue totals in [DOCT-4.6].
+Search is observed only through the pending-work queue total in [DOCT-4.6].
 Doctor does not load a search provider, call its schema or query interface,
 inspect physical index state, or invoke the functional repair surface. The
 functional correctness and rebuild path remains `taut search`.
@@ -377,7 +370,7 @@ functional correctness and rebuild path remains `taut search`.
   and also causes exit 2.
 - Doctor performs no recovery. Details point to existing actions such as
   recreating a guarded target, resuming a channel rename, upgrading an
-  incompatible extension, or inspecting failed search work.
+  incompatible extension, or inspecting pending search work.
 - A passing report does not authorize dump/load. A failing report does not
   prove that unrelated chat data is corrupt.
 - Version 1 has no `status`, `--watch`, `--repair`, `--fix`, `--force`, cleanup,
@@ -410,8 +403,8 @@ At minimum, firing tests cover:
   `validate_live_schema`, live-schema rejection, export failure, and invalid
   cross-referenced records; tripwires reject `ensure_schema`, `is_fresh`, and
   `load_records`;
-- empty, pending, claimed, and failed search-work queues, with no provider load,
-  schema initialization, move, reclaim, decode, or rebuild;
+- empty and pending search-work queues, with no provider load, schema
+  initialization, move, decode, or rebuild;
 - disabled, enabled local, enabled action, malformed, and prerequisite-skipped
   debug capture with exact seventh-check order, data shape, human line, JSON
   fields, healthy semantics, and no queue open or action execution;
@@ -439,6 +432,7 @@ seams in `taut/persistence/`, public values in `taut/client/_models.py`, and the
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — shares
   passive stored-version interpretation with ordinary startup while retaining
   doctor-specific nullable failure projection and no-repair behavior.

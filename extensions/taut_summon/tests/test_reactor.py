@@ -41,7 +41,7 @@ def test_retained_active_row_is_not_refetched_while_delivery_is_pending(
         reactor = listener.watch(lambda _item: None, watcher_type=SummonReactor)
         assert isinstance(reactor, SummonReactor)
         reactor.prepare_delivery = lambda item: PreparedInjection(
-            cast(Any, Handle()), str(item), 0
+            cast(Any, Handle()), str(item), None
         )
         try:
             reactor.process_once()
@@ -94,7 +94,7 @@ def test_unsuccessful_injection_preserves_retained_cursor(
         reactor = listener.watch(lambda _item: None, watcher_type=SummonReactor)
         assert isinstance(reactor, SummonReactor)
         reactor.prepare_delivery = lambda item: PreparedInjection(
-            cast(Any, Handle()), str(item), 0
+            cast(Any, Handle()), str(item), None
         )
         try:
             initial = dict(reactor._cursors)
@@ -104,17 +104,19 @@ def test_unsuccessful_injection_preserves_retained_cursor(
             with pytest.raises(WatcherRejected, match="injection failed"):
                 reactor.process_once()
             assert reactor._cursors == initial
-            assert reactor._failures == {}
         finally:
             reactor.stop(join=False)
 
 
-def test_owner_preparation_failure_uses_existing_poison_policy(summon_db: Path) -> None:
+def test_owner_preparation_failure_stops_once_with_cursor_unchanged(
+    summon_db: Path,
+) -> None:
     with closing(TautClient(db_path=str(summon_db), as_name="listener")) as listener:
         listener.join("general")
         with closing(TautClient(db_path=str(summon_db), as_name="peer")) as peer:
             peer.join("general")
-            peer.say("general", "retained")
+            listener.read_unread("general")
+            sent = peer.say("general", "retained")
         owner = threading.get_ident()
         attempts: list[int] = []
 
@@ -127,13 +129,35 @@ def test_owner_preparation_failure_uses_existing_poison_policy(summon_db: Path) 
         reactor.prepare_delivery = malformed
         initial = dict(reactor._cursors)
         try:
-            for _ in range(3):
+            with pytest.raises(ValueError, match="formatting failed"):
                 reactor.process_once()
-            assert attempts == [owner] * 3
-            assert reactor._cursors != initial
-            assert reactor._delivery_pending is None
+            assert attempts == [owner]
+            assert reactor._cursors == initial
+            assert reactor._delivery_pending is False
         finally:
             reactor.stop(join=False)
+
+        injected: list[str] = []
+
+        class Handle:
+            def inject(self, text: str) -> None:
+                injected.append(text)
+
+        restarted = listener.watch(lambda _item: None, watcher_type=SummonReactor)
+        assert isinstance(restarted, SummonReactor)
+        restarted.prepare_delivery = lambda item: PreparedInjection(
+            cast(Any, Handle()), str(item), None
+        )
+        try:
+            restarted.process_once()
+            worker = restarted._delivery_thread
+            assert worker is not None
+            worker.join(2)
+            restarted.process_once()
+            assert len(injected) == 1
+            assert restarted._cursors["general"] >= sent.ts
+        finally:
+            restarted.stop(join=False)
 
 
 def test_worker_start_failure_does_not_leave_delivery_gated(
@@ -153,7 +177,7 @@ def test_worker_start_failure_does_not_leave_delivery_gated(
         reactor = listener.watch(lambda _item: None, watcher_type=SummonReactor)
         assert isinstance(reactor, SummonReactor)
         reactor.prepare_delivery = lambda item: PreparedInjection(
-            cast(Any, Handle()), str(item), 0
+            cast(Any, Handle()), str(item), None
         )
         try:
             with monkeypatch.context() as patch:
@@ -166,8 +190,7 @@ def test_worker_start_failure_does_not_leave_delivery_gated(
 
                 with pytest.raises(StopWatching):
                     reactor.process_once()
-            assert reactor._failures == {}
-            assert reactor._delivery_pending is None
+            assert reactor._delivery_pending is False
             assert reactor._delivery_thread is None
             assert reactor._delivery_cursor is None
         finally:
@@ -200,7 +223,7 @@ def test_source_close_interrupts_only_a_live_injection_worker(
         reactor = listener.watch(lambda _item: None, watcher_type=SummonReactor)
         assert isinstance(reactor, SummonReactor)
         reactor.prepare_delivery = lambda item: PreparedInjection(
-            cast(Any, Handle()), str(item), 0
+            cast(Any, Handle()), str(item), None
         )
         try:
             reactor.process_once()
@@ -216,6 +239,68 @@ def test_source_close_interrupts_only_a_live_injection_worker(
             reactor.stop(join=False)
             assert not worker.is_alive()
             assert interrupted == ([True] if still_injecting else [])
+        finally:
+            release.set()
+            reactor.stop(join=False)
+
+
+def test_retired_injection_leaves_record_for_successor(summon_db: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    injections: list[str] = []
+    first_generation = object()
+    second_generation = object()
+    active_generation = first_generation
+
+    class Handle:
+        def __init__(self, *, blocked: bool) -> None:
+            self.blocked = blocked
+
+        def inject(self, text: str) -> None:
+            if self.blocked:
+                entered.set()
+                assert release.wait(5)
+                return
+            injections.append(text)
+
+        def request_close(self) -> None:
+            release.set()
+
+    first_handle = Handle(blocked=True)
+    second_handle = Handle(blocked=False)
+    with closing(TautClient(db_path=str(summon_db), as_name="listener")) as listener:
+        listener.join("general")
+        with closing(TautClient(db_path=str(summon_db), as_name="peer")) as peer:
+            peer.join("general")
+            listener.read_unread("general")
+            sent = peer.say("general", "retained")
+        reactor = listener.watch(lambda _item: None, watcher_type=SummonReactor)
+        assert isinstance(reactor, SummonReactor)
+        reactor.prepare_delivery = lambda item: PreparedInjection(
+            cast(
+                Any,
+                first_handle
+                if active_generation is first_generation
+                else second_handle,
+            ),
+            str(item),
+            active_generation,
+        )
+        try:
+            reactor.process_once()
+            assert entered.wait(2)
+            reactor.retire_delivery_generation(first_generation)
+            assert reactor._delivery_pending is False
+            assert reactor._cursors["general"] < sent.ts
+
+            active_generation = second_generation
+            reactor.process_once()
+            worker = reactor._delivery_thread
+            assert worker is not None
+            worker.join(2)
+            reactor.process_once()
+            assert len(injections) == 1
+            assert reactor._cursors["general"] >= sent.ts
         finally:
             release.set()
             reactor.stop(join=False)

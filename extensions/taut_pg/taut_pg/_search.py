@@ -11,15 +11,16 @@ from dataclasses import dataclass
 from simplebroker.ext import SidecarSession
 
 from taut.search._provider import (
+    SEARCH_PROJECTION_VERSION,
+    SEARCH_SCHEMA_VERSION,
     IndexedDocument,
     SearchCandidate,
     SidecarAccessor,
     ThreadWatermark,
+    validate_search_versions,
 )
 
 _SCHEMA_LOCK_KEY = "taut:search:schema"
-_SCHEMA_VERSION = 1
-_PROJECTION_VERSION = 1
 
 _METADATA_DDL = """
     CREATE TABLE IF NOT EXISTS taut_search_metadata (
@@ -88,7 +89,33 @@ class PostgresSearchProvider:
 
     sidecar: SidecarAccessor
 
+    def schema_version(self) -> int | None:
+        with self.sidecar() as session:
+            exists = list(
+                session.run(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'taut_search_metadata'",
+                    fetch=True,
+                )
+            )
+            if not exists:
+                return None
+            rows = list(
+                session.run(
+                    "SELECT schema_version, projection_version "
+                    "FROM taut_search_metadata WHERE singleton = 1",
+                    fetch=True,
+                )
+            )
+        if not rows:
+            return None
+        schema_version, projection_version = map(int, rows[0])
+        return validate_search_versions(schema_version, projection_version)
+
     def ensure_schema(self) -> None:
+        if self.schema_version() == SEARCH_SCHEMA_VERSION:
+            return
         with self.sidecar(transaction=True) as session:
             session.run(
                 """
@@ -117,32 +144,19 @@ class PostgresSearchProvider:
                         current_generation, next_generation, initialized
                     ) VALUES (1, ?, ?, 1, 2, 0)
                     """,
-                    (_SCHEMA_VERSION, _PROJECTION_VERSION),
+                    (SEARCH_SCHEMA_VERSION, SEARCH_PROJECTION_VERSION),
                 )
             else:
                 schema_version, projection_version = map(int, rows[0])
-                if schema_version > _SCHEMA_VERSION:
-                    raise RuntimeError(
-                        "search schema version "
-                        f"{schema_version} is newer than supported version "
-                        f"{_SCHEMA_VERSION}"
-                    )
-                if projection_version > _PROJECTION_VERSION:
-                    raise RuntimeError(
-                        "search projection version "
-                        f"{projection_version} is newer than supported version "
-                        f"{_PROJECTION_VERSION}"
-                    )
-                if schema_version != _SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"unsupported search schema version {schema_version}"
-                    )
-                if projection_version != _PROJECTION_VERSION:
-                    raise RuntimeError(
-                        f"unsupported search projection version {projection_version}"
-                    )
+                validate_search_versions(schema_version, projection_version)
             for statement in _DDL:
                 session.run(statement)
+            session.run("DROP TABLE IF EXISTS taut_search_claims")
+            session.run("DROP TABLE IF EXISTS taut_search_housekeeping")
+            session.run(
+                "UPDATE taut_search_metadata SET schema_version = ? WHERE singleton = 1",
+                (SEARCH_SCHEMA_VERSION,),
+            )
 
     def replace_document(
         self,
@@ -176,13 +190,45 @@ class PostgresSearchProvider:
         generation: int,
         revision: int,
     ) -> bool:
+        existing = list(
+            session.run(
+                """
+                SELECT thread, text_sha256, text_bytes, projection_version,
+                       latest_revision, indexed
+                FROM taut_search_documents
+                WHERE generation = ? AND message_ts = ?
+                """,
+                (generation, document.message_ts),
+                fetch=True,
+            )
+        )
+        if existing:
+            thread, digest, size, projection, previous_revision, indexed = existing[0]
+            if int(previous_revision) > revision:
+                return False
+            if (
+                thread == document.thread
+                and digest == document.text_sha256
+                and int(size) == document.text_bytes
+                and int(projection) == SEARCH_PROJECTION_VERSION
+                and bool(indexed)
+            ):
+                if int(previous_revision) < revision:
+                    session.run(
+                        """
+                        UPDATE taut_search_documents SET latest_revision = ?
+                        WHERE generation = ? AND message_ts = ?
+                        """,
+                        (revision, generation, document.message_ts),
+                    )
+                return True
         applied = list(
             session.run(
                 """
                 INSERT INTO taut_search_documents AS current (
                     generation, message_ts, thread, text_sha256, text_bytes,
                     projection_version, latest_revision, indexed
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, TRUE)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
                 ON CONFLICT (generation, message_ts) DO UPDATE SET
                     thread = excluded.thread,
                     text_sha256 = excluded.text_sha256,
@@ -199,6 +245,7 @@ class PostgresSearchProvider:
                     document.thread,
                     document.text_sha256,
                     document.text_bytes,
+                    SEARCH_PROJECTION_VERSION,
                     revision,
                 ),
                 fetch=True,

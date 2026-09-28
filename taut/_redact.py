@@ -167,67 +167,6 @@ _RULES = (
         secret_group=1,
         flags=re.IGNORECASE,
     ),
-    # High-confidence self-identifying formats adapted from mm's detector
-    # fixture. Each group excludes the stable provider/type prefix.
-    _Rule(
-        id="github_token",
-        pattern=r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_([A-Za-z0-9_]{36,255})\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="stripe_secret_key",
-        pattern=r"\b[rs]k_live_([A-Za-z0-9]{20,247})\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="slack_token",
-        pattern=(
-            r"\b(?:xoxb|xoxp|xoxa|xoxr)-"
-            r"([0-9]{10,13}-[0-9]{10,13}[A-Za-z0-9-]*)"
-        ),
-        secret_group=1,
-    ),
-    _Rule(
-        id="slack_webhook",
-        pattern=(
-            r"https://hooks\.slack\.com/services/"
-            r"(T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{23,25})"
-        ),
-        secret_group=1,
-    ),
-    _Rule(
-        id="sendgrid_key",
-        pattern=r"\bSG\.([\w-]{20,24}\.[\w-]{39,50})\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="anthropic_key",
-        pattern=r"\bsk-ant-(?:admin01|api03)-([\w-]{93}AA)\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="openai_key",
-        pattern=(
-            r"\bsk-((?:(?:proj|svcacct|service)-[A-Za-z0-9_-]+|"
-            r"[A-Za-z0-9]+)T3BlbkFJ[A-Za-z0-9_-]+)\b"
-        ),
-        secret_group=1,
-    ),
-    _Rule(
-        id="google_api_key",
-        pattern=r"\bAIzaSy([A-Za-z0-9_-]{33})\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="aws_access_key",
-        pattern=r"\b(?:AKIA|ABIA|ACCA)([A-Z0-9]{16})\b",
-        secret_group=1,
-    ),
-    _Rule(
-        id="aws_session_key",
-        pattern=r"\bASIA([A-Z0-9]{16})\b",
-        secret_group=1,
-    ),
 )
 
 

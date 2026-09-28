@@ -883,7 +883,9 @@ def _mention_reply_id(
     thread_row = next(
         (
             candidate
-            for candidate in client.list_threads(all_threads=True)
+            for candidate in client.list_threads(
+                all_threads=True, include_unread_counts=False
+            )
             if candidate.name == thread
         ),
         None,

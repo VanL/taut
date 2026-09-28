@@ -40,7 +40,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from simplebroker import BrokerTarget, Queue
@@ -85,19 +85,16 @@ from taut_summon._persona import render_default_persona
 from taut_summon._reactor import PreparedInjection, SummonReactor
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
-    ClaimConflictError,
     DriverConflictError,
     SummonSessionRow,
     SummonStateError,
     capture_driver_evidence,
     claim_driver,
-    claim_name,
     driver_liveness,
     ensure_summon_schema,
     get_session,
     get_wired,
     record_session,
-    release_claim,
     release_driver,
     replace_legacy_provider,
     set_wired,
@@ -220,7 +217,6 @@ class _PhaseResult:
 
 @dataclass(frozen=True, slots=True)
 class _PumpResult:
-    generation: int
     event: AdapterEvent | None
     error: BaseException | None
     retired: bool
@@ -239,6 +235,7 @@ class _GenerationContext:
 
     token: int
     exit: _GenerationExit
+    results: queue.SimpleQueue[_PumpResult] = field(default_factory=queue.SimpleQueue)
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +329,7 @@ class SummonDriver:
         self._watcher: Any | None = None
         self._member_id: str | None = None
         self._generation_counter = 0
+        self._retirement_failed = False
         self._active_generation: _GenerationContext | None = None
         self._interrupt_worker: threading.Thread | None = None
         self._phase_cancel_requested = False
@@ -556,39 +554,9 @@ class SummonDriver:
         pid, start = self._require_evidence()
         attempted = {target}
         created: Member | None = None
-        retrying_after_occupied_claim = False
 
-        # Each candidate attempt owns one claim and one creator. A core
-        # fail-not-adopt collision leaves no member to clean up: release that
-        # claim, choose another candidate, and retry ([SUM-4]).
+        # Core's final-name join is the sole creator arbitration point.
         for _ in range(_NAME_RETRY_ATTEMPTS):
-            try:
-                claim_name(
-                    queue,
-                    name=target,
-                    provider=provider,
-                    driver_pid=pid,
-                    driver_start_time=start,
-                    claimed_ts=queue.generate_timestamp(),
-                    takeover=self._request.takeover,
-                )
-            except ClaimConflictError as exc:
-                if not implied and not retrying_after_occupied_claim:
-                    raise DriverError(str(exc)) from exc
-                if len(attempted) >= _NAME_RETRY_ATTEMPTS:
-                    raise DriverError(
-                        f"could not settle a name for '{requested}' after "
-                        f"{_NAME_RETRY_ATTEMPTS} attempts"
-                    ) from exc
-                target = self._automatic_name(client, requested, attempted)
-                attempted.add(target)
-                logger.warning(
-                    "summon of '%s' is already in flight; trying '%s'",
-                    requested,
-                    target,
-                )
-                continue
-
             creator: TautClient | None = None
             try:
                 creator = TautClient(
@@ -617,13 +585,13 @@ class SummonDriver:
             except IdentityError:
                 if created is None and creator is not None:
                     created = creator.last_created_member
-                self._release_name_claim_after_failure(
-                    queue, target=target, provider=provider, pid=pid, start=start
-                )
                 if created is not None and created.token is not None:
                     raise self._residual_member_error(created) from None
+                if not implied:
+                    raise DriverError(
+                        f"member '{target}' already exists; pick another name"
+                    ) from None
                 collided_target = target
-                retrying_after_occupied_claim = True
                 if len(attempted) >= _NAME_RETRY_ATTEMPTS:
                     raise DriverError(
                         f"could not settle a name for '{requested}' after "
@@ -640,9 +608,6 @@ class SummonDriver:
             except BaseException as exc:
                 if created is None and creator is not None:
                     created = creator.last_created_member
-                self._release_name_claim_after_failure(
-                    queue, target=target, provider=provider, pid=pid, start=start
-                )
                 if created is not None and created.token is not None:
                     raise self._residual_member_error(created) from exc
                 raise
@@ -658,21 +623,13 @@ class SummonDriver:
                                 exc_info=True,
                             )
                         else:
-                            self._release_name_claim_after_failure(
-                                queue,
-                                target=target,
-                                provider=provider,
-                                pid=pid,
-                                start=start,
-                            )
                             if created is not None and created.token is not None:
                                 raise self._residual_member_error(created) from exc
                             raise
             break
         assert created is not None and created.token is not None
 
-        # Publish the durable session row, then release the claim —
-        # old names free up the moment they stop being load-bearing.
+        # Publish the durable session row after all joins have succeeded.
         self._member_id = created.member_id
         try:
             record_session(
@@ -685,20 +642,7 @@ class SummonDriver:
                 updated_ts=queue.generate_timestamp(),
             )
         except BaseException as exc:
-            self._release_name_claim_after_failure(
-                queue, target=target, provider=provider, pid=pid, start=start
-            )
             raise self._residual_member_error(created) from exc
-        if not release_claim(
-            queue,
-            name=target,
-            provider=provider,
-            driver_pid=pid,
-            driver_start_time=start,
-        ):
-            raise DriverError(
-                f"recorded session for '{target}' but could not release its name claim"
-            )
         return _BootstrapResult(
             member_id=created.member_id,
             member_name=target,
@@ -747,7 +691,6 @@ class SummonDriver:
         self._phase_worker: threading.Thread | None = None
         self._phase_results: queue.SimpleQueue[_PhaseResult] = queue.SimpleQueue()
         self._phase_result: _PhaseResult | None = None
-        self._pump_results: queue.SimpleQueue[_PumpResult] = queue.SimpleQueue()
         self._owner_running: _RunningGeneration | None = None
         self._owner_first = True
         self._owner_generation_ready = False
@@ -795,9 +738,6 @@ class SummonDriver:
             self._owner_client = client
             self._watcher = reactor
             reactor.prepare_delivery = self._prepare_injection
-            reactor.current_generation = lambda: (
-                self._active_generation.token if self._active_generation else 0
-            )
             reactor.delivery_error = self._owner_delivery_error
             reactor.delivery_enabled = (
                 self._owner_phase == "listen"
@@ -1020,14 +960,14 @@ class SummonDriver:
                 time.monotonic() + _FOREGROUND_READINESS_TIMEOUT_SECONDS
             )
         reactor.delivery_enabled = True
-        if self._pending_nudge is not None and reactor._delivery_pending is None:
+        if self._pending_nudge is not None and not reactor._delivery_pending:
             text = self._pending_nudge
             self._pending_nudge = None
             handle = self._handle
             assert handle is not None
             self._start_phase_operation("nudge", lambda: handle.inject(text))
             reactor.delivery_enabled = False
-        if reactor._ready_after_initial_drain and reactor._delivery_pending is None:
+        if reactor._ready_after_initial_drain and not reactor._delivery_pending:
             self._publish_owner_ready()
 
     def _prepare_owner_generation(self) -> None:
@@ -1153,9 +1093,7 @@ class SummonDriver:
         if running.pump is None and self._should_start_pump_before_bootstrap(
             self._request, self._owner_adapter, availability=self._owner_availability
         ):
-            pump = self._start_generation_pump(
-                running.generation, handle, self._owner_boot
-            )
+            pump = self._start_pump(running.generation, handle)
             self._owner_running = _RunningGeneration(
                 running.started_at, handle, running.generation, pump
             )
@@ -1184,9 +1122,7 @@ class SummonDriver:
             )
         running = self._owner_running
         assert running is not None
-        pump = self._start_generation_pump(
-            running.generation, running.handle, self._owner_boot
-        )
+        pump = self._start_pump(running.generation, running.handle)
         self._owner_running = _RunningGeneration(
             running.started_at, running.handle, running.generation, pump
         )
@@ -1196,9 +1132,7 @@ class SummonDriver:
         running = self._owner_running
         assert running is not None
         if running.pump is None:
-            pump = self._start_generation_pump(
-                running.generation, running.handle, self._owner_boot
-            )
+            pump = self._start_pump(running.generation, running.handle)
             self._owner_running = _RunningGeneration(
                 running.started_at, running.handle, running.generation, pump
             )
@@ -1239,14 +1173,27 @@ class SummonDriver:
             reactor.request_stop()
             return
         running.handle.request_close()
-        if reactor._delivery_pending is not None:
-            return
+        self._retire_delivery_generation(running.generation)
         if self._owner_phase != "close":
             self._start_phase_operation("close", running.handle.close)
+
+    def _retire_delivery_generation(self, generation: _GenerationContext) -> None:
+        """Latch failed injection retirement before any successor activation."""
+
+        reactor = self._watcher
+        assert isinstance(reactor, SummonReactor)
+        try:
+            reactor.retire_delivery_generation(generation)
+        except BaseException:
+            self._retirement_failed = True
+            raise
 
     def _finish_owner_teardown(self) -> None:
         running = self._owner_running
         assert running is not None
+        reactor = self._watcher
+        assert isinstance(reactor, SummonReactor)
+        self._retire_delivery_generation(running.generation)
         if running.pump is not None:
             self._join_pump(
                 running.generation, running.pump, timeout=_PUMP_JOIN_TIMEOUT_SECONDS
@@ -1348,14 +1295,14 @@ class SummonDriver:
             raise SummonOperationError("summon readiness callback failed") from error
 
     def _apply_pump_results(self) -> None:
+        generation = self._active_generation
+        if generation is None:
+            return
         while True:
             try:
-                result = self._pump_results.get_nowait()
+                result = generation.results.get_nowait()
             except queue.Empty:
                 return
-            generation = self._active_generation
-            if generation is None or result.generation != generation.token:
-                continue
             if result.error is not None:
                 raise DriverError(
                     f"adapter event stream failed: {result.error}"
@@ -1370,19 +1317,6 @@ class SummonDriver:
                 generation.exit.returncode = result.event.returncode
             if result.retired:
                 self._harness_dead.set()
-
-    def _start_generation_pump(
-        self,
-        generation: _GenerationContext,
-        handle: AdapterHandle,
-        boot: _BootstrapResult,
-    ) -> threading.Thread:
-        return self._start_pump(
-            generation,
-            handle,
-            db_path=self._db_path,
-            token=boot.token,
-        )
 
     def _ensure_generation_threads(self, boot: _BootstrapResult) -> None:
         setup_client = TautClient(
@@ -1442,15 +1376,19 @@ class SummonDriver:
         if handle is None:
             raise WatcherRejected("provider is not available for injection")
         generation = self._active_generation
-        return PreparedInjection(
-            handle, format_injection(item), generation.token if generation else 0
-        )
+        if generation is None:
+            raise WatcherRejected("provider generation is not available for injection")
+        return PreparedInjection(handle, format_injection(item), generation)
 
     # --- event pump ([SUM-7.1]) --------------------------------------------
 
     def _activate_generation(self) -> _GenerationContext:
-        """Publish one spawn generation and retire any prior token atomically."""
+        """Publish a generation after the prior one was fully retired."""
 
+        if self._active_generation is not None:
+            raise DriverError("previous provider generation is still active")
+        if self._retirement_failed:
+            raise DriverError("previous provider generation did not retire")
         self._generation_counter += 1
         generation = _GenerationContext(
             token=self._generation_counter,
@@ -1487,6 +1425,7 @@ class SummonDriver:
         try:
             pump.join(timeout=timeout)
         except BaseException as cleanup:
+            self._retirement_failed = True
             if primary is not None:
                 self._add_cleanup_note(primary, cleanup)
                 return
@@ -1498,6 +1437,7 @@ class SummonDriver:
             f"{generation.token} was retired"
         )
         self._shutdown_error = error
+        self._retirement_failed = True
         if primary is not None:
             self._add_cleanup_note(primary, error)
             return
@@ -1526,19 +1466,24 @@ class SummonDriver:
                 close_error = cleanup
             else:
                 self._add_cleanup_note(inherited, cleanup)
-        if pump is not None:
+        reactor = self._watcher
+        try:
             try:
-                self._join_pump(
-                    generation,
-                    pump,
-                    timeout=timeout,
-                    primary=inherited,
-                )
-            except BaseException as cleanup:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
-                if inherited is None:
-                    join_error = cleanup
-                else:
-                    self._add_cleanup_note(inherited, cleanup)
+                if isinstance(reactor, SummonReactor):
+                    self._retire_delivery_generation(generation)
+            finally:
+                if pump is not None:
+                    self._join_pump(
+                        generation,
+                        pump,
+                        timeout=timeout,
+                        primary=inherited or sys.exception(),
+                    )
+        except BaseException as cleanup:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
+            if inherited is None:
+                join_error = cleanup
+            else:
+                self._add_cleanup_note(inherited, cleanup)
         if inherited is not None:
             if self._shutdown.is_set():
                 self._shutdown_error = inherited
@@ -1558,21 +1503,16 @@ class SummonDriver:
         self,
         generation: _GenerationContext,
         handle: AdapterHandle,
-        db_path: str | None,
-        token: str,
     ) -> None:
-        del db_path, token
         error: BaseException | None = None
         try:
             for event in handle.events():
-                self._pump_results.put(
-                    _PumpResult(generation.token, event, None, False)
-                )
+                generation.results.put(_PumpResult(event, None, False))
                 self._publish_owner_activity()
         except BaseException as exc:  # noqa: BLE001 - transfer every transport failure
             error = exc
         finally:
-            self._pump_results.put(_PumpResult(generation.token, None, error, True))
+            generation.results.put(_PumpResult(None, error, True))
             self._publish_owner_activity()
 
     @staticmethod
@@ -1669,18 +1609,10 @@ class SummonDriver:
         self,
         generation: _GenerationContext,
         handle: AdapterHandle,
-        *,
-        db_path: str | None,
-        token: str,
     ) -> threading.Thread:
         pump = threading.Thread(
             target=self._pump,
-            args=(
-                generation,
-                handle,
-                db_path,
-                token,
-            ),
+            args=(generation, handle),
             daemon=True,
             name="taut-summon-pump",
         )
@@ -1829,31 +1761,6 @@ class SummonDriver:
     def _ledger(self) -> Queue:
         assert self._queue is not None
         return self._queue
-
-    def _release_name_claim_after_failure(
-        self,
-        queue: Queue,
-        *,
-        target: str,
-        provider: str,
-        pid: int,
-        start: str,
-    ) -> None:
-        """Best-effort claim cleanup that preserves the active bootstrap error."""
-
-        try:
-            release_claim(
-                queue,
-                name=target,
-                provider=provider,
-                driver_pid=pid,
-                driver_start_time=start,
-            )
-        except Exception:
-            logger.debug(
-                "name-claim cleanup after bootstrap failure failed",
-                exc_info=True,
-            )
 
     @staticmethod
     def _residual_member_error(created: Member) -> DriverError:

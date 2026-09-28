@@ -157,25 +157,6 @@ def test_every_supported_cli_capability_has_exactly_one_mcp_tool() -> None:
     assert mapped_tools == DOMAIN_TOOL_NAMES == MANIFEST_DOMAIN_TOOL_NAMES
 
 
-def _valid_rate_probe_arguments(
-    workspace: str,
-    token: str,
-) -> dict[str, dict[str, object]]:
-    message_id = "1234567890123456789"
-    arguments = {
-        name: {"workspace": workspace, "token": token, **values}
-        for name, values in DOMAIN_TOOL_ARGUMENTS.items()
-    }
-    for name in ("message_delete", "message_react", "message_show", "reply"):
-        arguments[name]["msg_id"] = message_id
-    return {
-        "attach_workspace": {"workspace": workspace, "token": token},
-        "detach_workspace": {"workspace": workspace},
-        "list_workspaces": {},
-        **arguments,
-    }
-
-
 def test_target_manifest_requires_identity_handle_on_every_domain_tool() -> None:
     """[MCP-5] One target manifest carries workspace plus token per domain call."""
 
@@ -243,84 +224,6 @@ def test_domain_call_lazily_ensures_and_retains_workspace(tmp_path: Path) -> Non
             assert len(reactor.list_workspaces()["records"]) == 1
         finally:
             await reactor.aclose()
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.timeout(20)
-def test_rate_boundary_charges_every_valid_tool_and_no_server_owned_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """[MCP-10]/[MCP-12] One boundary charges all tools and no control path."""
-
-    from mcp import types
-    from mcp.client import Client
-    from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
-
-    from taut_mcp._process_reactor import RATE_LIMIT_EXCEEDED, WorkspaceToolError
-    from taut_mcp.server import NOTIFICATIONS_URI, create_server
-
-    charges: list[None] = []
-
-    def exhausted(_: ProcessReactor) -> None:
-        charges.append(None)
-        raise WorkspaceToolError(RATE_LIMIT_EXCEEDED)
-
-    monkeypatch.setattr(ProcessReactor, "charge_request", exhausted)
-    tool_arguments = _valid_rate_probe_arguments(
-        str(tmp_path / "unresolved"),
-        "valid-rate-probe-token",
-    )
-    assert set(tool_arguments) == {tool.name for tool in TOOLS}
-
-    async def scenario() -> None:
-        modern_server, _ = create_server()
-        async with Client(modern_server, mode="2026-07-28") as modern:
-            await modern.list_tools()
-            await modern.list_resources()
-            async with modern.listen(resource_subscriptions=[NOTIFICATIONS_URI]):
-                pass
-            with pytest.raises(MCPError):
-                await modern.call_tool("not_a_tool", {})
-            invalid = await modern.call_tool(
-                "list_workspaces",
-                {"unexpected": True},
-            )
-            assert invalid.is_error is True
-            with pytest.raises(MCPError):
-                await modern.read_resource("taut://notifications/missing")
-            assert charges == []
-
-            for name in sorted(tool_arguments):
-                limited = await modern.call_tool(name, tool_arguments[name])
-                assert limited.is_error is True
-                assert isinstance(limited.content[0], types.TextContent)
-                assert limited.content[0].text == RATE_LIMIT_EXCEEDED
-            with pytest.raises(MCPError) as resource:
-                await modern.read_resource(NOTIFICATIONS_URI)
-            assert resource.value.error.code == -31999
-            assert len(charges) == len(TOOLS) + 1
-
-        legacy_server, _ = create_server()
-        before_legacy = len(charges)
-        async with Client(legacy_server, mode="legacy") as legacy:
-            # SDK v2 retains these methods only for explicit legacy-mode proof.
-            with pytest.warns(MCPDeprecationWarning, match="ping is removed"):
-                await legacy.send_ping()
-            await legacy.list_tools()
-            await legacy.list_resources()
-            with pytest.warns(
-                MCPDeprecationWarning,
-                match="resources/subscribe is removed",
-            ):
-                await legacy.subscribe_resource(NOTIFICATIONS_URI)
-            with pytest.warns(
-                MCPDeprecationWarning,
-                match="resources/unsubscribe is removed",
-            ):
-                await legacy.unsubscribe_resource(NOTIFICATIONS_URI)
-        assert len(charges) == before_legacy
 
     asyncio.run(scenario())
 

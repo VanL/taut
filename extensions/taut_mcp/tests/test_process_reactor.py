@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import hashlib
 import json
 import os
 import queue
@@ -59,62 +58,6 @@ def _debug_events(workspace: Path) -> list[dict[str, Any]]:
         return [json.loads(message) for message in messages]
     finally:
         queue.close()
-
-
-class _FingerprintAuditedCandidates(dict[int, Any]):
-    def __init__(self) -> None:
-        super().__init__()
-        self.cleared_before_pop: list[bool] = []
-
-    def pop(self, key: int, default: Any = None) -> Any:
-        candidate = self.get(key)
-        if candidate is not None:
-            self.cleared_before_pop.append(candidate.fingerprint is None)
-        return super().pop(key, default)
-
-
-def _assert_frame_excludes_request_values(
-    frame: Any,
-    *,
-    token: str,
-) -> None:
-    """Reject token/fingerprint values without making local names contractual."""
-
-    assert frame is not None
-    fingerprint = hashlib.sha256(token.encode("utf-8")).digest()
-    values = tuple(frame.f_locals.values())
-    assert not any(type(value) is str and value == token for value in values)
-    assert not any(type(value) is bytes and value == fingerprint for value in values)
-
-
-def _assert_coroutine_excludes_request_values(
-    coroutine: Any,
-    *,
-    token: str,
-) -> bool:
-    """Inspect each exposed coroutine in the live await chain."""
-
-    current = coroutine
-    observed_frame = False
-    while current is not None:
-        frame = getattr(current, "cr_frame", None)
-        if frame is not None:
-            observed_frame = True
-            _assert_frame_excludes_request_values(frame, token=token)
-        awaited = getattr(current, "cr_await", None)
-        current = awaited if getattr(awaited, "cr_frame", None) is not None else None
-    assert observed_frame or sys.implementation.name != "cpython", (
-        "CPython must expose coroutine frames for the MCP live-state cleanup assertion"
-    )
-    return observed_frame
-
-
-def _skip_if_coroutine_frames_are_unavailable(*, inspected: bool) -> None:
-    if not inspected:
-        pytest.skip(
-            f"{sys.implementation.name} does not expose coroutine frames; "
-            "observable lifecycle assertions passed"
-        )
 
 
 @pytest.mark.sqlite_only
@@ -292,40 +235,11 @@ def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
     peer.close()
 
 
-def test_process_token_bucket_uses_continuous_refill_without_refund() -> None:
-    """[MCP-10] Capacity, refill, and rejection math are exact."""
-
-    async def scenario() -> None:
-        now = 100.0
-
-        def clock() -> float:
-            return now
-
-        reactor = ProcessReactor(asyncio.get_running_loop(), bucket_clock=clock)
-        try:
-            for _ in range(40):
-                reactor.charge_request()
-            with _tool_error("rate limit exceeded; retry after backoff"):
-                reactor.charge_request()
-
-            now += 0.025
-            with _tool_error("rate limit exceeded; retry after backoff"):
-                reactor.charge_request()
-            now += 0.025
-            reactor.charge_request()
-            with _tool_error("rate limit exceeded; retry after backoff"):
-                reactor.charge_request()
-        finally:
-            await reactor.aclose()
-
-    asyncio.run(scenario())
-
-
-def test_thread_start_failure_clears_hidden_candidate_fingerprint(
+def test_thread_start_failure_releases_hidden_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[MCP-4] Removing an unstarted hidden seat clears its digest first."""
+    """[MCP-4] Failed worker submission releases its hidden seat for retry."""
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
 
@@ -333,8 +247,6 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
         reactor = ProcessReactor(asyncio.get_running_loop())
         real_new_owner = reactor._new_owner
         real_submit = reactor._executor.submit
-        audited = _FingerprintAuditedCandidates()
-        reactor._candidates = audited
         inbound: queue.Queue[workspace_reactor.WorkspaceControl] = queue.Queue()
         controls: list[workspace_reactor.WorkspaceControl] = []
 
@@ -365,21 +277,10 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             assert str(raised.value) == (
                 "workspace attachment failed; use list_workspaces before retrying"
             )
-            assert audited.cleared_before_pop == [True]
             assert len(controls) == 1
             assert isinstance(controls[0], workspace_reactor.StopWorkspace)
             assert isinstance(inbound.get_nowait(), workspace_reactor.StopWorkspace)
             assert inbound.empty()
-            traceback = raised.value.__traceback__
-            while traceback is not None and (
-                traceback.tb_frame.f_code.co_name != "ensure_workspace"
-            ):
-                traceback = traceback.tb_next
-            assert traceback is not None
-            _assert_frame_excludes_request_values(
-                traceback.tb_frame,
-                token=token,
-            )
             assert reactor.list_workspaces()["records"] == []
             monkeypatch.setattr(reactor, "_new_owner", real_new_owner)
             monkeypatch.setattr(reactor._executor, "submit", real_submit)
@@ -450,7 +351,7 @@ def test_direct_rejections_keep_fixed_errors(
 
             canonical = str(workspace.resolve())
             reactor._entries[canonical].status = "identity_lost"
-            reactor._entries[canonical].fingerprint = None
+            reactor._entries[canonical].token = None
             degraded_token = "degraded-token"
             with pytest.raises(WorkspaceToolError) as degraded:
                 await reactor.attach_workspace(canonical, degraded_token)
@@ -614,11 +515,11 @@ def test_directory_identity_failure_uses_fixed_attachment_error(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
-def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
+def test_unexpected_resolution_crash_releases_hidden_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[MCP-4] Dead-owner fallback clears a hidden digest before removal."""
+    """[MCP-4] Dead-owner fallback releases its hidden reservation."""
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
     TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
@@ -630,14 +531,12 @@ def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
-        audited = _FingerprintAuditedCandidates()
-        reactor._candidates = audited
         try:
             with _tool_error(
                 "workspace attachment failed; use list_workspaces before retrying"
             ):
                 await reactor.attach_workspace(str(workspace), token)
-            assert audited.cleared_before_pop == [True]
+            assert reactor._candidates == {}
         finally:
             await reactor.aclose()
 
@@ -877,7 +776,7 @@ def test_resolution_timeout_retires_candidate_without_publishing(
             "workspace resolution timed out; use list_workspaces then restart if warned"
         ):
             await attach
-        assert reactor._candidates[generation].fingerprint is None
+        assert reactor._candidates[generation].token is None
         assert reactor.list_workspaces()["records"] == []
         assert reactor.list_workspaces()["warnings"] == [
             "stalled attachment reservation exists; restart taut-mcp to clear"
@@ -1074,7 +973,7 @@ def test_validation_timeout_publishes_detachable_tombstone(
         with _tool_error("workspace attach timed out; use list_workspaces then detach"):
             await attach
         record = reactor.list_workspaces()["records"][0]
-        assert reactor._entries[os.path.realpath(workspace)].fingerprint is None
+        assert reactor._entries[os.path.realpath(workspace)].token is None
         assert record == {
             "backend": "sqlite",
             "member_id": None,
@@ -1147,7 +1046,7 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
         with _tool_error("workspace detach timed out; retry detach after backoff"):
             await detach
         assert reactor.list_workspaces()["records"][0]["status"] == "reactor_failed"
-        assert reactor._entries[canonical].fingerprint is None
+        assert reactor._entries[canonical].token is None
         with _tool_error("workspace reactor failed; detach and reattach"):
             await reactor._execute_ready_tool(canonical, "whoami", {})
         with _tool_error("workspace reactor failed; detach and reattach"):
@@ -1216,7 +1115,7 @@ def test_source_hint_marks_lost_identity_then_retires_without_healing(
             )
             reactor._drain_events()
             assert reactor._entries[canonical].status == "identity_lost"
-            assert reactor._entries[canonical].fingerprint is None
+            assert reactor._entries[canonical].token is None
             assert json.loads(reactor.current_text) == {
                 "workspaces": [
                     {
@@ -1266,10 +1165,6 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
         reactor = ProcessReactor(asyncio.get_running_loop())
         attach = asyncio.create_task(reactor.attach_workspace(str(workspace), token))
         assert await asyncio.to_thread(validation_started.wait, 5)
-        frame_inspected = _assert_coroutine_excludes_request_values(
-            attach.get_coro(),
-            token=token,
-        )
         busy_token = "busy-token"
         with pytest.raises(WorkspaceToolError) as busy:
             await reactor.attach_workspace(str(workspace), busy_token)
@@ -1301,7 +1196,6 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
         )
         assert identity_result["records"][0]["name"] == "selected"
         await reactor.aclose()
-        _skip_if_coroutine_frames_are_unavailable(inspected=frame_inspected)
 
     asyncio.run(scenario())
 
@@ -1386,10 +1280,6 @@ def test_canceled_lazy_ensure_publishes_without_admitting_domain_command(
             )
         )
         assert await asyncio.to_thread(validation_started.wait, 5)
-        frame_inspected = _assert_coroutine_excludes_request_values(
-            call.get_coro(),
-            token=token,
-        )
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
@@ -1418,7 +1308,6 @@ def test_canceled_lazy_ensure_publishes_without_admitting_domain_command(
             record["text"] != "must not be sent" for record in history["records"]
         )
         await reactor.aclose()
-        _skip_if_coroutine_frames_are_unavailable(inspected=frame_inspected)
 
     asyncio.run(scenario())
 

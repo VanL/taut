@@ -89,6 +89,165 @@ def _named_steps(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _checked_python_files(
+    workflow: dict[str, Any], *, tool: str, tracked: set[str]
+) -> set[str]:
+    """Resolve the files covered by root CI's formatting/type-check commands."""
+
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    root_job = jobs["lint"]
+    assert isinstance(root_job, dict)
+    assert root_job.get("continue-on-error", False) is False, (
+        "lint job cannot use continue-on-error for static checks"
+    )
+    covered: set[str] = set()
+    explicit: set[str] = set()
+    for step in _named_steps(root_job).values():
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        cwd = Path(str(step.get("working-directory", ".")))
+        for line in run.splitlines():
+            tokens = shlex.split(line)
+            if not tokens or tokens[0] != tool:
+                continue
+            if tool == "ruff" and tokens[1:3] != ["format", "--check"]:
+                continue
+            assert step.get("continue-on-error", False) is False, (
+                f"{tool} step cannot use continue-on-error"
+            )
+            assert (
+                re.search(r"(?:\|\||;)\s*(?:true|:|exit\s+0)(?=$|[\s;#])", line) is None
+            ), f"{tool} command masks failure: {line}"
+            if tool == "mypy":
+                paths = tokens[1 : tokens.index("--config-file")]
+            else:
+                paths = tokens[3:]
+            for item in paths:
+                absolute = (PROJECT_ROOT / cwd / item).resolve()
+                relative = absolute.relative_to(PROJECT_ROOT).as_posix()
+                if item.endswith(".py"):
+                    covered.add(relative)
+                    explicit.add(relative)
+                else:
+                    covered.update(
+                        path
+                        for path in tracked
+                        if path.startswith(relative.rstrip("/") + "/")
+                    )
+    if tool == "mypy":
+        exclusions = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())[
+            "tool"
+        ]["mypy"]["exclude"]
+        covered = {
+            path
+            for path in covered
+            if path in explicit
+            or not any(re.search(pattern, path) for pattern in exclusions)
+        }
+    return covered
+
+
+def _assert_root_static_coverage(workflow: dict[str, Any]) -> None:
+    tracked = set(
+        subprocess.run(
+            ["git", "ls-files", "--cached", "--", "*.py"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    required = {
+        path
+        for path in tracked
+        if path.startswith(("taut/", "tests/", "bin/", "extensions/taut_summon/"))
+    }
+    ruff_config = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())["tool"][
+        "ruff"
+    ]
+    assert not {"exclude", "extend-exclude"} & ruff_config.keys(), (
+        "update effective Ruff coverage when adding exclusions"
+    )
+    formatted = _checked_python_files(workflow, tool="ruff", tracked=tracked)
+    assert required <= formatted, f"Ruff format misses {sorted(required - formatted)}"
+    type_required = {
+        path
+        for path in required
+        if path.startswith(("taut/", "tests/", "extensions/taut_summon/"))
+    } | {
+        "bin/release.py",
+        "bin/release-artifact.py",
+        "bin/require-green-workflows.py",
+    }
+    typed = _checked_python_files(workflow, tool="mypy", tracked=tracked)
+    assert type_required <= typed, f"mypy misses {sorted(type_required - typed)}"
+
+
+def test_root_static_checks_cover_intended_python_files() -> None:
+    workflow = _workflow_data("test.yml")
+    _assert_root_static_coverage(workflow)
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_root_static_coverage_rejects_dropped_summon_tree(tool: str) -> None:
+    workflow = deepcopy(_workflow_data("test.yml"))
+    root_job = workflow["jobs"]["lint"]
+    for step in _named_steps(root_job).values():
+        if not isinstance(step.get("run"), str):
+            continue
+        if tool == "ruff" and step["name"] != "Check formatting with ruff":
+            continue
+        if tool == "mypy" and step["name"] != "Type check with mypy":
+            continue
+        step["run"] = "\n".join(
+            " ".join(
+                token
+                for token in shlex.split(line)
+                if not token.startswith("extensions/taut_summon/")
+            )
+            for line in step["run"].splitlines()
+        )
+    with pytest.raises(AssertionError, match="taut_summon"):
+        _assert_root_static_coverage(workflow)
+
+
+@pytest.mark.parametrize("owner", ["job", "step"])
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_root_static_coverage_rejects_continue_on_error(tool: str, owner: str) -> None:
+    workflow = deepcopy(_workflow_data("test.yml"))
+    root_job = workflow["jobs"]["lint"]
+    if owner == "job":
+        root_job["continue-on-error"] = True
+    else:
+        step_name = (
+            "Check formatting with ruff" if tool == "ruff" else "Type check with mypy"
+        )
+        _named_steps(root_job)[step_name]["continue-on-error"] = True
+
+    with pytest.raises(AssertionError, match="continue-on-error"):
+        _assert_root_static_coverage(workflow)
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+@pytest.mark.parametrize("mask", ["|| true", "|| :", "; true", "|| exit 0"])
+def test_root_static_coverage_rejects_shell_failure_mask(tool: str, mask: str) -> None:
+    workflow = deepcopy(_workflow_data("test.yml"))
+    root_job = workflow["jobs"]["lint"]
+    step_name = (
+        "Check formatting with ruff" if tool == "ruff" else "Type check with mypy"
+    )
+    step = _named_steps(root_job)[step_name]
+    step["run"] = "\n".join(
+        f"{line} {mask}" if line.strip().startswith(tool) else line
+        for line in step["run"].splitlines()
+    )
+
+    with pytest.raises(AssertionError, match="masks failure"):
+        _assert_root_static_coverage(workflow)
+
+
 def _assert_release_tag_check_is_fail_stop(job: dict[str, Any]) -> None:
     steps = list(_named_steps(job).values())
     tag_rechecks = [
@@ -425,15 +584,10 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
     assert workflow.index("ruff check .") < workflow.index(
         "bin/ruff_suppression_index.py --check"
     )
-    assert "ruff format --check taut tests bin" in workflow
     # Guard against the stale-path regression: neither the removed generator script
     # nor the deleted logo asset may reappear in the lint command.
     assert "generate_knot.py" not in workflow
     assert "gen_taut_logo" not in workflow
-    assert (
-        "mypy taut tests bin/release.py bin/release-artifact.py "
-        "bin/require-green-workflows.py --config-file pyproject.toml" in workflow
-    )
     assert "uv build" in workflow
     roles = _pytest_workflow_roles(document)
     observed_plain = Counter(

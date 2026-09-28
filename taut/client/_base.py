@@ -20,7 +20,7 @@ from simplebroker import (
 
 from taut import addressing, identity
 from taut._cache_stale import publish_cache_stale
-from taut._cleanup import capture_cleanup_failure
+from taut._cleanup import capture_cleanup_failure, cleanup_failure
 from taut._config import load_config
 from taut._constants import (
     CACHE_STALE_QUEUE_NAME,
@@ -260,14 +260,13 @@ class _ClientBase(ABC):
                 self._queue_cache.clear()
 
         if self._transient_meta_queue is not None:
-            resource_failure = capture_cleanup_failure(
-                None,
-                self._transient_meta_queue.close,
-            )
+            resource_failure = cleanup_failure(self._transient_meta_queue.close)
             if resource_failure is None:
                 self._transient_meta_queue = None
             elif failure is None:
                 failure = resource_failure
+            else:
+                failure.add_note(f"additional cleanup failed: {resource_failure}")
 
         if failure is not None:
             raise failure

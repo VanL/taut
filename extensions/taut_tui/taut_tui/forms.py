@@ -17,7 +17,6 @@ from types import MappingProxyType
 
 from taut_tui.actions import (
     ActionId,
-    ConfirmationPolicy,
     action_spec,
 )
 
@@ -37,11 +36,6 @@ class FieldKind(StrEnum):
     PATH = "path"
 
 
-class FormControlKind(StrEnum):
-    SUBMIT = "submit"
-    CANCEL = "cancel"
-
-
 class ContextRequirement(StrEnum):
     """Typed visual state an action needs in addition to form values."""
 
@@ -54,28 +48,13 @@ class ContextRequirement(StrEnum):
     RECOVERED_DRAFT = "recovered-draft"
 
 
-class ConfirmationTarget(StrEnum):
-    """Where the dispatcher obtains the exact target named by a prompt."""
-
-    CONTEXT = "context"
-    FIELD = "field"
-
-
-class VisualValidationCode(StrEnum):
-    """The complete, deliberately small visual validation vocabulary."""
-
-    REQUIRED = "required"
-    NONBLANK = "nonblank"
-
-
 @dataclass(frozen=True, slots=True)
 class FieldSpec:
-    """One labelled native field in explicit Tab order."""
+    """One labelled native field; tuple order is the visual Tab order."""
 
     field_id: str
     label: str
     kind: FieldKind
-    focus_order: int
     required: bool = False
     nonblank: bool = False
     masked: bool = False
@@ -86,8 +65,6 @@ class FieldSpec:
             raise ValueError("field_id must not be empty")
         if not self.label:
             raise ValueError("field label must not be empty")
-        if self.focus_order < 0:
-            raise ValueError("field focus_order must be non-negative")
         if self.kind is FieldKind.SECRET:
             if not self.masked or not self.clear_on_close:
                 raise ValueError("secret fields must be masked and cleared on close")
@@ -96,86 +73,22 @@ class FieldSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class FormControlSpec:
-    """One explicit submit or cancel control."""
-
-    control_id: str
-    label: str
-    kind: FormControlKind
-    focus_order: int
-
-    def __post_init__(self) -> None:
-        if not self.control_id or not self.label:
-            raise ValueError("form controls require an id and label")
-        if self.focus_order < 0:
-            raise ValueError("control focus_order must be non-negative")
-
-
-@dataclass(frozen=True, slots=True)
 class FormSpec:
-    """One native form, including exact confirmation and focus metadata."""
+    """One native form whose field order is presentation order."""
 
     action_id: ActionId
     title: str
     fields: tuple[FieldSpec, ...]
-    submit: FormControlSpec
-    cancel: FormControlSpec
-    confirmation: ConfirmationPolicy
-    confirmation_prompt: str | None
-    confirmation_target: ConfirmationTarget | None = None
-    confirmation_field: str | None = None
+    submit_label: str
 
     def __post_init__(self) -> None:
         if not self.title:
             raise ValueError("form title must not be empty")
+        if not self.submit_label:
+            raise ValueError("form submit label must not be empty")
         field_ids = tuple(field.field_id for field in self.fields)
         if len(field_ids) != len(set(field_ids)):
             raise ValueError("form field ids must be unique")
-        if self.submit.kind is not FormControlKind.SUBMIT:
-            raise ValueError("form submit control must have the submit role")
-        if self.cancel.kind is not FormControlKind.CANCEL:
-            raise ValueError("form cancel control must have the cancel role")
-        focus_orders = (
-            *(field.focus_order for field in self.fields),
-            self.submit.focus_order,
-            self.cancel.focus_order,
-        )
-        if focus_orders != tuple(range(len(focus_orders))):
-            raise ValueError("form focus order must be contiguous and explicit")
-
-        action = action_spec(self.action_id)
-        if (
-            self.confirmation is not action.confirmation
-            or self.confirmation_prompt != action.confirmation_prompt
-        ):
-            raise ValueError("form confirmation must match the action registry")
-        self._validate_confirmation_target(field_ids)
-
-    def _validate_confirmation_target(self, field_ids: tuple[str, ...]) -> None:
-        if self.confirmation is ConfirmationPolicy.NEVER:
-            if (
-                self.confirmation_target is not None
-                or self.confirmation_field is not None
-            ):
-                raise ValueError("non-destructive forms have no confirmation target")
-            return
-        if self.confirmation_target is None:
-            raise ValueError("destructive forms require an exact confirmation target")
-        if self.confirmation_target is ConfirmationTarget.FIELD:
-            if self.confirmation_field not in field_ids:
-                raise ValueError("confirmation field must name a field in the form")
-        elif self.confirmation_field is not None:
-            raise ValueError("context confirmation cannot name a form field")
-
-    @property
-    def focus_order(self) -> tuple[str, ...]:
-        """Stable Tab order for fields followed by submit and cancel."""
-
-        return (
-            *(field.field_id for field in self.fields),
-            self.submit.control_id,
-            self.cancel.control_id,
-        )
 
     def field(self, field_id: str) -> FieldSpec:
         """Return a named native field without accepting arbitrary arguments."""
@@ -194,14 +107,9 @@ class ActionInputSpec:
     kind: ActionInputKind
     context: tuple[ContextRequirement, ...]
     form: FormSpec | None
-    confirmation: ConfirmationPolicy
-    confirmation_prompt: str | None
-    confirmation_target: ConfirmationTarget | None = None
-    confirmation_field: str | None = None
 
     def __post_init__(self) -> None:
-        action = action_spec(self.action_id)
-        if action.requires_summon:
+        if action_spec(self.action_id).requires_summon:
             raise ValueError("Summon input belongs to its optional native adapter")
         if len(self.context) != len(set(self.context)):
             raise ValueError("action context requirements must be unique")
@@ -209,24 +117,6 @@ class ActionInputSpec:
             raise ValueError("form actions require exactly one native form")
         if self.form is not None and self.form.action_id is not self.action_id:
             raise ValueError("native form action id must match its input contract")
-        if (
-            self.confirmation is not action.confirmation
-            or self.confirmation_prompt != action.confirmation_prompt
-        ):
-            raise ValueError("input confirmation must match the action registry")
-        if self.form is not None and (
-            self.confirmation_target is not self.form.confirmation_target
-            or self.confirmation_field != self.form.confirmation_field
-        ):
-            raise ValueError("form and action input confirmation targets must match")
-        if self.confirmation is ConfirmationPolicy.NEVER:
-            if (
-                self.confirmation_target is not None
-                or self.confirmation_field is not None
-            ):
-                raise ValueError("non-destructive actions have no confirmation target")
-        elif self.confirmation_target is None:
-            raise ValueError("destructive actions require an exact confirmation target")
 
     @property
     def contextual(self) -> bool:
@@ -265,7 +155,6 @@ class ActionApplicability:
 @dataclass(frozen=True, slots=True)
 class VisualValidationError:
     field_id: str
-    code: VisualValidationCode
     message: str
 
 
@@ -273,7 +162,6 @@ def _field(
     field_id: str,
     label: str,
     *,
-    order: int,
     kind: FieldKind = FieldKind.TEXT,
     required: bool = False,
     nonblank: bool = False,
@@ -284,7 +172,6 @@ def _field(
         field_id=field_id,
         label=label,
         kind=kind,
-        focus_order=order,
         required=required,
         nonblank=nonblank,
         masked=masked,
@@ -297,31 +184,12 @@ def _form(
     title: str,
     fields: tuple[FieldSpec, ...],
     submit_label: str,
-    *,
-    confirmation_target: ConfirmationTarget | None = None,
-    confirmation_field: str | None = None,
 ) -> FormSpec:
-    action = action_spec(action_id)
     return FormSpec(
         action_id=action_id,
         title=title,
         fields=fields,
-        submit=FormControlSpec(
-            control_id="submit",
-            label=submit_label,
-            kind=FormControlKind.SUBMIT,
-            focus_order=len(fields),
-        ),
-        cancel=FormControlSpec(
-            control_id="cancel",
-            label="Cancel",
-            kind=FormControlKind.CANCEL,
-            focus_order=len(fields) + 1,
-        ),
-        confirmation=action.confirmation,
-        confirmation_prompt=action.confirmation_prompt,
-        confirmation_target=confirmation_target,
-        confirmation_field=confirmation_field,
+        submit_label=submit_label,
     )
 
 
@@ -330,11 +198,10 @@ _FORM_SPECS = (
         ActionId.IDENTITY_REJOIN,
         "Rejoin identity",
         (
-            _field("name_or_alias", "Name or alias", order=0, nonblank=True),
+            _field("name_or_alias", "Name or alias", nonblank=True),
             _field(
                 "continuity_token",
                 "Continuity token",
-                order=1,
                 kind=FieldKind.SECRET,
                 nonblank=True,
                 masked=True,
@@ -346,34 +213,34 @@ _FORM_SPECS = (
     _form(
         ActionId.IDENTITY_SET_NAME,
         "Set display name",
-        (_field("name", "Display name", order=0, required=True, nonblank=True),),
+        (_field("name", "Display name", required=True, nonblank=True),),
         "Save name",
     ),
     _form(
         ActionId.IDENTITY_SET_PERSONA,
         "Set persona",
-        (_field("persona", "Persona", order=0),),
+        (_field("persona", "Persona"),),
         "Save persona",
     ),
     _form(
         ActionId.CHANNEL_JOIN,
         "Join channel",
-        (_field("channel", "Channel", order=0, required=True, nonblank=True),),
+        (_field("channel", "Channel", required=True, nonblank=True),),
         "Join",
     ),
     _form(
         ActionId.DIRECT_MESSAGE_START,
         "Start direct message",
         (
-            _field("member", "Member", order=0, required=True, nonblank=True),
-            _field("message", "Message", order=1, required=True, nonblank=True),
+            _field("member", "Member", required=True, nonblank=True),
+            _field("message", "Message", required=True, nonblank=True),
         ),
         "Start direct message",
     ),
     _form(
         ActionId.CHANNEL_SET_TOPIC,
         "Set channel topic",
-        (_field("topic", "Topic", order=0, required=True, nonblank=True),),
+        (_field("topic", "Topic", required=True, nonblank=True),),
         "Save topic",
     ),
     _form(
@@ -383,24 +250,22 @@ _FORM_SPECS = (
             _field(
                 "new_name",
                 "New channel name",
-                order=0,
                 required=True,
                 nonblank=True,
             ),
         ),
         "Rename",
-        confirmation_target=ConfirmationTarget.CONTEXT,
     ),
     _form(
         ActionId.MESSAGE_REPLY,
         "Reply to message",
-        (_field("message", "Reply", order=0, required=True, nonblank=True),),
+        (_field("message", "Reply", required=True, nonblank=True),),
         "Send reply",
     ),
     _form(
         ActionId.MESSAGE_REACT,
         "React to message",
-        (_field("reaction", "Reaction", order=0, required=True, nonblank=True),),
+        (_field("reaction", "Reaction", required=True, nonblank=True),),
         "Add reaction",
     ),
     _form(
@@ -410,15 +275,12 @@ _FORM_SPECS = (
             _field(
                 "output_path",
                 "Output path",
-                order=0,
                 kind=FieldKind.PATH,
                 required=True,
                 nonblank=True,
             ),
         ),
         "Create dump",
-        confirmation_target=ConfirmationTarget.FIELD,
-        confirmation_field="output_path",
     ),
     _form(
         ActionId.SYSTEM_LOAD_HELP,
@@ -427,7 +289,6 @@ _FORM_SPECS = (
             _field(
                 "input_path",
                 "Input dump path",
-                order=0,
                 kind=FieldKind.PATH,
                 required=True,
                 nonblank=True,
@@ -450,23 +311,13 @@ def _input(
     action_id: ActionId,
     *,
     context: tuple[ContextRequirement, ...] = (),
-    confirmation_target: ConfirmationTarget | None = None,
-    confirmation_field: str | None = None,
 ) -> ActionInputSpec:
-    action = action_spec(action_id)
     form = FORM_SPECS.get(action_id)
-    if form is not None:
-        confirmation_target = form.confirmation_target
-        confirmation_field = form.confirmation_field
     return ActionInputSpec(
         action_id=action_id,
         kind=ActionInputKind.FORM if form is not None else ActionInputKind.DIRECT,
         context=context,
         form=form,
-        confirmation=action.confirmation,
-        confirmation_prompt=action.confirmation_prompt,
-        confirmation_target=confirmation_target,
-        confirmation_field=confirmation_field,
     )
 
 
@@ -484,7 +335,6 @@ _ACTION_INPUT_SPECS = (
     _input(
         ActionId.CHANNEL_LEAVE,
         context=(ContextRequirement.ACTIVE_CHANNEL,),
-        confirmation_target=ConfirmationTarget.CONTEXT,
     ),
     _input(ActionId.DIRECT_MESSAGE_START),
     _input(ActionId.NOTIFICATIONS_OPEN),
@@ -534,7 +384,6 @@ _ACTION_INPUT_SPECS = (
     _input(
         ActionId.MESSAGE_DELETE,
         context=(ContextRequirement.SELECTED_MESSAGE,),
-        confirmation_target=ConfirmationTarget.CONTEXT,
     ),
     _input(ActionId.SEARCH_OPEN),
     _input(
@@ -610,7 +459,6 @@ def validate_visual_input(
                 errors.append(
                     VisualValidationError(
                         field.field_id,
-                        VisualValidationCode.REQUIRED,
                         f"{field.label} is required.",
                     )
                 )
@@ -619,7 +467,6 @@ def validate_visual_input(
             errors.append(
                 VisualValidationError(
                     field.field_id,
-                    VisualValidationCode.NONBLANK,
                     f"{field.label} must not be blank.",
                 )
             )
@@ -633,14 +480,10 @@ __all__ = [
     "ActionApplicabilityFacts",
     "ActionInputKind",
     "ActionInputSpec",
-    "ConfirmationTarget",
     "ContextRequirement",
     "FieldKind",
     "FieldSpec",
-    "FormControlKind",
-    "FormControlSpec",
     "FormSpec",
-    "VisualValidationCode",
     "VisualValidationError",
     "evaluate_action_applicability",
     "form_spec",

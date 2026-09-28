@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, TextIO
 
 from taut._constants import __version__
+from taut._exceptions import TautError
 from taut.commands._imports import resolve_import_target
 from taut.commands._protocol import (
     CommandArgumentParser,
@@ -288,7 +289,7 @@ def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
         primary = exc
         _capture_boundary_exception(
             exc,
-            db_path=context.db_path,
+            context=context,
             operation=f"command.run:{prepared.verb}",
         )
         from taut.commands._rendering import _TerminalOutputPolicyError
@@ -305,7 +306,7 @@ def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
             if primary is None:
                 _capture_boundary_exception(
                     exc,
-                    db_path=context.db_path,
+                    context=context,
                     operation=f"command.cleanup:{prepared.verb}",
                 )
                 result = _render_execution_error(context, exc)
@@ -315,10 +316,13 @@ def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
 def _capture_boundary_exception(
     exc: BaseException,
     *,
-    db_path: str | None,
     operation: str,
+    db_path: str | None = None,
+    context: CommandContext | None = None,
 ) -> None:
-    if not isinstance(exc, Exception) or isinstance(exc, BrokenPipeError):
+    if not isinstance(exc, Exception) or isinstance(
+        exc, (BrokenPipeError, TautError, CommandError)
+    ):
         return
     from taut.commands._rendering import _TerminalOutputPolicyError
 
@@ -326,12 +330,23 @@ def _capture_boundary_exception(
         return
     from taut.debug import capture_exception
 
-    capture_exception(
-        exc,
-        db_path=db_path,
-        surface="cli",
-        operation=operation,
-    )
+    resolved = context.resolved_capture_target() if context is not None else None
+    if resolved is None:
+        capture_exception(
+            exc,
+            db_path=context.db_path if context is not None else db_path,
+            surface="cli",
+            operation=operation,
+        )
+    else:
+        target, config = resolved
+        capture_exception(
+            exc,
+            broker_target=target,
+            broker_config=config,
+            surface="cli",
+            operation=operation,
+        )
 
 
 def _default_registry() -> CommandRegistry:

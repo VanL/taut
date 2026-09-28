@@ -165,12 +165,12 @@ class NativeFormScreen(_TautModalScreen[FormSubmission | None]):
             yield Static(id="form-errors")
             with Horizontal(id="form-controls"):
                 yield Button(
-                    self.form.submit.label,
+                    self.form.submit_label,
                     variant="primary",
                     id="form-submit",
                 )
                 yield Button(
-                    self.form.cancel.label,
+                    "Cancel",
                     id="form-cancel",
                 )
 

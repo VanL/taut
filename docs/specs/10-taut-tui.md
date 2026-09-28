@@ -73,6 +73,12 @@ keyboard, mouse, command-palette, and contextual-menu gestures dispatch the
 same action objects. One operation must not acquire separate behavior because
 it was reached through a different gesture.
 
+Forms, commands and direct gestures resolve inputs for the same semantic
+action execution. Confirmation text comes from the action definition.
+Presentation-specific validation, stale-context checks and asynchronous
+completion remain on their owning surface. Metadata with no rendering,
+dispatch or user-visible validation consumer is not a required contract.
+
 For every non-Summon action, the action input contract's ordered context
 requirements are the sole TUI declaration of semantic applicability. One
 TUI-owned evaluator maps current visual facts to those requirements and
@@ -374,11 +380,15 @@ Switches are serialized and latest-selection-wins. A stale history, watcher,
 presence, or search completion cannot replace the current target. A watcher
 that cannot stop within its bounded shutdown budget is a visible degraded
 state and blocks creation of a second watcher for the same session.
+When the current conversation watcher exits after a captured handler failure,
+the visible degraded report includes the original exception type and message.
+An exit without a captured cause uses a generic report. A retired watcher's
+failure cannot degrade a newer conversation or session generation.
 
 ### [TUI-6.2] Live delivery and notifications
 
 Live chat delivery uses the public watcher and inherits its handler-before-
-cursor-advance rule, retry bound, dynamic membership checks, and stop behavior.
+cursor-advance rule, dynamic membership checks, and stop behavior.
 The TUI does not acknowledge a message that it rejected during shutdown or
 could not commit to its model.
 

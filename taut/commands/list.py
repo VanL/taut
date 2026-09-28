@@ -32,9 +32,14 @@ class ListCommand:
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
         client = context.client()
         threads = (
-            client.list_direct_messages()
+            client.list_direct_messages(
+                include_unread_counts=not (context.json or context.quiet)
+            )
             if args.dms
-            else client.list_threads(all_threads=args.all_threads)
+            else client.list_threads(
+                all_threads=args.all_threads,
+                include_unread_counts=not (context.json or context.quiet),
+            )
         )
         emit_threads(
             threads,

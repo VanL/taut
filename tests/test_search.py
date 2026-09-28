@@ -14,6 +14,7 @@ from simplebroker.ext import OperationalError, SidecarSession
 
 from taut._constants import META_QUEUE_NAME
 from taut.search import projection_segments, query_chunks
+from taut.search._jobs import PENDING_QUEUE_NAME, JobQueues
 from taut.search._provider import (
     IndexedDocument,
     SearchCandidate,
@@ -25,6 +26,7 @@ from taut.search._sqlite import (
     SQLiteSearchProvider,
     SQLiteSearchUnavailableError,
 )
+from taut.search._worker import process_one
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -279,6 +281,166 @@ def test_sqlite_provider_revision_tombstone_prevents_old_worker_resurrection(
         assert provider.query(query_chunks("current"), limit=10) == [
             _candidate(document)
         ]
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_unchanged_revision_advances_without_replacing_postings(
+    tmp_path: Path,
+) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    document = _document(message_ts=queue.generate_timestamp(), text="stable words")
+    try:
+        provider.ensure_schema()
+        assert provider.replace_document(document, revision=100)
+        with queue.sidecar() as session:
+            original = list(
+                session.run(
+                    "SELECT segment_rowid FROM taut_search_segments WHERE message_ts = ?",
+                    (document.message_ts,),
+                    fetch=True,
+                )
+            )
+        assert provider.replace_document(document, revision=200)
+        assert provider.applied_revision(document.message_ts) == 200
+        with queue.sidecar() as session:
+            current = list(
+                session.run(
+                    "SELECT segment_rowid FROM taut_search_segments WHERE message_ts = ?",
+                    (document.message_ts,),
+                    fetch=True,
+                )
+            )
+        assert current == original
+        assert provider.query(query_chunks("stable"), limit=10) == [
+            _candidate(document)
+        ]
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_unchanged_document_keeps_current_and_staging_postings(
+    tmp_path: Path,
+) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    document = _document(message_ts=queue.generate_timestamp(), text="stable words")
+    try:
+        provider.ensure_schema()
+        assert provider.replace_document(document, revision=100)
+        generation = provider.begin_rebuild(scan_revision=200)
+        assert provider.replace_rebuild_document(
+            document, generation=generation, revision=200
+        )
+        with queue.sidecar() as session:
+            before = list(
+                session.run(
+                    "SELECT generation, segment_rowid FROM taut_search_segments "
+                    "WHERE message_ts = ? ORDER BY generation",
+                    (document.message_ts,),
+                    fetch=True,
+                )
+            )
+        assert len(before) == 2
+        assert provider.replace_document(document, revision=300)
+        with queue.sidecar() as session:
+            after = list(
+                session.run(
+                    "SELECT generation, segment_rowid FROM taut_search_segments "
+                    "WHERE message_ts = ? ORDER BY generation",
+                    (document.message_ts,),
+                    fetch=True,
+                )
+            )
+        assert after == before
+        assert provider.applied_revision(document.message_ts) == 300
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_duplicate_pending_job_keeps_committed_postings(tmp_path: Path) -> None:
+    meta = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    pending = Queue(PENDING_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    provider = SQLiteSearchProvider(sidecar=meta.sidecar)
+    jobs = JobQueues(pending=pending)
+    message_ts = meta.generate_timestamp()
+    document = _document(message_ts=message_ts, text="stable replay")
+    try:
+        provider.ensure_schema()
+        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
+        row = pending.peek_one(exact_timestamp=job_ts, with_timestamps=True)
+        assert row is not None
+
+        def load(_job: object) -> IndexedDocument:
+            return document
+
+        assert process_one(jobs, provider, load, row=row)
+        with meta.sidecar() as session:
+            before = list(
+                session.run(
+                    "SELECT segment_rowid FROM taut_search_segments WHERE message_ts = ?",
+                    (message_ts,),
+                    fetch=True,
+                )
+            )
+        assert process_one(jobs, provider, load, row=row)
+        with meta.sidecar() as session:
+            after = list(
+                session.run(
+                    "SELECT segment_rowid FROM taut_search_segments WHERE message_ts = ?",
+                    (message_ts,),
+                    fetch=True,
+                )
+            )
+        assert after == before
+        assert provider.query(query_chunks("replay"), limit=10) == [
+            _candidate(document)
+        ]
+    finally:
+        provider.close()
+        pending.close()
+        meta.close()
+
+
+def test_sqlite_equal_revision_changed_content_replaces_postings(
+    tmp_path: Path,
+) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    message_ts = queue.generate_timestamp()
+    original = _document(message_ts=message_ts, text="original term")
+    changed = _document(message_ts=message_ts, text="replacement term")
+    try:
+        provider.ensure_schema()
+        assert provider.replace_document(original, revision=100)
+        assert provider.replace_document(changed, revision=100)
+        assert provider.query(query_chunks("original"), limit=10) == []
+        assert provider.query(query_chunks("replacement"), limit=10) == [
+            _candidate(changed)
+        ]
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_changed_thread_replaces_document_even_when_text_matches(
+    tmp_path: Path,
+) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    message_ts = queue.generate_timestamp()
+    original = _document(message_ts=message_ts, text="same text", thread="general")
+    moved = _document(message_ts=message_ts, text="same text", thread="renamed")
+    try:
+        provider.ensure_schema()
+        assert provider.replace_document(original, revision=100)
+        assert provider.replace_document(moved, revision=200)
+        assert provider.query(query_chunks("same"), limit=10) == [_candidate(moved)]
+        assert provider.applied_revision(message_ts) == 200
     finally:
         provider.close()
         queue.close()
@@ -905,7 +1067,7 @@ def test_sqlite_abort_rebuild_preserves_current_and_fences_stale_writer(
 @pytest.mark.parametrize(
     ("column", "diagnostic"),
     [
-        ("schema_version", "search schema version 2 is newer than supported version 1"),
+        ("schema_version", "search schema version 3 is newer than supported version 2"),
         (
             "projection_version",
             "search projection version 2 is newer than supported version 1",
@@ -925,7 +1087,8 @@ def test_sqlite_provider_rejects_newer_search_schema_or_projection(
         provider.ensure_schema()
         with queue.sidecar(transaction=True) as session:
             session.run(
-                f"UPDATE taut_search_metadata SET {column} = 2 WHERE singleton = 1"
+                f"UPDATE taut_search_metadata SET {column} = ? WHERE singleton = 1",
+                (3 if column == "schema_version" else 2,),
             )
 
         with pytest.raises(RuntimeError, match=f"^{diagnostic}$"):
@@ -968,6 +1131,24 @@ def _record_schema_statements(
             )
 
     return accessor
+
+
+def test_sqlite_current_search_schema_skips_installation_ddl(tmp_path: Path) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    statements: list[str] = []
+    initial = SQLiteSearchProvider(sidecar=queue.sidecar)
+    try:
+        initial.ensure_schema()
+        warm = SQLiteSearchProvider(
+            sidecar=_record_schema_statements(queue.sidecar, statements)
+        )
+        warm.ensure_schema()
+        assert all(
+            not statement.upper().startswith(("CREATE ", "DROP ", "ALTER "))
+            for statement in statements
+        )
+    finally:
+        queue.close()
 
 
 def _assert_version_read_precedes_schema_mutation(statements: list[str]) -> None:
@@ -1013,7 +1194,7 @@ def _assert_version_read_precedes_schema_mutation(statements: list[str]) -> None
 @pytest.mark.parametrize(
     ("schema_version", "projection_version", "diagnostic_fragment"),
     [
-        (2, 1, "search schema version 2"),
+        (3, 1, "search schema version 3"),
         (1, 2, "search projection version 2"),
     ],
 )

@@ -145,14 +145,18 @@ unregistered `taut.debug` queue; load preserves a valid destination setting
 and rejects retained debug rows as non-fresh broker state.
 
 That dynamic read has a small deliberate cost: even a disabled workspace opens
-the core metadata queue and performs one sidecar read when an eligible boundary
-exception occurs. Disabled capture never opens `taut.debug` or starts an action.
+the core metadata queue and performs one sidecar read when an unexpected
+boundary exception occurs. Expected CLI `TautError` and declared
+`CommandError` outcomes, including empty results, never enter capture. When
+the command has already created a client, capture reuses its target and config
+without constructing another client or repeating target discovery. Disabled
+capture never opens `taut.debug` or starts an action.
 
 The local sink writes bounded UTF-8 JSON containing the exception chain,
 head-and-tail frame evidence, bounded locals, runtime metadata, a deterministic
 fingerprint, and `taut-debug:<fingerprint>`. Each compact JSON candidate passes
 through `taut/_redact.py` before its encoded-size decision. That private helper
-compiles its immutable standard-library regex manifest lazily, finds exact
+uses its cached standard-library regexes to find structural
 credential-value spans, coalesces overlaps, and replaces right-to-left. Both
 the local queue and action stdin therefore receive the same final text without
 duplicating sink policy. A redaction failure reaches the capture operation's
@@ -170,9 +174,10 @@ backtracks exponentially when a labeled value is opened but never closed, and
 debug capture runs redaction on every failure before the command can exit.
 
 The helper preserves credential labels, authorization schemes, URI structure,
-provider/type prefixes, and PEM boundaries when those contexts exist. It does
+and PEM boundaries when those contexts exist. It does
 not claim completeness. Unknown credential formats and non-credential process
-data can remain, continuity tokens are deliberately not label-redacted, and
+data can remain, bare vendor-shaped keys are not recognized, continuity tokens
+are deliberately not label-redacted, and
 events retained before the feature are not rewritten. The payload remains
 sensitive diagnostic data and is intentionally not a stable compatibility
 schema. Under one process lock, the module searches the ordinary SimpleBroker
@@ -188,6 +193,10 @@ requests termination. `TAUT_DEBUG_ACTION_ACTIVE=1` is inherited by the child
 and suppresses capture in descendants. Parse, spawn, timeout, signal, and
 nonzero-exit failure lose that event without local fallback. `TAUT_DEBUG`
 remains the separate SimpleBroker debug setting.
+
+Ordinary diagnostic errors are contained and never replace the application
+failure. A fresh `KeyboardInterrupt` during capture propagates, including one
+raised by a local object's `repr`.
 
 Rollback order for debug capture is one-way in a specific sense: older
 Taut versions' doctor and dump reject the unknown `debug_capture` metadata
@@ -290,8 +299,8 @@ local MCP and PG packages into the root coverage environment, then runs only
 `conftest.py` imports `taut_pg` before marker filtering; this job starts no
 database. The final coverage job depends on all four producers and only
 downloads, combines, checks, and reports their named shards. Root coverage
-source includes `taut_mcp`, and the required unique rate-bucket debit line
-makes an absent or path-misconfigured MCP shard fatal. The root matrix
+source includes `taut_mcp`, and the required unique same-token resident-reuse
+comparison makes an absent or path-misconfigured MCP shard fatal. The root matrix
 partitions non-slow tests into a broad lane and one fresh serial installed-wheel
 lane, so the wheel-building fixture has one worker owner per selected cell.
 That environment uses the matrix interpreter. Ubuntu and macOS retain complete
@@ -497,12 +506,21 @@ may return up to the limit from every joined chat thread. It decodes each whole
 returned page before advancing that thread's cursor once to the page's highest
 timestamp; a decoder failure leaves the page cursor unchanged. `read` is a
 thin delegating alias, and the CLI omits the keyword to preserve its
-1,000-per-thread default. The CLI is the stream-delivery exception: it fetches
-with `advance=False`, writes and flushes each record through the shared
-renderer, then advances through that record with `mark_seen()`. A closed pipe,
+1,000-per-thread default. The CLI is the stream-delivery exception: one internal
+read selects the page and stable member ID together; the adapter writes and
+flushes each record through the shared renderer, then advances that member's
+cursor through the record. Renaming or reusing the original display name during
+delivery cannot redirect acknowledgements. A closed pipe,
 encoding failure, or presentation failure therefore leaves only undelivered
 records unread; the Python API keeps its atomic whole-page return-and-commit
 contract.
+
+Thread listing reads the latest pending timestamp once per row. Boolean-only
+consumers compare it to the selected membership cursor and skip message bodies;
+the returned count is unused and set to zero. Human listing and default Python
+calls keep bounded counts. CLI JSON and quiet listing select the count-free
+path, as does MCP's CLI-shaped listing. This is a per-call projection choice,
+not a cached unread counter.
 
 Direct-message selection has one actor-aware boundary in the client. The
 operation-specific selector parser recognizes current `@name-or-alias` routes
@@ -852,9 +870,12 @@ fetch/pending hooks. A domain subclass advances its source cursor only after
 fulfilling or recording its authoritative obligation. `TautWatcher` adds durable
 chat cursor persistence after the user callback returns. For `taut watch`, that
 means stdout has accepted and flushed the complete record. `WatcherRejected`
-and `StopWatching` preserve the cursor and are not poison; ordinary user-handler
-errors retain the existing three-strike policy. Notification inboxes remain READ
-sources and are never converted to retained chat history.
+and `StopWatching` preserve the cursor. An ordinary chat user-handler error
+is paired with the broker's terminal stop inside the chat-only error handler;
+the driving owner raises the original exception after dispatch cleanup. This
+stops one watch attempt with the failed cursor unchanged. Direct turns run the
+same cleanup precedence as driven runs. Notification inboxes remain READ sources
+and are never converted to retained chat history.
 
 Membership refresh now follows the fixed `taut.cache_stale` PEEK source. The
 initial hint timestamp is captured before the initial membership snapshot, so a
@@ -1162,7 +1183,7 @@ requirement or auditing implementation coverage.
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, `taut/commands/channel.py`, and the other per-verb command adapters | `tests/test_cli.py` parser-inventory, channel-topic/rename, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects, `Channel`, `MessageDeletion`, `MessageReaction`, read-only selected identity, notification activity/peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_identity.py::IdentityMixin.peek_identity`, `taut/client/_notifications.py::NotificationsMixin.notification_activity_queue`, `peek_inbox`, the other client mixins, and lazy root exports | exact public signatures in `tests/test_public_api.py`; selector neutrality, queue reuse/reselection/lifecycle, channel, exact-message, reaction, notification-peek, and other client contracts in `tests/test_client.py`; shared identity/activity/channel/exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL; `tests/test_terminal_text.py`; `tests/test_lazy_imports.py` |
-| [TAUT-8.4], [TAUT-8.5], watcher behavior, public `WatcherRejected`, and shared reactor lifecycle | `taut/_exceptions.py::WatcherRejected`, `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py`, `taut/commands/_dispatch.py` | `tests/test_watcher.py` ownership, stop, wake, real-SIGINT broker-operation drain, cursor replay, construction cleanup, explicit-target resolution, terminal rejection, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_sigint_under_concurrent_writer_always_exits_130`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_command_registry.py` in-watch and pre-construction interrupt cases; `tests/test_public_api.py`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
+| [TAUT-8.4], [TAUT-8.5], watcher behavior, public `WatcherRejected`, and shared reactor lifecycle | `taut/_exceptions.py::WatcherRejected`, `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py`, `taut/commands/_dispatch.py` | `tests/test_watcher.py` ownership, stop, wake, real-SIGINT broker-operation drain, cursor replay, construction cleanup, explicit-target resolution, terminal rejection, fail-stop, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_sigint_under_concurrent_writer_always_exits_130`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_command_registry.py` in-watch and pre-construction interrupt cases; `tests/test_public_api.py`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing, stable existing-DM send, and special queue names | `taut/addressing.py`, `taut/client/_base.py::_resolve_direct_message`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_existing_dm`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`; direct selection, corruption, nonhealing, and blank-order cases in `tests/test_direct_messages.py` and `tests/test_client.py`; full valid/miss/name-reassignment matrix in `tests/test_shared_contract.py` on SQLite and PostgreSQL; CLI/registry cases in `tests/test_cli.py` and `tests/test_command_registry.py` |
 | [IAN-7], notification and reaction payloads, activity-waiter handle, observational peek, claiming, and stale pointers after message deletion | `taut/client/_messaging.py::_write_mention_notifications`, `react_to_message`, `delete_message`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `notification_activity_queue`, `peek_inbox`, `inbox`; `taut/commands/_rendering.py`; `taut/watcher.py` notification path | notification activity/reuse, reaction peek, consuming-inbox, audience, broadcast-failure, and deletion-without-cascade cases in `tests/test_client.py`; notification rendering in `tests/test_cli.py`; shared identity/activity/notification/reaction contracts in `tests/test_shared_contract.py`; `tests/test_watcher.py` |

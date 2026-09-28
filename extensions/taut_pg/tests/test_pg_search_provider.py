@@ -15,6 +15,7 @@ from simplebroker.ext import OperationalError, SidecarSession
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import EmptyResultError
 from taut.client import TautClient
+from taut.search._jobs import CLAIMED_QUEUE_NAME, PENDING_QUEUE_NAME
 from taut.search._provider import (
     IndexedDocument,
     SearchCandidate,
@@ -74,31 +75,21 @@ def _recording_sidecar(
     return sidecar
 
 
-def _assert_version_read_precedes_shape_work(
+def _assert_version_read_without_shape_work(
     calls: list[tuple[str, tuple[object, ...]]],
 ) -> None:
     normalized = [" ".join(sql.split()).upper() for sql, _ in calls]
-    lock_index = next(
-        index
-        for index, statement in enumerate(normalized)
-        if "PG_ADVISORY_XACT_LOCK" in statement
-    )
-    metadata_ddl_index = next(
-        index
-        for index, statement in enumerate(normalized)
-        if statement.startswith("CREATE TABLE IF NOT EXISTS TAUT_SEARCH_METADATA")
-    )
-    version_read_index = next(
-        index
-        for index, statement in enumerate(normalized)
-        if statement.startswith(
+    assert any(
+        statement.startswith(
             "SELECT SCHEMA_VERSION, PROJECTION_VERSION FROM TAUT_SEARCH_METADATA"
         )
+        for statement in normalized
     )
-    assert lock_index < metadata_ddl_index < version_read_index
-    assert calls[lock_index][1] == ("taut:search:schema",)
     assert all(
-        not statement.startswith(("INSERT ", "UPDATE ", "DELETE "))
+        "PG_ADVISORY_XACT_LOCK" not in statement
+        and not statement.startswith(
+            ("CREATE ", "ALTER ", "DROP ", "INSERT ", "UPDATE ", "DELETE ")
+        )
         for statement in normalized
     )
     assert all(
@@ -110,6 +101,32 @@ def _assert_version_read_precedes_shape_work(
             "TAUT_SEARCH_THREAD_STATE",
         )
     )
+
+
+def test_postgres_current_search_schema_skips_installation_ddl(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_pg._search import create_provider
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    client = TautClient(as_name="author")
+    queue = client.queue(META_QUEUE_NAME)
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    try:
+        initial = create_provider(sidecar=queue.sidecar)
+        initial.ensure_schema()
+        warm = create_provider(sidecar=_recording_sidecar(queue, calls))
+        warm.ensure_schema()
+        assert all(
+            not sql.lstrip().upper().startswith(("CREATE ", "DROP ", "ALTER "))
+            for sql, _params in calls
+        )
+        assert all("PG_ADVISORY_XACT_LOCK" not in sql.upper() for sql, _ in calls)
+    finally:
+        queue.close()
+        client.close()
 
 
 def test_postgres_public_search_pins_unicode_diacritic_and_lexeme_limit(
@@ -152,6 +169,117 @@ def test_postgres_public_search_pins_unicode_diacritic_and_lexeme_limit(
         author.close()
 
 
+def test_postgres_unchanged_document_advances_without_replacing_postings(
+    taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
+    pg_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_pg._search import create_provider
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    client = TautClient(as_name="author")
+    queue = client.queue(META_QUEUE_NAME)
+    provider = create_provider(sidecar=queue.sidecar)
+    document = IndexedDocument(
+        message_ts=queue.generate_timestamp(),
+        thread="general",
+        text_sha256="stable",
+        text_bytes=12,
+        segments=("stable words",),
+    )
+    try:
+        provider.ensure_schema()
+        assert provider.replace_document(document, revision=100)
+        generation = provider.begin_rebuild(scan_revision=200)
+        assert provider.replace_rebuild_document(
+            document, generation=generation, revision=200
+        )
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT generation, xmin::text FROM {pg_schema}.taut_search_segments "
+                "WHERE message_ts = %s ORDER BY generation",
+                (document.message_ts,),
+            )
+            before = cursor.fetchall()
+        assert len(before) == 2
+        assert provider.replace_document(document, revision=300)
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT generation, xmin::text FROM {pg_schema}.taut_search_segments "
+                "WHERE message_ts = %s ORDER BY generation",
+                (document.message_ts,),
+            )
+            after = cursor.fetchall()
+        assert after == before
+        assert provider.applied_revision(document.message_ts) == 300
+    finally:
+        provider.close()
+        queue.close()
+        client.close()
+
+
+def test_postgres_search_upgrade_preserves_index_and_returns_claimed_work(
+    taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
+    pg_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    client = TautClient(as_name="author")
+    client.join("general")
+    first = client.say("general", "first upgrade needle")
+    assert [hit.ts for hit in client.search("needle")] == [first.ts]
+    second = client.say("general", "second upgrade needle")
+    pending = client.queue(PENDING_QUEUE_NAME)
+    claimed = client.queue(CLAIMED_QUEUE_NAME)
+    try:
+        rows = pending.peek_many(10, with_timestamps=True)
+        second_job = next(job_ts for body, job_ts in rows if str(second.ts) in body)
+        assert (
+            pending.move_one(claimed, exact_timestamp=second_job, with_timestamps=True)
+            is not None
+        )
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT current_generation FROM {pg_schema}.taut_search_metadata"
+            )
+            before = cursor.fetchone()
+            assert before is not None
+            cursor.execute(
+                f"UPDATE {pg_schema}.taut_search_metadata SET schema_version = 1"
+            )
+            cursor.execute(
+                f"CREATE TABLE {pg_schema}.taut_search_claims (job_ts BIGINT PRIMARY KEY)"
+            )
+            cursor.execute(
+                f"CREATE TABLE {pg_schema}.taut_search_housekeeping (key TEXT PRIMARY KEY)"
+            )
+        raw_pg_conn.commit()
+
+        assert [hit.ts for hit in client.search("needle")] == [second.ts, first.ts]
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT current_generation, schema_version "
+                f"FROM {pg_schema}.taut_search_metadata"
+            )
+            assert cursor.fetchone() == (before[0], 2)
+            cursor.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name IN "
+                "('taut_search_claims', 'taut_search_housekeeping')",
+                (pg_schema,),
+            )
+            assert cursor.fetchall() == []
+        assert claimed.peek_many(10) == []
+    finally:
+        claimed.close()
+        pending.close()
+        client.close()
+
+
 def test_postgres_search_schema_uses_only_additive_builtin_objects(
     taut_pg_project: Path,
     pg_schema: str,
@@ -184,14 +312,53 @@ def test_postgres_search_schema_uses_only_additive_builtin_objects(
     provider = create_provider(sidecar=recording_sidecar)
     try:
         provider.ensure_schema()
+        initialization_calls = list(calls)
+        calls.clear()
+        provider.ensure_schema()
+        warm_calls = list(calls)
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {pg_schema}.taut_search_metadata SET schema_version = 1"
+            )
+        calls.clear()
+        provider.ensure_schema()
+        upgrade_calls = list(calls)
     finally:
         provider.close()
         queue.close()
 
-    assert "pg_advisory_xact_lock" in calls[0][0]
-    assert "taut:search:schema" not in calls[0][0]
-    assert calls[0][1] == ("taut:search:schema",)
-    assert all("CREATE EXTENSION" not in statement.upper() for statement, _ in calls)
+    normalized_initialization = [
+        " ".join(sql.split()).upper() for sql, _ in initialization_calls
+    ]
+    lock_index = next(
+        index
+        for index, statement in enumerate(normalized_initialization)
+        if "PG_ADVISORY_XACT_LOCK" in statement
+    )
+    first_ddl_index = next(
+        index
+        for index, statement in enumerate(normalized_initialization)
+        if statement.startswith("CREATE TABLE IF NOT EXISTS TAUT_SEARCH_METADATA")
+    )
+    assert lock_index < first_ddl_index
+    assert initialization_calls[lock_index][1] == ("taut:search:schema",)
+    assert all(
+        "CREATE EXTENSION" not in statement for statement in normalized_initialization
+    )
+    _assert_version_read_without_shape_work(warm_calls)
+    normalized_upgrade = [" ".join(sql.split()).upper() for sql, _ in upgrade_calls]
+    upgrade_lock_index = next(
+        index
+        for index, statement in enumerate(normalized_upgrade)
+        if "PG_ADVISORY_XACT_LOCK" in statement
+    )
+    upgrade_ddl_index = next(
+        index
+        for index, statement in enumerate(normalized_upgrade)
+        if statement.startswith("CREATE TABLE IF NOT EXISTS TAUT_SEARCH_METADATA")
+    )
+    assert upgrade_lock_index < upgrade_ddl_index
+    assert upgrade_calls[upgrade_lock_index][1] == ("taut:search:schema",)
 
     with raw_pg_conn.cursor() as cursor:
         cursor.execute(
@@ -770,7 +937,7 @@ def test_postgres_abort_rebuild_preserves_current_and_fences_stale_writer(
 @pytest.mark.parametrize(
     ("column", "diagnostic"),
     [
-        ("schema_version", "search schema version 2 is newer than supported version 1"),
+        ("schema_version", "search schema version 3 is newer than supported version 2"),
         (
             "projection_version",
             "search projection version 2 is newer than supported version 1",
@@ -796,7 +963,8 @@ def test_postgres_rejects_newer_search_schema_or_projection(
         provider.ensure_schema()
         with raw_pg_conn.cursor() as cursor:
             cursor.execute(
-                f"UPDATE {pg_schema}.taut_search_metadata SET {column} = 2 "
+                f"UPDATE {pg_schema}.taut_search_metadata SET {column} = "
+                f"{3 if column == 'schema_version' else 2} "
                 "WHERE singleton = 1"
             )
         raw_pg_conn.commit()
@@ -811,7 +979,7 @@ def test_postgres_rejects_newer_search_schema_or_projection(
 @pytest.mark.parametrize(
     ("schema_version", "projection_version", "diagnostic_fragment"),
     [
-        (2, 1, "search schema version 2"),
+        (3, 1, "search schema version 3"),
         (1, 2, "search projection version 2"),
     ],
     ids=("schema", "projection"),
@@ -861,7 +1029,7 @@ def test_postgres_source_shaped_version_refuses_before_current_shape_work(
         queue.close()
         client.close()
 
-    _assert_version_read_precedes_shape_work(calls)
+    _assert_version_read_without_shape_work(calls)
     assert _search_metadata_snapshot(raw_pg_conn, schema=pg_schema) == source_before
 
 
@@ -912,5 +1080,5 @@ def test_postgres_missing_stable_search_version_fails_before_shape_work(
         queue.close()
         client.close()
 
-    _assert_version_read_precedes_shape_work(calls)
+    _assert_version_read_without_shape_work(calls)
     assert _search_metadata_snapshot(raw_pg_conn, schema=pg_schema) == source_before

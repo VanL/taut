@@ -6,6 +6,7 @@ Spec references:
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
@@ -508,6 +509,150 @@ def test_current_delivery_rejection_reports_visible_degradation_owner_event(
         bob.say("general", "reject and degrade")
         assert reported.wait(5)
         assert degraded == [(1, "watcher exited unexpectedly")]
+    finally:
+        session.close()
+        alice.close()
+        bob.close()
+
+
+@pytest.mark.parametrize("persistent_cleanup_failure", [False, True])
+def test_chat_handler_failure_reports_original_cause_to_human(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persistent_cleanup_failure: bool,
+) -> None:
+    from taut_tui.session import TuiSession
+
+    db_path = tmp_path / "failed-watcher.db"
+    alice, bob = _seed(db_path)
+    degraded: list[tuple[int, str]] = []
+    reported = Event()
+    escaped = Event()
+    worker_failures: list[BaseException] = []
+    failure = ValueError("display failed")
+
+    def relay(args: threading.ExceptHookArgs) -> None:
+        assert args.exc_value is not None
+        worker_failures.append(args.exc_value)
+        escaped.set()
+
+    monkeypatch.setattr(threading, "excepthook", relay)
+
+    def fail(_generation: int, _item: Message | Notification) -> bool:
+        raise failure
+
+    def report(generation: int, detail: str) -> None:
+        degraded.append((generation, detail))
+        reported.set()
+
+    session = TuiSession(
+        db_path=str(db_path),
+        as_name="alice",
+        continuity_token=None,
+        accept_delivery=fail,
+        report_watcher_degraded=report,
+    )
+    restore_runtime_close: Callable[[], None] | None = None
+    try:
+        session.open_conversation("general").result(timeout=5)
+        if persistent_cleanup_failure:
+            owned = session._watcher
+            assert owned is not None
+            runtime = owned[0]._runtime
+            restore_runtime_close = runtime.close
+
+            def fail_runtime_close() -> None:
+                raise RuntimeError("persistent runtime close failure")
+
+            monkeypatch.setattr(runtime, "close", fail_runtime_close)
+        sent = bob.say("general", "trigger failure")
+        assert reported.wait(5)
+        assert escaped.wait(5)
+        assert worker_failures == [failure]
+        assert degraded == [(1, "watcher failed: ValueError: display failed")]
+        if persistent_cleanup_failure:
+            assert any(
+                "persistent runtime close failure" in note for note in failure.__notes__
+            )
+        assert any(item.ts == sent.ts for item in alice.read_unread("general"))
+    finally:
+        if restore_runtime_close is not None:
+            owned = session._watcher
+            assert owned is not None
+            monkeypatch.setattr(owned[0]._runtime, "close", restore_runtime_close)
+        session.close()
+        alice.close()
+        bob.close()
+
+
+def test_retired_watcher_failure_cannot_degrade_new_conversation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui.session import TuiSession
+
+    db_path = tmp_path / "retired-watcher.db"
+    alice, bob = _seed(db_path)
+    degraded: list[tuple[int, str]] = []
+    accepted: list[tuple[int, int]] = []
+    delivered = Event()
+    fresh_ts: int | None = None
+    escaped = Event()
+    failure = ValueError("old display failed")
+    worker_failures: list[BaseException] = []
+
+    def relay(args: threading.ExceptHookArgs) -> None:
+        assert args.exc_value is not None
+        worker_failures.append(args.exc_value)
+        escaped.set()
+
+    monkeypatch.setattr(threading, "excepthook", relay)
+
+    def accept(generation: int, item: Message | Notification) -> bool:
+        if generation == 1 and isinstance(item, Message):
+            raise failure
+        if isinstance(item, Message):
+            accepted.append((generation, item.ts))
+            if item.ts == fresh_ts:
+                delivered.set()
+        return True
+
+    session = TuiSession(
+        db_path=str(db_path),
+        as_name="alice",
+        continuity_token=None,
+        accept_delivery=accept,
+        report_watcher_degraded=lambda generation, detail: degraded.append(
+            (generation, detail)
+        ),
+    )
+    # Hold only the exit monitor's callback, so the old watcher can finish
+    # while the owner installs the next real conversation and watcher.
+    monkeypatch.setattr(session, "_monitor_watcher_exit", lambda *_args: None)
+    try:
+        first = session.open_conversation("general").result(timeout=5)
+        assert first is not None
+        retired = session._watcher
+        assert retired is not None
+        bob.say("general", "break old watcher")
+        assert escaped.wait(5)
+        assert worker_failures == [failure]
+        retired[1].join(timeout=5)
+        assert not retired[1].is_alive()
+
+        second = session.open_conversation("quiet").result(timeout=5)
+        assert second is not None
+        assert second.generation != first.generation
+        session._executor.submit(
+            session._mark_watcher_degraded_owned, first.generation, retired
+        ).result(timeout=5)
+        fresh = bob.say("quiet", "current delivery")
+        fresh_ts = fresh.ts
+        if (second.generation, fresh.ts) in accepted:
+            delivered.set()
+        assert delivered.wait(5)
+        assert (second.generation, fresh.ts) in accepted
+        assert degraded == []
     finally:
         session.close()
         alice.close()

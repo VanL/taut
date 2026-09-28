@@ -152,7 +152,7 @@ The following filters are conjunctive with the query and scope:
 An author filter never matches a foreign body because its `from_id` is null.
 
 The Python method validates all arguments before incomplete-rename preflight,
-provider discovery/schema setup, work claiming, timestamp allocation,
+provider discovery/schema setup, work processing, timestamp allocation,
 reconciliation, rebuild, or identity/activity work. `query`, every channel/DM
 selector, and `from_member` must be strings; `limit` must be an integer but not
 `bool`; `before` is `str | None`; and `channels`, `direct_messages`, and
@@ -369,20 +369,17 @@ not trusted from provider metadata. Provider filtering by stale author, kind,
 or display-name data is forbidden because it could create a false negative.
 The logical index stores no exact body text or display-name snapshot. Provider
 tables are prefixed `taut_search_`.
-Schema creation is idempotent and additive. A newer unsupported search schema
-or projection version fails search with an upgrade diagnostic but must not
-block non-search Taut operations.
+The current schema requires a version read, not installation DDL. Newer
+unsupported versions fail before shape-dependent mutation; supported schema 1
+uses [SRCH-9.3]'s forward transition. Projection version 1 is validated for
+each supported schema. A missing metadata table or singleton is fresh state.
+Provider initialization and upgrade retain their backend transaction and lock
+discipline. Physical column order and unrelated objects are not invariants.
 
-Each provider may create the metadata table if absent, because that statement
-is a no-op for an existing table. It then reads the singleton's stored schema
-and projection versions before any insert, update, or provider-object DDL
-that assumes the current shape. No singleton row is the fresh-initialization
-case. An existing row whose stable version fields cannot be read is not
-fresh; it fails without being rewritten. Older or newer versions follow
-their declared refusal or transition path. Provider schema checks require
-owned names, types, constraints, and indexes as semantic subsets. Physical
-column order, unrelated additional objects, and unowned additional columns
-are not provider invariants.
+Updating an unchanged indexed document advances only its accepted revision.
+Postings are replaced only when thread, text digest, text byte length,
+projection version, or indexed state differs. The revision fence and comparison
+are atomic per generation, including an active staging generation.
 
 ### [SRCH-6.3] Deletion residue
 
@@ -399,7 +396,7 @@ claim.
 Core defines one internal provider protocol. It owns no public plugin API and
 does not expose provider objects from `taut` or `taut.client`. The protocol
 must cover schema setup/version checks, conditional document upsert/delete,
-candidate query, per-thread watermark state, claim metadata, rebuild, and
+candidate query, per-thread watermark state, rebuild, and
 close. It accepts only canonical core value objects and UTF-8 projection
 chunks, and returns stable message IDs, indexed thread, and projection identity.
 
@@ -436,26 +433,17 @@ contain PostgreSQL SQL. This is a typed first-party cross-distribution seam,
 not a public third-party plugin interface or root export.
 
 The provider boundary is not permission to move domain behavior into the
-extension. Tokenization, scope, hydration, warning policy, job bodies, claim
-timeout, freshness, and public result shape remain core-owned.
+extension. Tokenization, scope, hydration, warning policy, job bodies,
+freshness, and public result shape remain core-owned.
 
 ## 8. Durable Work Queue and Write Ordering [SRCH-8]
 
-### [SRCH-8.1] Internal queues
+### [SRCH-8.1] Internal queue
 
-Core owns three unregistered system queues in the resolved SimpleBroker target:
-
-```text
-taut.search_index
-taut.search_index.claimed
-taut.search_index.failed
-```
-
-They have no `taut_threads` row, never appear in `list`, `read`, `log`,
-`watch`, or search scope, and are inspectable with ordinary broker tooling.
-Only search code reads, moves, writes, or deletes them.
-
-The queues are excluded from Taut persistence I/O [PIO-2.2].
+Core owns one unregistered pending invalidation queue, `taut.search_index`.
+It is auxiliary search state and is excluded from logical dump/load [PIO-2.2].
+It has no `taut_threads` row and never appears in chat routes, listings,
+watch, or search scope. Ordinary broker tools may inspect it.
 
 ### [SRCH-8.2] Work item contract
 
@@ -466,148 +454,70 @@ content:
 {"entity":"message","message_ts":1786032926849409024,"thread":"general","v":1}
 ```
 
-This work item is an internal stored broker body. Its `message_ts` remains a
-JSON integer and decodes strictly to a Python integer; the external-output
-string rule does not rewrite durable search work.
-
-The closed version-1 entity set is:
-
-- `message`: refresh or remove one exact message from current source state
-- `thread_rename`: update the affected channel/sub-thread facets after a
-  completed canonical rename; the body also carries `old`, `new`, and the
-  exact affected old/new name pairs from the durable rename marker
-
-The work queue row timestamp is the work revision. Unknown versions, unknown
-entities, missing fields, wrong types, and non-JSON bodies are quarantined
-without copying their content: the worker writes one failed-queue JSON envelope
-containing version 1, the original job ID, UTF-8 byte length, SHA-256 digest,
-and a bounded structural error code, then exact-deletes the claimed original
-only after that write succeeds. A failed quarantine write leaves the original
-claimed for timeout recovery. Malformed foreign content therefore cannot make
-the no-content-copy rule false. Failed work does not stall later jobs or crash
-the worker, and no automatic retry reads the failed queue.
+The closed version-1 entity set is `message` and `thread_rename`. Message
+jobs identify one exact immutable message ID and a location hint. Rename jobs
+carry the exact completed old/new pairs. The queue row timestamp is the work
+revision. A structurally invalid job is exact-deleted after a bounded
+structural warning enters `last_search_warnings`; neither its body nor a
+sanitized copy enters another queue. A failed delete is a broker failure.
+A successfully discarded malformed item does not block later valid work.
 
 ### [SRCH-8.3] Producer ordering and priority
 
-After every successful Taut-authored chat or notice `Queue.write()`, the common
-message-write path writes a `message` invalidation. After physical message
-delete, it writes the same invalidation. After channel rename has fully
-committed and marked its durable recovery marker complete, it writes
-`thread_rename`.
+After successful source writes, deletes, and completed channel renames, core
+enqueues the corresponding content-free invalidation. Source success outranks
+enqueue failure. That failure adds a warning to
+`TautClient.last_search_warnings` and never reverses the source mutation.
+Each source mutation and search clears that list on entry. CLI renders warnings
+on stderr unless quiet; JSON success records do not gain a warning field.
+Provider or broker failures that make search untrustworthy raise normally.
+The commit-to-enqueue gap is repaired by [SRCH-10].
 
-The source operation is already successful before invalidation enqueue. An
-enqueue failure or worker-launch failure is best-effort: it records a warning
-on the client/CLI diagnostic surface but never changes the source result or
-causes a Taut retry. Cursor and notification ordering remain governed by
-[TAUT-7.4], [IAN-7.3], and [TAUT-10]; search invalidation is auxiliary derived
-work and is not inserted into those correctness chains.
+## 9. Pending Processing and Recovery [SRCH-9]
 
-The Python warning carrier is `TautClient.last_search_warnings: list[str]`.
-Each public source mutation and each search call clears it on entry, then
-appends one escaped, self-describing diagnostic per enqueue/launch/quarantine
-warning. The CLI renders those warnings to stderr after the primary successful
-result; `--quiet` suppresses both success output and these best-effort warnings.
-JSON success records never gain a warning field. Search/provider failures that
-make the requested result untrustworthy raise normally rather than entering
-this warning list. A detached worker cannot mutate its launching client's
-memory; its quarantine events are observable through the durable failed queue,
-while inline/search-time draining may also append the warning locally.
+### [SRCH-9.1] Processing topology
 
-This ordering deliberately leaves a crash window between source commit and
-invalidation enqueue. Reconciliation in [SRCH-10] owns that gap. Taut never
-attempts a cross-transaction fiction between a chat queue and search work.
+Search runs pending work synchronously before querying. Indexing never runs
+inside a source mutation. No detached worker, resident daemon, claim queue,
+visibility timeout, worker lease, or failed-work queue is part of the contract.
 
-## 9. Workers, Claims, and Recovery [SRCH-9]
+### [SRCH-9.2] Pending operation
 
-### [SRCH-9.1] Worker topology
+A search captures a finite pending-work frontier. It non-destructively reads
+jobs through that frontier, loads current canonical source state, applies the
+provider update, and only then exact-deletes the job. Concurrent searches may
+duplicate processing. An already absent job after this search's successful
+provider commit is success. A provider or broker failure leaves valid work
+retryable and fails search.
 
-Indexing must never run inline with a source mutation. A producer may make a
-best-effort detached launch of a fresh short-lived worker process after
-enqueue. Long-lived first-party processes may also request bounded drain work,
-but all contexts call the same core worker function. Taut requires no resident
-daemon, service manager, background thread, or user configuration.
+### [SRCH-9.3] Source identity and revision order
 
-A detached worker opens fresh queue and provider handles. It must not inherit
-live broker connections through `fork`, resolve a member, update activity, or
-write to inherited stdout/stderr. It drains available work, observes one short
-quiet check, and exits. Concurrent worker processes are legal.
+For a message job, the provider conditionally upserts current source or records
+a deletion tombstone. A job older than the latest accepted revision cannot
+undo a newer update or deletion. Rename jobs remain revision-fenced hints.
 
-The implementation plan must benchmark detached launch overhead, burst process
-count, SQLite busy incidence, PostgreSQL connection count, and time to
-searchability before making launch-on-every-write the default. This is a
-rollout gate, not a wall-clock CI assertion.
+The stored thread is a location hint, not message identity. Core exact-peeks
+that registered thread first, then other currently registered searchable
+threads by immutable message ID. A found message is indexed under its current
+thread. At most one registry refresh occurs during a drain if a lookup misses.
+Completed renames, cycles, and reuse of an old name remain valid. Source
+hydration and reconciliation own current location and visibility.
 
-### [SRCH-9.2] Claim operation
-
-A worker claims exactly one job immediately before processing it by atomically
-moving its exact ID from `taut.search_index` to
-`taut.search_index.claimed`. It then writes search-owned claim metadata keyed
-by job ID with `claimed_at` from `Queue.generate_timestamp()`, an opaque
-diagnostic worker ID, and a unique lease ID. SimpleBroker move preserves the
-original job timestamp, so that timestamp must not be treated as claim time.
-
-A claimed item with no claim record or a `claimed_at` at least 60 seconds old
-is reclaimable by moving it back to pending and removing its claim record.
-Sixty seconds is a visibility timeout, not proof of death. A slow worker may
-therefore overlap a retry; idempotency and revision ordering are required.
-
-Workers claim one item at a time. Batch reservation is forbidden because an
-item waiting behind its batch peers could expire before processing begins.
-
-### [SRCH-9.3] Success, failure, and monotonic revision
-
-For a `message` job, the worker reads current canonical source state. Existing
-source means project and conditionally upsert; absent source means conditionally
-mark deleted. The provider applies the operation only when the job revision is
-not older than the document's latest revision. A deletion retains a small
-revision tombstone so a timed-out older worker cannot resurrect stale index
-state after a newer deletion.
-
-For a `message` job, the stored thread name is a source-location hint, not
-durable message identity. The worker first exact-peeks that name if it is
-currently a registered searchable queue. On a miss it exact-peeks the other
-current registered searchable queues for the immutable message ID. A found
-message is projected under its current registered thread; absent source is
-marked deleted through the normal revision fence. Completed rename markers are
-recovery bookkeeping, not a permanent redirect graph; name reuse and cycles in
-retained rename history are valid. The `thread_rename` job remains a
-revision-fenced index hint. Source hydration and reconciliation retain
-authority over current location and visibility. Tests cover delayed jobs, both
-rename/job orderings, repeated renames, and a different channel reusing an old
-name.
-
-After the provider transaction commits, the worker rechecks that claim metadata
-still contains its lease ID, exact-deletes the job from claimed, and removes
-claim metadata only with a conditional lease-ID match. A changed lease means a
-new claimant owns acknowledgement, so the old worker exits successfully without
-deleting either row. If exact delete loses to a concurrent acknowledger, it is
-success only after the provider proves its applied revision is at least the job
-revision; otherwise it remains a failure. A crash has these outcomes:
-
-| Crash point | Durable result | Recovery |
-|-------------|----------------|----------|
-| before move | pending job | another worker claims it |
-| after move, before claim metadata | claimed without lease | immediately reclaimable; duplicate processing is safe |
-| after claim metadata, before index commit | claimed with lease | reclaim after 60 seconds |
-| after index commit, before acknowledgement | indexed plus claimed | retry is a conditional idempotent no-op |
-| after claimed delete, before claim-row delete | stale claim metadata only | cleanup removes it |
-
-A transient provider or broker failure leaves the valid job claimed and exits
-the worker so timeout recovery applies. A structurally bad job follows
-[SRCH-8.2]'s failed-queue path instead.
-
-A crash after writing a sanitized failed envelope but before deleting the
-claimed malformed job may produce another envelope after timeout recovery.
-Duplicate quarantine envelopes for one `original_job_ts` are valid and
-diagnostic consumers must deduplicate if they need counts by original job.
+Existing schema-1 search state upgrades forward in place to schema 2. The
+transition returns claimed invalidations to pending through public queue
+moves, discards failed envelopes, removes obsolete work queues and claim
+tables, and updates the existing schema singleton last in the provider
+transaction. Indexed documents, projection, generations, and watermarks
+survive. Run the upgrade with old application processes stopped; there is
+no mixed-version or downgrade contract. An interrupted transition is repeated
+without rebuilding the index.
 
 ## 10. Reconciliation and Freshness [SRCH-10]
 
 ### [SRCH-10.1] Normal search freshness
 
-Before querying, `TautClient.search()` captures the current pending and claimed
-work frontier, processes every valid job at or below that frontier (duplicate
-processing with an active worker is allowed), and compares every registered
+Before querying, `TautClient.search()` captures the pending work frontier,
+processes every valid job at or below that frontier, and compares every registered
 searchable thread's public latest-pending message ID with its index watermark.
 A higher source watermark triggers an incremental public
 `peek_generator(after_timestamp=index_watermark)` scan. A lower source
@@ -632,9 +542,8 @@ rotating full-thread reconciliation in [SRCH-10.2], not the watermark alone,
 owns eventual repair of every enqueue gap. Work arriving after the frontier
 may appear in the same search but is not required to do so.
 
-Search never waits 60 seconds for a non-expired claim. It may safely process
-that claimed source state concurrently and acknowledge it after a successful
-conditional index commit.
+Concurrent searches may process the same pending item, relying on the provider
+revision fence and delete-after-commit order in [SRCH-9.2].
 
 ### [SRCH-10.2] Foreign-write bound
 
@@ -643,7 +552,7 @@ exact-ID restore below the watermark and deletion of a non-latest foreign row
 may remain a false negative or dead derived posting until a full thread scan.
 This limitation is explicit:
 
-- each worker/search invocation performs one rotating full-thread
+- each search invocation performs one rotating full-thread
   reconciliation after urgent work, so continued Taut activity converges
 - first search on an absent index and every projection-version change performs
   a full rebuild
@@ -715,7 +624,7 @@ query implementation.
 ### [SRCH-11.2] PostgreSQL
 
 `taut-pg` owns PostgreSQL search-provider code, DDL, `to_tsvector`/`tsvector`
-construction, GIN indexes, claim/revision SQL, generation switching, and
+construction, GIN indexes, revision SQL, generation switching, and
 PG-only tests. It registers the provider entry point defined by [SRCH-7]. It
 uses the explicit `pg_catalog.simple` text-search configuration only as a
 provider analyzer for the UTF-8 chunks from [SRCH-3.1]. It uses
@@ -725,7 +634,7 @@ must not use ambient database configuration, English stemming, or stop words.
 Every PostgreSQL search-schema initialization transaction acquires
 `pg_advisory_xact_lock(hashtextextended('taut:search:schema', 0))` as its first
 statement before DDL or schema-version reads/writes. Concurrent first-use
-searches and workers therefore converge instead of relying on `IF NOT EXISTS`
+searches therefore converge instead of relying on `IF NOT EXISTS`
 alone. Search-schema GIN creation uses ordinary transactional
 `CREATE INDEX IF NOT EXISTS`, not `CREATE INDEX CONCURRENTLY`, because the
 advisory-lock initialization is one transaction.
@@ -749,93 +658,45 @@ the `simplebroker-pg` dependency.
 
 ## 12. Failure and Verification Contract [SRCH-12]
 
-The fixed system doctor observes exactly the three search work queues from
-[SRCH-8.1]: pending, claimed, and failed. It reports their `QueueStats.total`
-depths without claiming, moving, acknowledging, rebuilding, or loading a search
-provider. Nonzero failed depth is a finding; pending or claimed depth is
-informational. The check does not prove work freshness, inspect physical search
-tables, reclaim leases, or replace [SRCH-8.2] and [SRCH-9] recovery behavior
-[DOCT-5].
+System doctor reads public statistics for `taut.search_index` without
+creating or processing work. It reports `{"pending": N}` using
+`QueueStats.total`, or zero if absent. Pending depth is informational and
+does not prove index health or freshness [DOCT-4.6].
 
 ### [SRCH-12.1] Failure priorities
 
-- Source chat mutation success outranks invalidation enqueue and worker launch.
-- Search correctness and DM visibility outrank returning a partially hydrated
-  page.
-- A malformed job is isolated to the failed queue; a provider/storage failure
-  is not misclassified as malformed input.
-- A malformed job is non-authoritative foreign work: quarantine warns and
-  reconciliation remains the correctness owner. A structurally valid job whose
-  source cannot be projected or whose provider mutation fails remains claimed;
-  a search processing that job fails with exit 1 because its selected-scope
-  completeness cannot be established. Neither class stalls unrelated later
-  work permanently.
-- Search/provider schema corruption fails search loudly without traceback or
-  silent repair. Explicit rebuild is the forward repair for disposable index
-  contents; a newer schema requires an upgrade.
+- Successful source mutation outranks invalidation enqueue.
+- Search correctness and DM visibility outrank returning a partial page.
+- Malformed work is warned and discarded by structural code. Provider,
+  source, and broker failures are not reclassified as malformed.
+- A valid job remains pending if processing fails. Search fails rather than
+  claim completeness it has not established.
+- Search/provider schema corruption fails loudly. A future schema needs a
+  forward release; explicit `--reindex` repairs disposable index content.
 
 ### [SRCH-12.2] Required proof
 
-Every enumerable CLI flag, exit class, result field, job entity/version, crash
-window, message kind, scope mode, provider failure, and reconciliation mode
-requires a firing test. At minimum, real SQLite and PostgreSQL tests prove:
+Real SQLite and PostgreSQL tests cover the public query, visibility, source
+hydration, provider revision and generation behavior, backend analyzer edges,
+and no authoritative chat side effects. Work tests cover the closed job
+shapes, malformed-then-valid progress, duplicate processing, provider commit
+before exact delete, and replay after a failure between commit and delete.
+Forward-upgrade tests preserve hits and generation, return old claimed work,
+remove obsolete work state, and resume an interrupted transition. Current
+schema checks emit no installation DDL; unsupported future schema and
+projection versions refuse without mutation. The unchanged-document fast path
+is proved without postings replacement in both current and staging generations.
 
-- identical results over the portable ASCII floor, pinned backend-specific
-  results over an adversarial Unicode/diacritic/lexeme-limit matrix,
-  cross-segment AND matching, digest-based stale-candidate rejection,
-  newest-first pagination, filters, fixed JSON fields, and terminal-safe human
-  output
-- default channel/sub-thread/DM scope, explicit union scope, selector failure,
-  malformed-selector exit 1, well-formed selector-miss exit 2, and corrupt-DM
-  fail-closed behavior
-- zero cursor, membership, activity, identity-claim, notification, and chat-row
-  side effects
-- successful chat write despite enqueue and detached-launch failure
-- broker acceptance of every `taut.search_index*` queue name and exclusion of
-  those queues from every chat route, listing, watch, and search surface
-- real pending-to-claimed move, lease-conditional acknowledgement after
-  provider commit, acknowledgement-loser proof, all crash-window recoveries,
-  60-second expiration under a controlled timestamp, concurrent duplicate
-  workers, and old-revision suppression after delete and rename
-- first-use bootstrap, ordinary enqueue-gap repair, foreign append repair,
-  scan-revision ordering against an older worker and a newer mutation, an
-  enqueue gap overtaken by a later append, rotating reconciliation, explicit
-  rebuild, interrupted-generation rollback, and projection-version rebuild
-- physical message deletion and channel rename never return stale text/name
-- no raw message body or display-name snapshot in any `taut_search_*` ordinary
-  table or Taut-produced valid/quarantine queue payload
-- FTS5 absence, missing/incompatible PG provider, and concurrent PG
-  search-schema initialization fail or converge exactly as specified
-- PostgreSQL initialization issues no `CREATE EXTENSION` statement and works
-  for a role that can create ordinary schema objects but cannot install server
-  extensions
-- the [MCP-5] adapter accepts every public scope/filter argument, freezes
-  selector arrays before process transfer, delegates exactly one
-  `TautClient.search` call, emits [SRCH-5.3]'s exact external record fields and
-  string IDs, returns a typed empty success for no matches, preserves cursor,
-  activity, and notification state, and exercises reconciliation and rebuild
-  through real SQLite and PostgreSQL providers without requiring identical
-  backend-native Unicode hit sets
-
-Do not mock SimpleBroker move/delete/peek, the provider database, source
-hydration, process launch integration, or DM state in the tests that claim
-those contracts. A launcher unit may mock `Popen` only to prove exact detachment
-arguments; at least one real child-process test must prove fresh handles,
-bounded exit, crash residue, and later recovery. Async visibility tests use
-deterministic barriers or bounded polling, never fixed sleeps as correctness
-proof.
-
-Operational acceptance records, without turning host timing into CI truth:
-
-- added source-write latency distribution with detached launch enabled and
-  disabled
-- time from write commit to normal-search visibility
-- maximum concurrent worker and PostgreSQL connection count under a burst
-- pending, claimed, expired, and failed queue depths
-- full rebuild duration and index size relative to source body bytes
+No test replaces the real broker queue or provider transaction in a claimed
+integration proof. Benchmark records cover cold/warm and deletion-heavy search
+at 1, 10, and 100 threads with 100 jobs for transient and persistent clients.
+Record physical backend creations, queue handles, registry reads, exact source
+probes, postings writes, and elapsed time. Timing is evidence, not a CI
+threshold.
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans exact-message source lookup and removal of obsolete segmentation proof.
 
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — makes

@@ -66,11 +66,12 @@ Out of scope as non-goals (not deferred ambiguity):
 
 ## 2. Mental Model [TAUT-2]
 
-- One file by default. `.taut.db` is a standard SimpleBroker database plus
+- One primary durable data file by default. `.taut.db` is a standard SimpleBroker database plus
   taut-owned sidecar tables. No project configuration file is required for the
   default SQLite path. When present, `.taut.toml` is configuration rather than
-  durable state. Taut creates no state directory or lock files. SQLite-managed
-  `.taut.db-wal` and `.taut.db-shm` companions are transient. Under `taut-pg`,
+  durable state. Taut creates no separate application state directory or daemon.
+  SQLite and SimpleBroker may maintain coordination, journal, WAL and SHM
+  sidecars. Under `taut-pg`,
   `.taut.toml` selects a Postgres target and the same sidecar tables live in
   that configured schema.
 - A thread is a queue. A **channel** is a top-level thread (`general`). A
@@ -945,6 +946,12 @@ strictly a high-water mark of *seen* message timestamps:
   catching up).
 - Cursor writes are monotonic: `last_seen_ts` only increases.
 
+One CLI read binds the stable member ID used to select its unread page and
+uses that ID for every delivery acknowledgement. A concurrent member rename
+or reuse of the old name cannot redirect or abort those acknowledgements.
+Each record is flushed before its cursor update; delivery commits remain
+per-record, with the same crash replay window.
+
 `message show` advances the located existing membership to the exact returned
 message timestamp before returning it. Because the cursor is a high-water
 mark, showing a newer message also marks every earlier and intervening row in
@@ -979,12 +986,13 @@ the larger read has already marked every fetched message seen.
 
 ### [TAUT-7.3] Unread
 
-A thread is unread for a member iff
-`Queue.has_pending(after_timestamp=last_seen_ts)` is true. Unread state
-asks the broker, not a cached counter — there is nothing to invalidate.
-Renderers may additionally *count* unread messages with bounded peeks for
-human display; the count is presentation, not contract (the `--json`
-`unread` field stays boolean, [TAUT-8.2]).
+A thread is unread for a member iff its latest surviving pending timestamp
+exceeds that member's `last_seen_ts`. Unread state comes from broker metadata,
+not a cached counter. Boolean-only thread consumers use this already fetched
+timestamp without peeking at message bodies. Human CLI and TUI consumers may
+request bounded display counts. The default Python list result continues to
+include those counts; count-free results use zero for the unused count. The
+`--json` `unread` field stays boolean ([TAUT-8.2]).
 
 Physical deletion does not move or rewind any cursor. A cursor may equal a
 deleted timestamp, and later reads skip that numeric gap. Unread state and
@@ -1608,8 +1616,11 @@ selectors once and deduplicates aliases of the same canonical queue. Input
 order does not define watcher scheduling order. Membership refresh remains
 dynamic, but route ownership is not re-evaluated during the run.
 
-A message-specific handler failure leaves the cursor in place and uses the
-three-consecutive-failure poison rule. A terminal delivery failure, including a
+A first ordinary chat handler failure stops that watcher attempt, leaves the
+failed record unread, and surfaces the original exception to its driving owner.
+There is no automatic handler replay or count-based cursor skip; an explicit
+new watch may deliver the record again. Earlier successful records remain
+acknowledged. A terminal delivery failure, including a
 closed CLI output pipe or a human-output policy failure discovered while
 rendering a live item, is not a poison message: it stops the watcher after the
 first failed delivery, leaves the chat cursor unchanged, and emits no traceback.
@@ -1622,7 +1633,7 @@ Public watch handlers signal the same terminal rejection by raising
 a `TautError`: it is handler control flow, not a domain failure. Taut translates
 it at the watcher boundary to the underlying broker stop mechanism. Embedders
 do not import SimpleBroker's stop exception. A rejected chat item never advances
-its cursor and does not increment the poison count. A rejected notification
+its cursor. A rejected notification
 stops the watcher but retains [IAN-7]'s already-consumed pointer semantics.
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
@@ -1658,11 +1669,9 @@ Contract:
   exceptions to the error handler and returns normally when that handler
   says "continue", so post-dispatch code cannot tell success from
   handled failure. The wrapper is the only seam that can.)
-- A failing handler leaves the cursor in place — the message is re-seen
-  (at-least-once display, mirroring SimpleBroker's peek-watcher rule).
-  Poison-message liveness: after 3 consecutive failures on the same
-  message, the watcher advances past it and emits a warning. At the
-  display layer, liveness wins over completeness.
+- An ordinary failing chat handler stops the current watch and leaves its
+  cursor in place. A later explicit watch can re-see the item. Decode failures
+  and notification claim/consumption retain their existing separate policies.
 Membership changes apply while running through the existing owner-thread
 `add_queue`/`remove_queue` path. Core membership-topology operations commit authoritative
 sidecar state and then publish [TAUT-8.5]'s bounded `taut.cache_stale` hint. A
@@ -2316,9 +2325,10 @@ posture:
   processes and prove: no message lost, no message re-dispatched after
   cursor advance, cursor persisted, `add_queue` on mid-watch join, no
   busy-spin on idle peek queues (bounded poll count or CPU assertion),
-  and the failure path: a raising handler leaves the cursor in place,
-  the message is re-seen, and the 3-strikes rule advances past it with
-  a warning ([TAUT-8.4]).
+  and the failure path: a raising chat handler runs once, its original exception
+  escapes the driving owner, the cursor stays put, and an explicit fresh watch
+  can re-see it ([TAUT-8.4]). Direct turns, driven runs, dynamic queue additions,
+  and cleanup failures each have a firing proof.
 - CLI tests drive the real console entry point (subprocess or
   `run_cli`-style harness as in SimpleBroker) and assert exit codes 0/1/2
   and `--json` field names per [TAUT-8.2]. They also prove the `message`
@@ -2720,7 +2730,7 @@ Helper obligations:
   requires the shard. Root coverage configuration includes `taut_mcp` as
   source. The existing coverage report job depends on that producer, downloads
   and combines its shard with root and Summon shards, and requires execution of
-  the unique non-PG rate-admission line `self._bucket_tokens -= 1.0` in
+  the unique non-PG resident-binding line `if entry.token == token:` in
   `extensions/taut_mcp/taut_mcp/_process_reactor.py` before generating the
   report. The MCP compatibility workflow remains the sole live-PostgreSQL MCP
   conformance owner and does not become a second coverage owner.
@@ -2955,6 +2965,11 @@ containment point before that boundary converts it to a CLI exit, TUI fatal
 exit, MCP workspace crash, or standalone Summon process failure. Exceptions
 already converted to normal domain, tool, worker, or recoverable UI results
 below that point are handled outcomes and are not debug events.
+Expected CLI domain outcomes (`TautError`, including empty or not-found
+results, and declared `CommandError` outcomes) are rendered without debug
+capture. When a command has already resolved its target and config, capture
+reuses them without creating a second client. Load failures without a client
+retain bounded existing discovery.
 `KeyboardInterrupt`, `SystemExit`, cancellation implemented outside
 `Exception`, and other direct `BaseException` subclasses are not captured.
 
@@ -2988,7 +3003,7 @@ do not perform their own redaction.
 
 Each rule identifies a credential-value span. Taut replaces only that span
 with the literal `<redacted>` and preserves the surrounding identifier,
-delimiter, authorization scheme, URI structure, provider/type prefix, or PEM
+delimiter, authorization scheme, URI structure, or PEM
 boundary that establishes what was present. Overlapping value spans are
 coalesced before right-to-left replacement. The initial rules cover:
 
@@ -3007,19 +3022,17 @@ coalesced before right-to-left replacement. The initial rules cover:
    `continuity_token` do not fire this label rule;
 3. `Authorization` Basic/Bearer values, user-info passwords in PostgreSQL,
    MongoDB, Redis, AMQP, and FTP-family URIs, password parameters in
-   conninfo/JDBC-like text, and private-key PEM bodies; and
-4. a bounded internal manifest of high-confidence, self-identifying
-   Anthropic, OpenAI, Google, GitHub, AWS, Stripe-secret, Slack, and SendGrid
-   credential formats adapted from established detectors.
+   conninfo/JDBC-like text, and private-key PEM bodies.
 
 A selected value span in the final JSON text must begin and end on complete
 encoded characters. In particular, a quote-delimited rule is escape-aware
 and cannot stop between a backslash and its escaped quote, backslash, or other
 encoded character. Redaction must not make a valid serialized event invalid.
 
-Raw rule declarations are import-time constants. Compiled regular
-expressions are created lazily on the first redaction call and cached for
-later calls. Taut adds no detector-file loader or runtime dependency.
+Bare credentials are not recognized by vendor prefix. Rule implementation
+details, including regex compilation counts and detector identifiers, are
+not part of the contract. Taut adds no detector-file loader or runtime
+dependency.
 
 Redaction is defense in depth, not a completeness or safe-to-share promise.
 Unknown formats, secrets without recognizable context, false negatives, and
@@ -3059,9 +3072,11 @@ SimpleBroker `DEBUG` setting resolved from `TAUT_DEBUG`.
 
 ### [TAUT-13.5] Best-effort and lifecycle contract
 
-Event construction, local representation, target resolution, setting read,
-queue search/write/close, action execution, and debug cleanup never raise to
-the caller and never replace the original failure. Action execution requests
+Ordinary diagnostic failures during event construction, local representation,
+target resolution, setting read, queue search/write/close, action execution,
+and debug cleanup never replace the original failure. A fresh
+`KeyboardInterrupt` during capture propagates, including one raised by
+object rendering. Action execution requests
 termination after the fixed timeout, then permits only the operating system's
 child-termination wait. Redaction compilation, matching, span coalescing, and
 substitution are part of event construction. Their failure is best-effort with
@@ -3083,11 +3098,10 @@ exit behavior. Boundary tests prove the original exception result and
 diagnostic with capture disabled, enabled, and failing. Fakes may control time,
 process metadata, and local-value representation, but may not replace the
 state read, queue search/write, subprocess transport, or outer boundary under
-test. Pure-helper tests exercise every declared rule ID and every normative
-label, preserve identifiers and structural evidence, prove the matched value
-is absent, cover overlapping and repeated matches, retain explicit continuity-
-token exceptions, preserve valid JSON, and prove lazy one-time compilation
-under sequential use. Integration tests use a real local queue and a real
+test. Pure-helper tests exercise every normative label, preserve identifiers
+and structural evidence, prove the matched value is absent, cover overlapping
+and repeated matches, retain explicit continuity-token exceptions, and preserve
+valid JSON. Integration tests use a real local queue and a real
 action fixture to prove both receive identical scrubbed payloads and no raw
 sentinel secret. A forced helper failure proves no sink is reached and the
 primary failure behavior remains unchanged. Hostile maximum-sized text must
@@ -3099,8 +3113,8 @@ expression behavior.
 - `docs/implementation/04-taut-architecture.md` explains the core runtime and
   dispatcher boundaries, including [TAUT-6.4]'s packaged/project policy owner,
   exact-data split, watcher preflight, and bootstrap diagnostic.
-- `taut/_redact.py` and `tests/test_redact.py` implement and exhaustively fire
-  [TAUT-13.3.1]'s lazy, value-only rule manifest.
+- `taut/_redact.py` and `tests/test_redact.py` implement and fire
+  [TAUT-13.3.1]'s structural, value-only redaction.
 - `taut/debug.py` and `tests/test_debug_capture.py` apply and verify the shared
   final-text transform before local or action delivery under [TAUT-13.3.1],
   including fail-closed redaction errors and encoded-size fitting.
@@ -3117,6 +3131,10 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
+  stable actor per CLI read and uses broker timestamp metadata for count-free
+  thread listings; also revises watch failure and debug contracts.
 
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
   existing human message-time formatter for shared CLI/TUI rendering.

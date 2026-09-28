@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import os
 import queue
@@ -68,14 +66,11 @@ WORKSPACE_RESOLUTION_TIMEOUT = (
 )
 WORKSPACE_ATTACH_TIMEOUT = "workspace attach timed out; use list_workspaces then detach"
 WORKSPACE_DETACH_TIMEOUT = "workspace detach timed out; retry detach after backoff"
-RATE_LIMIT_EXCEEDED = "rate limit exceeded; retry after backoff"
 
 MAX_WORKSPACES = 8
 PHASE_TIMEOUT_SECONDS = 10.0
 DETACH_JOIN_SECONDS = 5.0
 SHUTDOWN_SECONDS = 10.0
-BUCKET_CAPACITY = 40.0
-BUCKET_REFILL_PER_SECOND = 20.0
 WORKSPACE_REACTOR_FAILURE_DIAGNOSTIC = (
     "taut-mcp: workspace reactor failed; detach and reattach"
 )
@@ -145,7 +140,7 @@ class _Owner:
 class _Candidate:
     generation: int
     locator: str
-    fingerprint: bytes | None
+    token: str | None
     owner: _Owner
     future: asyncio.Future[dict[str, Any]]
     phase: str = "resolution"
@@ -166,7 +161,7 @@ class _Entry:
     backend: str
     member_id: str | None
     name: str | None
-    fingerprint: bytes | None
+    token: str | None
     owner: _Owner
     status: str = "ready"
     notifications: tuple[Notification, ...] = ()
@@ -250,18 +245,14 @@ class ProcessReactor:
         self,
         loop: asyncio.AbstractEventLoop,
         *,
-        bucket_clock: Callable[[], float] | None = None,
         diagnostic: Callable[[str], None] | None = None,
     ) -> None:
         if loop is not asyncio.get_running_loop():
             raise RuntimeError("process reactor requires the running MCP loop")
         self._loop = loop
-        self._bucket_clock = loop.time if bucket_clock is None else bucket_clock
         self._diagnostic = (
             self._write_stderr_diagnostic if diagnostic is None else diagnostic
         )
-        self._bucket_tokens = BUCKET_CAPACITY
-        self._bucket_last = self._bucket_clock()
         self._events: queue.Queue[WorkspaceEvent] = queue.Queue(maxsize=0)
         self._candidates: dict[int, _Candidate] = {}
         self._entries: dict[str, _Entry] = {}
@@ -285,20 +276,6 @@ class ProcessReactor:
         except OSError:
             pass
 
-    def charge_request(self) -> None:
-        """Charge one schema-valid tool or fixed-resource request."""
-
-        now = self._bucket_clock()
-        self._bucket_tokens = min(
-            BUCKET_CAPACITY,
-            self._bucket_tokens
-            + max(0.0, now - self._bucket_last) * BUCKET_REFILL_PER_SECOND,
-        )
-        self._bucket_last = now
-        if self._bucket_tokens < 1.0:
-            raise WorkspaceToolError(RATE_LIMIT_EXCEEDED)
-        self._bucket_tokens -= 1.0
-
     def _wake_master(self) -> None:
         try:
             self._loop.call_soon_threadsafe(self._drain_events)
@@ -320,25 +297,14 @@ class ProcessReactor:
         return _Owner(inbound, strategy.notify_activity, run)
 
     @staticmethod
-    def _clear_unstarted_owner(owner: _Owner) -> None:
-        """Clear sensitive bootstrap controls after setup/start rollback."""
+    def _discard_unstarted_controls(owner: _Owner) -> None:
+        """Keep a rolled-back bootstrap from granting a later-started worker work."""
 
         while True:
             try:
-                control = owner.inbound.get_nowait()
+                owner.inbound.get_nowait()
             except queue.Empty:
                 return
-            if isinstance(control, Bootstrap):
-                control.token = ""
-
-    @staticmethod
-    def _fingerprint(token: str) -> bytes:
-        return hashlib.sha256(token.encode("utf-8", errors="strict")).digest()
-
-    @staticmethod
-    def _live_fingerprint(owner: _Candidate | _Entry) -> bytes:
-        assert owner.fingerprint is not None, "live workspace requires a fingerprint"
-        return owner.fingerprint
 
     @staticmethod
     def _same_workspace(
@@ -361,7 +327,7 @@ class ProcessReactor:
     def _preflight_workspace(
         self,
         workspace: str,
-        fingerprint: bytes,
+        token: str,
     ) -> dict[str, Any] | None:
         """Return an existing result or admit a new workspace candidate."""
 
@@ -369,9 +335,9 @@ class ProcessReactor:
         if entry is not None:
             if entry.status != "ready":
                 raise WorkspaceToolError(self._entry_error(entry))
-            if entry.fingerprint is None:
-                raise AssertionError("ready workspace requires a token fingerprint")
-            if hmac.compare_digest(entry.fingerprint, fingerprint):
+            if entry.token is None:
+                raise AssertionError("ready workspace requires a token")
+            if entry.token == token:
                 return tool_result([_workspace_record(entry)])
             raise WorkspaceToolError(WORKSPACE_CONFLICT)
         if self._find_candidate_by_path(workspace) is not None:
@@ -401,78 +367,42 @@ class ProcessReactor:
     async def ensure_workspace(self, workspace: str, token: str) -> dict[str, Any]:
         """Resolve, validate, and retain one workspace owner if it is missing."""
 
-        fingerprint = b""
+        if self._closing:
+            raise WorkspaceToolError(ATTACHMENT_FAILED)
+        self._drain_events()
+        _validate_workspace_request(workspace, token)
+
+        existing = self._preflight_workspace(workspace, token)
+        if existing is not None:
+            return existing
+
+        generation = self._next_generation
+        self._next_generation += 1
+        future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
+        owner: _Owner | None = None
+        candidate: _Candidate | None = None
         try:
-            if self._closing:
-                raise WorkspaceToolError(ATTACHMENT_FAILED)
-            self._drain_events()
-            _validate_workspace_request(workspace, token)
-            fingerprint = self._fingerprint(token)
-
-            existing = self._preflight_workspace(
-                workspace,
-                fingerprint,
-            )
-            if existing is not None:
-                return existing
-
-            generation = self._next_generation
-            self._next_generation += 1
-            future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
-            owner: _Owner | None = None
-            bootstrap: Bootstrap | None = None
-            candidate: _Candidate | None = None
-            try:
-                owner = self._new_owner(generation)
-                bootstrap = Bootstrap(generation, workspace, token)
-                candidate = _Candidate(
-                    generation,
-                    workspace,
-                    fingerprint,
-                    owner,
-                    future,
-                )
-                fingerprint = b""
-                self._candidates[generation] = candidate
-                owner.completion = self._executor.submit(owner.run)
-                owner.completion.add_done_callback(lambda _: self._wake_master())
-                owner.send(bootstrap)
-            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
-                token = ""
-                fingerprint = b""
-                if bootstrap is not None:
-                    bootstrap.token = ""
-                if owner is not None:
-                    self._clear_unstarted_owner(owner)
-                    # submit can enqueue work before native worker startup fails.
-                    # Without Bootstrap that callable has no workspace authority;
-                    # Stop releases its first handshake if it later executes.
-                    owner.send(StopWorkspace(generation))
-                if candidate is not None:
-                    candidate.fingerprint = None
-                    self._candidates.pop(generation, None)
-                future.cancel()
-                bootstrap = None
-                candidate = None
-                owner = None
-                raise WorkspaceToolError(ATTACHMENT_FAILED) from None
-            token = ""
-            fingerprint = b""
-            bootstrap = None
-            if candidate is None:
-                raise AssertionError("started owner requires a hidden candidate")
-            candidate.deadline = self._loop.call_later(
-                PHASE_TIMEOUT_SECONDS,
-                self._candidate_timeout,
-                generation,
-                "resolution",
-            )
-            # Once executor submission succeeds, cancellation drops only this transport
-            # waiter. The child lifecycle and master-owned future keep running.
-            return await _await_owned_future(future)
-        finally:
-            token = ""
-            fingerprint = b""
+            owner = self._new_owner(generation)
+            candidate = _Candidate(generation, workspace, token, owner, future)
+            self._candidates[generation] = candidate
+            owner.completion = self._executor.submit(owner.run)
+            owner.completion.add_done_callback(lambda _: self._wake_master())
+            owner.send(Bootstrap(generation, workspace, token))
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+            if owner is not None:
+                self._discard_unstarted_controls(owner)
+                # A submitted worker may begin after this rollback. Stop releases it.
+                owner.send(StopWorkspace(generation))
+            self._candidates.pop(generation, None)
+            future.cancel()
+            raise WorkspaceToolError(ATTACHMENT_FAILED) from None
+        if candidate is None:
+            raise AssertionError("started owner requires a hidden candidate")
+        candidate.deadline = self._loop.call_later(
+            PHASE_TIMEOUT_SECONDS, self._candidate_timeout, generation, "resolution"
+        )
+        # Cancellation drops only this waiter. The child lifecycle keeps running.
+        return await _await_owned_future(future)
 
     async def detach_workspace(self, workspace: str) -> dict[str, Any]:
         if self._closing:
@@ -522,7 +452,6 @@ class ProcessReactor:
         if name not in DOMAIN_TOOL_NAMES:
             raise AssertionError(f"unregistered ordinary tool: {name}")
         ensure = self.ensure_workspace(workspace, token)
-        token = ""
         ensured = await ensure
         records = ensured["records"]
         if not records or not isinstance(records[0].get("workspace"), str):
@@ -683,7 +612,7 @@ class ProcessReactor:
         candidate.retiring = True
         candidate.retired_at = self._loop.time()
         candidate.warning_due = expected_phase == "resolution"
-        candidate.fingerprint = None
+        candidate.token = None
         candidate.owner.send(StopWorkspace(generation))
         if candidate.deadline is not None:
             candidate.deadline.cancel()
@@ -736,7 +665,7 @@ class ProcessReactor:
             self._complete_detach(workspace, entry)
             return
         entry.status = "reactor_failed"
-        entry.fingerprint = None
+        entry.token = None
         entry.notifications = ()
         entry.truncated = False
         future = entry.detach_future
@@ -752,7 +681,7 @@ class ProcessReactor:
         future = entry.detach_future
         if entry.detach_deadline is not None:
             entry.detach_deadline.cancel()
-        entry.fingerprint = None
+        entry.token = None
         self._entries.pop(workspace, None)
         self._recompute_resource()
         if future is not None and not future.done():
@@ -772,7 +701,7 @@ class ProcessReactor:
     ) -> None:
         candidate.retiring = True
         candidate.retired_at = self._loop.time()
-        candidate.fingerprint = None
+        candidate.token = None
         if candidate.deadline is not None:
             candidate.deadline.cancel()
             candidate.deadline = None
@@ -800,9 +729,7 @@ class ProcessReactor:
                 continue
             if entry.status != "ready":
                 self._retire_candidate(candidate, error=self._entry_error(entry))
-            elif hmac.compare_digest(
-                self._live_fingerprint(entry), self._live_fingerprint(candidate)
-            ):
+            elif entry.token == candidate.token:
                 self._retire_candidate(
                     candidate,
                     result=tool_result([_workspace_record(entry)]),
@@ -847,8 +774,7 @@ class ProcessReactor:
         assert candidate.backend is not None
         if candidate.deadline is not None:
             candidate.deadline.cancel()
-        assert candidate.fingerprint is not None
-        fingerprint = candidate.fingerprint
+        assert candidate.token is not None
         entry = _Entry(
             event.generation,
             candidate.canonical_workspace,
@@ -856,13 +782,13 @@ class ProcessReactor:
             candidate.backend,
             event.member_id,
             event.name,
-            fingerprint,
+            candidate.token,
             candidate.owner,
             notifications=event.notifications,
             truncated=event.truncated,
         )
         self._candidates.pop(event.generation, None)
-        candidate.fingerprint = None
+        candidate.token = None
         self._entries[entry.canonical_workspace] = entry
         self._recompute_resource()
         if not candidate.future.done():
@@ -945,7 +871,7 @@ class ProcessReactor:
         if status == "reactor_failed":
             self._diagnostic(WORKSPACE_REACTOR_FAILURE_DIAGNOSTIC)
         entry.status = status
-        entry.fingerprint = None
+        entry.token = None
         entry.notifications = ()
         entry.truncated = False
         self._recompute_resource()
@@ -983,7 +909,7 @@ class ProcessReactor:
         for generation, candidate in list(self._candidates.items()):
             if candidate.owner.alive():
                 continue
-            candidate.fingerprint = None
+            candidate.token = None
             if not candidate.future.done():
                 self._fail_future(candidate.future, ATTACHMENT_FAILED)
             self._candidates.pop(generation, None)
@@ -997,7 +923,7 @@ class ProcessReactor:
             if entry.status == "ready":
                 self._diagnostic(WORKSPACE_REACTOR_FAILURE_DIAGNOSTIC)
                 entry.status = "reactor_failed"
-                entry.fingerprint = None
+                entry.token = None
                 entry.notifications = ()
                 entry.truncated = False
                 self._recompute_resource()
@@ -1019,7 +945,7 @@ class ProcessReactor:
                 candidate.deadline = None
             if not candidate.future.done():
                 candidate.future.cancel()
-            candidate.fingerprint = None
+            candidate.token = None
             owners[candidate.generation] = candidate.owner
         for entry in self._entries.values():
             if entry.detach_deadline is not None:
@@ -1031,7 +957,7 @@ class ProcessReactor:
                 entry.command_future.cancel()
             entry.active_command_id = None
             entry.command_future = None
-            entry.fingerprint = None
+            entry.token = None
             owners[entry.generation] = entry.owner
         for generation, owner in owners.items():
             owner.send(StopWorkspace(generation))

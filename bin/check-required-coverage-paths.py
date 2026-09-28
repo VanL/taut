@@ -24,7 +24,7 @@ REQUIRED_MARKERS = {
         "args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])"
     ),
     Path("extensions/taut_mcp/taut_mcp/_process_reactor.py"): (
-        "self._bucket_tokens -= 1.0"
+        "if entry.token == token:"
     ),
 }
 

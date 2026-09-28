@@ -61,8 +61,8 @@ in `taut/_maintenance.py` normalizes a missing PostgreSQL backend to the same
 import private client machinery. Other backend runtime errors retain their
 original failure shape.
 
-Summon's contributor exports durable session continuity but excludes transient
-name claims and driver pid/start evidence. Its SQL stays in
+Summon's contributor exports durable session continuity but excludes live
+driver pid/start evidence. Transient name claims no longer exist. Its SQL stays in
 `extensions/taut_summon/taut_summon/_state.py`; the component adapter only
 translates and validates logical records.
 

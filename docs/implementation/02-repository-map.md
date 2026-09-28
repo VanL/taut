@@ -20,7 +20,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
-| `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
+| `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP resident-token binding execution paths |
 | `bin/render-tui-screens` | Deterministic wide, medium, compact, and too-small TUI SVG regeneration for manual visual review |
 | `bin/record_tui_run.py` | Retained TUI repetition owner: fixed full-suite invocation, truthful child status, safe result/phase artifacts, and exact-SHA/runtime/count consistency checks |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for synchronized current core, Summon, and MCP wheels, exact distribution metadata, live control behavior, incompatible current-core floors, and the current MCP/current-core stdio lifecycle |

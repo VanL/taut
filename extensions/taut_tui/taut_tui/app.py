@@ -1458,10 +1458,9 @@ class TautApp(App[None]):
         elif invocation.path == ("leave",):
             target = str(values["thread"])
             self._confirm_command(
-                f"Leave {target}?",
-                lambda: self._run_action(
-                    domain.leave_channel(target), refresh_navigation=True
-                ),
+                ActionId.CHANNEL_LEAVE,
+                target,
+                lambda: self._submit_channel_leave(domain, target),
             )
         else:
             return False
@@ -1515,11 +1514,10 @@ class TautApp(App[None]):
             target = self.visual_state.active_conversation
             intent = self._conversation_intent
             self._confirm_command(
-                f"Delete message {message_id}?",
-                lambda: self._run_deletion(
-                    domain.delete_message(message_id),
-                    target=target,
-                    intent=intent,
+                ActionId.MESSAGE_DELETE,
+                message_id,
+                lambda: self._submit_message_delete(
+                    domain, message_id, target=target, intent=intent
                 ),
             )
         else:
@@ -1590,7 +1588,8 @@ class TautApp(App[None]):
         elif path == ("channel", "rename"):
             old_name = str(values["old_name"])
             self._confirm_command(
-                f"Rename {old_name}?",
+                ActionId.CHANNEL_RENAME,
+                old_name,
                 lambda: self._submit_channel_rename(
                     domain,
                     old_name,
@@ -1635,7 +1634,8 @@ class TautApp(App[None]):
     def _run_command_dump(self, domain: TuiDomainActions, output: Path) -> None:
         if output.exists():
             self._confirm_command(
-                f"Replace existing dump {output}?",
+                ActionId.SYSTEM_DUMP,
+                str(output),
                 lambda: self._submit_dump(domain, output, replace_confirmed=True),
             )
         else:
@@ -1677,7 +1677,8 @@ class TautApp(App[None]):
         if invocation.path == ("dismiss",):
             name = str(values["name"])
             self._confirm_command(
-                f"Dismiss {name}?",
+                ActionId.SUMMON_DISMISS,
+                name,
                 lambda: self._run_action(summon.submit_stop(name)),
             )
             return
@@ -1703,10 +1704,37 @@ class TautApp(App[None]):
         self._update_status()
         self._watch_future(future, lambda done: self._apply_summon_return(token, done))
 
-    def _confirm_command(self, prompt: str, action: Callable[[], None]) -> None:
+    def _confirm_command(
+        self,
+        action_id: ActionId,
+        target: str,
+        action: Callable[[], None],
+        cancelled_action: Callable[[], None] | None = None,
+    ) -> None:
+        prompt = action_spec(action_id).confirmation_prompt
+        assert prompt is not None
         self.push_screen(
-            ConfirmationScreen(prompt),
-            lambda confirmed: action() if confirmed else None,
+            ConfirmationScreen(prompt.format(target=target)),
+            lambda confirmed: (
+                action()
+                if confirmed
+                else (cancelled_action() if cancelled_action is not None else None)
+            ),
+        )
+
+    def _submit_channel_leave(self, domain: TuiDomainActions, target: str) -> None:
+        self._run_action(domain.leave_channel(target), refresh_navigation=True)
+
+    def _submit_message_delete(
+        self,
+        domain: TuiDomainActions,
+        message_id: str | int,
+        *,
+        target: str | None,
+        intent: int,
+    ) -> None:
+        self._run_deletion(
+            domain.delete_message(message_id), target=target, intent=intent
         )
 
     def _dispatch_simple_domain_action(
@@ -1749,9 +1777,7 @@ class TautApp(App[None]):
             self._confirm_context_action(
                 action_id,
                 self.visual_state.active_conversation,
-                lambda target: self._run_action(
-                    domain.leave_channel(target), refresh_navigation=True
-                ),
+                lambda target: self._submit_channel_leave(domain, target),
             )
         elif action_id is ActionId.CHANNEL_SHOW_TOPIC:
             self._with_active_target(
@@ -1847,15 +1873,10 @@ class TautApp(App[None]):
         if submission.action_id is ActionId.SUMMON_STATUS:
             self._run_action(summon.submit_status(submission.name))
             return
-        prompt = action_spec(ActionId.SUMMON_DISMISS).confirmation_prompt
-        assert prompt is not None
-        self.push_screen(
-            ConfirmationScreen(prompt.format(target=submission.name)),
-            lambda confirmed: (
-                self._run_action(summon.submit_stop(submission.name))
-                if confirmed
-                else None
-            ),
+        self._confirm_command(
+            ActionId.SUMMON_DISMISS,
+            submission.name,
+            lambda: self._run_action(summon.submit_stop(submission.name)),
         )
 
     def _apply_summon_return(
@@ -1903,18 +1924,11 @@ class TautApp(App[None]):
             return
         target = self.visual_state.active_conversation
         intent = self._conversation_intent
-        prompt = action_spec(ActionId.MESSAGE_DELETE).confirmation_prompt
-        assert prompt is not None
-        self.push_screen(
-            ConfirmationScreen(prompt.format(target=message_id)),
-            lambda confirmed: (
-                self._run_deletion(
-                    domain.delete_message(message_id),
-                    target=target,
-                    intent=intent,
-                )
-                if confirmed
-                else None
+        self._confirm_command(
+            ActionId.MESSAGE_DELETE,
+            str(message_id),
+            lambda: self._submit_message_delete(
+                domain, message_id, target=target, intent=intent
             ),
         )
 
@@ -2405,20 +2419,16 @@ class TautApp(App[None]):
         if action_id is ActionId.SYSTEM_DUMP:
             output = Path(values["output_path"])
             if output.exists():
-                prompt = action_spec(action_id).confirmation_prompt
-                assert prompt is not None
-                self.push_screen(
-                    ConfirmationScreen(prompt.format(target=output)),
-                    lambda confirmed: (
-                        self._submit_dump(
-                            domain,
-                            output,
-                            replace_confirmed=True,
-                            screen=screen,
-                        )
-                        if confirmed
-                        else screen.resume()
+                self._confirm_command(
+                    action_id,
+                    str(output),
+                    lambda: self._submit_dump(
+                        domain,
+                        output,
+                        replace_confirmed=True,
+                        screen=screen,
                     ),
+                    screen.resume,
                 )
             else:
                 self._submit_dump(domain, output, screen=screen)
@@ -2439,15 +2449,11 @@ class TautApp(App[None]):
         if target is None:
             self._show_error("Select a conversation first.")
             return
-        prompt = action_spec(action_id).confirmation_prompt
-        assert prompt is not None
-        self.push_screen(
-            ConfirmationScreen(prompt.format(target=target)),
-            lambda confirmed: (
-                confirmed_action(target)
-                if confirmed
-                else (cancelled_action() if cancelled_action is not None else None)
-            ),
+        self._confirm_command(
+            action_id,
+            target,
+            lambda: confirmed_action(target),
+            cancelled_action,
         )
 
     def _with_active_target(self, action: Callable[[str], None]) -> None:
@@ -3278,6 +3284,7 @@ class TautApp(App[None]):
             return False
         try:
             base_screen.query_one("#workspace")
+            base_screen.query_one("#transcript", TautTranscript)
         except NoMatches:
             return False
         return True

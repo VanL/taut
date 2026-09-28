@@ -345,6 +345,17 @@ class MessagingMixin(_ClientBase):
         advance: bool = True,
         limit: int = 1000,
     ) -> list[Message]:
+        return self._read_unread_with_member_id(thread, advance=advance, limit=limit)[1]
+
+    def _read_unread_with_member_id(
+        self,
+        thread: str | None = None,
+        *,
+        advance: bool = True,
+        limit: int = 1000,
+    ) -> tuple[str, list[Message]]:
+        """Bind a single actor to the unread page and stream acknowledgements."""
+
         if isinstance(limit, bool) or not isinstance(limit, int):
             raise TypeError("limit must be an integer")
         if not 1 <= limit <= 1000:
@@ -392,16 +403,14 @@ class MessagingMixin(_ClientBase):
             )
         if not messages:
             raise EmptyResultError("nothing unread")
-        return messages
+        return member["member_id"], messages
 
-    def mark_seen(self, thread: str, through_ts: int) -> None:
-        """Advance through one record already delivered by a stream adapter."""
-
-        resolved = self._resolve_member(create=False, _touch_activity=False)
-        member = self._require_member(resolved)
+    def _mark_seen_for_member(
+        self, member_id: str, thread: str, through_ts: int
+    ) -> None:
         self._state.advance_cursor(
             thread=thread,
-            member_id=member["member_id"],
+            member_id=member_id,
             seen_ts=through_ts,
         )
 

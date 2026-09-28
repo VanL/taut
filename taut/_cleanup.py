@@ -22,4 +22,6 @@ def capture_cleanup_failure(
     """Run cleanup and retain the first ordinary failure for later reporting."""
 
     current = cleanup_failure(action)
+    if failure is not None and current is not None:
+        failure.add_note(f"additional cleanup failed: {current}")
     return failure if failure is not None else current

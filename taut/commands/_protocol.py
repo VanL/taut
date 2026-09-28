@@ -15,6 +15,8 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TextIO, TypeAlias
 
 if TYPE_CHECKING:
+    from simplebroker import BrokerTarget, Config
+
     from taut.client import TautClient
 
 
@@ -197,6 +199,15 @@ class CommandContext:
 
         if self._client_instance is not None:
             self._client_instance.close()
+
+    def resolved_capture_target(self) -> tuple[BrokerTarget | str, Config] | None:
+        """Reuse an already selected client target without creating a client."""
+
+        from taut.client import TautClient
+
+        if not isinstance(self._client_instance, TautClient):
+            return None
+        return self._client_instance.target, self._client_instance.config
 
 
 class Command(Protocol):

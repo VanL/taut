@@ -7,21 +7,14 @@ from pathlib import Path
 import pytest
 from simplebroker import Queue
 
-from taut._constants import META_QUEUE_NAME
 from taut.search._jobs import (
-    CLAIMED_QUEUE_NAME,
-    FAILED_QUEUE_NAME,
     PENDING_QUEUE_NAME,
     JobQueues,
     MessageJob,
     encode_thread_rename_job,
 )
 from taut.search._provider import IndexedDocument, SearchCandidate, ThreadWatermark
-from taut.search._worker import (
-    UnconfirmedAcknowledgementError,
-    apply_claimed_snapshot,
-    process_one,
-)
+from taut.search._worker import process_one
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -35,6 +28,9 @@ class FakeProvider:
     calls: list[tuple[str, int, int]] = field(default_factory=list)
     watermarks: dict[str, tuple[int | None, int]] = field(default_factory=dict)
     rotation_cursor: str | None = None
+
+    def schema_version(self) -> int:
+        return 2
 
     def ensure_schema(self) -> None:
         pass
@@ -177,31 +173,9 @@ class FakeProvider:
         pass
 
 
-class LostAckJobQueues(JobQueues):
-    def acknowledge(self, job_ts: int, lease_id: str) -> bool:
-        del job_ts, lease_id
-        return False
-
-
-class FailingAckJobQueues(JobQueues):
-    def acknowledge(self, job_ts: int, lease_id: str) -> bool:
-        del job_ts, lease_id
-        raise RuntimeError("broker unavailable")
-
-
-def _queues(
-    tmp_path: Path,
-    *,
-    queue_type: type[JobQueues] = JobQueues,
-) -> tuple[JobQueues, tuple[Queue, ...]]:
-    db_path = str(tmp_path / ".taut.db")
-    pending = Queue(PENDING_QUEUE_NAME, db_path=db_path)
-    claimed = Queue(CLAIMED_QUEUE_NAME, db_path=db_path)
-    failed = Queue(FAILED_QUEUE_NAME, db_path=db_path)
-    meta = Queue(META_QUEUE_NAME, db_path=db_path)
-    jobs = queue_type(pending=pending, claimed=claimed, failed=failed, meta=meta)
-    jobs.ensure_schema()
-    return jobs, (pending, claimed, failed, meta)
+def _queues(tmp_path: Path) -> tuple[JobQueues, Queue]:
+    pending = Queue(PENDING_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    return JobQueues(pending=pending), pending
 
 
 def _document(job: MessageJob, text: str = "parser green") -> IndexedDocument:
@@ -215,264 +189,130 @@ def _document(job: MessageJob, text: str = "parser green") -> IndexedDocument:
     )
 
 
-def test_process_one_replaces_live_source_before_acknowledgement(
-    tmp_path: Path,
-) -> None:
-    jobs, owned = _queues(tmp_path)
+def _row(pending: Queue, timestamp: int) -> tuple[str, int]:
+    row = pending.peek_one(exact_timestamp=timestamp, with_timestamps=True)
+    assert row is not None
+    return row
+
+
+def test_process_one_commits_before_exact_delete(tmp_path: Path) -> None:
+    jobs, pending = _queues(tmp_path)
     provider = FakeProvider()
-    loaded: list[MessageJob] = []
+    job_ts = jobs.enqueue_message(
+        message_ts=pending.generate_timestamp(), thread="general"
+    )
 
     def load(job: MessageJob) -> IndexedDocument:
-        loaded.append(job)
+        assert pending.peek_one(exact_timestamp=job_ts) is not None
         return _document(job)
 
     try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        assert process_one(jobs, provider, load)
-
-        assert loaded == [MessageJob(message_ts=message_ts, thread="general")]
-        assert provider.calls == [("replace", message_ts, job_ts)]
-        assert provider.applied_revision(message_ts) == job_ts
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is None
+        assert process_one(jobs, provider, load, row=_row(pending, job_ts))
+        assert pending.peek_one(exact_timestamp=job_ts) is None
+        assert provider.live
     finally:
-        for queue in owned:
-            queue.close()
+        pending.close()
 
 
-def test_search_read_through_applies_active_claim_without_acknowledging(
+def test_provider_failure_leaves_valid_work_pending(tmp_path: Path) -> None:
+    jobs, pending = _queues(tmp_path)
+    provider = FakeProvider(fail_replace=True)
+    job_ts = jobs.enqueue_message(
+        message_ts=pending.generate_timestamp(), thread="general"
+    )
+    try:
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            process_one(
+                jobs, provider, lambda job: _document(job), row=_row(pending, job_ts)
+            )
+        assert pending.peek_one(exact_timestamp=job_ts) is not None
+    finally:
+        pending.close()
+
+
+def test_malformed_then_valid_work_progresses_without_failed_queue(
     tmp_path: Path,
 ) -> None:
-    """[SRCH-10.1] Active workers do not force search to wait for timeout."""
-
-    jobs, owned = _queues(tmp_path)
+    jobs, pending = _queues(tmp_path)
     provider = FakeProvider()
+    warnings: list[str] = []
+    malformed_ts = pending.write('{"entity":"message","v":9}')
+    valid_ts = jobs.enqueue_message(
+        message_ts=pending.generate_timestamp(), thread="general"
+    )
     try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-        claim = jobs.claim_one(exact_timestamp=job_ts)
-        assert claim is not None
-
-        assert apply_claimed_snapshot(
-            claim.body,
-            revision=claim.job_ts,
-            provider=provider,
-            load_source=lambda job: _document(job),
-        )
-
-        assert provider.applied_revision(message_ts) == job_ts
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) == claim.body
-        assert jobs.lease_matches(job_ts, claim.lease_id)
+        for row in jobs.pending_rows_through(jobs.work_frontier() or 0):
+            assert process_one(
+                jobs,
+                provider,
+                lambda job: _document(job),
+                row=row,
+                warn_malformed=warnings.append,
+            )
+        assert pending.peek_one(exact_timestamp=malformed_ts) is None
+        assert pending.peek_one(exact_timestamp=valid_ts) is None
+        assert provider.live
+        assert len(warnings) == 1
+        assert "unexpected_fields" in warnings[0]
+        assert "entity" not in warnings[0]
     finally:
-        for queue in owned:
-            queue.close()
+        pending.close()
 
 
-def test_process_one_tombstones_absent_source_at_job_revision(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path)
+def test_absent_source_is_revision_fenced_tombstone(tmp_path: Path) -> None:
+    jobs, pending = _queues(tmp_path)
     provider = FakeProvider()
+    message_ts = pending.generate_timestamp()
+    old = MessageJob(message_ts=message_ts, thread="general")
+    provider.replace_document(_document(old), revision=100)
+    job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
     try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        assert process_one(jobs, provider, lambda _job: None)
-
-        assert provider.calls == [("delete", message_ts, job_ts)]
-        assert provider.applied_revision(message_ts) == job_ts
+        assert process_one(jobs, provider, lambda _job: None, row=_row(pending, job_ts))
+        assert provider.revisions[message_ts] == job_ts
         assert message_ts not in provider.live
     finally:
-        for queue in owned:
-            queue.close()
+        pending.close()
 
 
-def test_older_job_cannot_replace_a_newer_tombstone(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path)
+def test_rename_job_retargets_existing_document(tmp_path: Path) -> None:
+    jobs, pending = _queues(tmp_path)
     provider = FakeProvider()
-    try:
-        message_ts = jobs.meta.generate_timestamp()
-        old_job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-        newer_revision = jobs.meta.generate_timestamp()
-        assert provider.delete_document(
-            message_ts=message_ts,
-            thread="general",
-            revision=newer_revision,
-        )
-
-        assert process_one(jobs, provider, lambda job: _document(job, "stale"))
-
-        assert provider.calls[-1] == ("replace", message_ts, old_job_ts)
-        assert provider.applied_revision(message_ts) == newer_revision
-        assert message_ts not in provider.live
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_already_applied_duplicate_is_idempotently_acknowledged(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path)
-    provider = FakeProvider()
-    try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-        job = MessageJob(message_ts=message_ts, thread="general")
-        assert provider.replace_document(_document(job), revision=job_ts)
-
-        assert process_one(jobs, provider, lambda current: _document(current))
-
-        assert provider.applied_revision(message_ts) == job_ts
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is None
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_malformed_job_is_quarantined_and_next_valid_job_can_run(
-    tmp_path: Path,
-) -> None:
-    jobs, owned = _queues(tmp_path)
-    provider = FakeProvider()
-    loaded: list[MessageJob] = []
-
-    def load(job: MessageJob) -> IndexedDocument:
-        loaded.append(job)
-        return _document(job)
-
-    try:
-        malformed_ts = jobs.pending.write("not-json secret body")
-        message_ts = jobs.meta.generate_timestamp()
-        valid_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        assert process_one(jobs, provider, load)
-        assert process_one(jobs, provider, load)
-
-        assert loaded == [MessageJob(message_ts=message_ts, thread="general")]
-        assert jobs.claimed.peek_one(exact_timestamp=malformed_ts) is None
-        assert jobs.claimed.peek_one(exact_timestamp=valid_ts) is None
-        failed = jobs.failed.peek_one()
-        assert isinstance(failed, str)
-        assert "secret" not in failed
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_process_one_retargets_completed_thread_rename(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path)
-    provider = FakeProvider()
-    document = IndexedDocument(100, "general", "digest", 4, ("text",))
-    provider.live[100] = document
-    provider.revisions[100] = 1
-    try:
-        body = encode_thread_rename_job(
+    message_ts = pending.generate_timestamp()
+    provider.replace_document(
+        _document(MessageJob(message_ts=message_ts, thread="general")),
+        revision=100,
+    )
+    job_ts = pending.write(
+        encode_thread_rename_job(
             old="general",
-            new="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            new="renamed",
+            affected=[{"old": "general", "new": "renamed"}],
         )
-        jobs.pending.write(body)
-
-        assert process_one(
-            jobs,
-            provider,
-            lambda _job: pytest.fail("rename must not load a message source"),
-        )
-
-        assert provider.live[100].thread == "ops"
-        assert jobs.claimed.peek_one() is None
+    )
+    try:
+        assert process_one(jobs, provider, lambda _job: None, row=_row(pending, job_ts))
+        assert provider.live[message_ts].thread == "renamed"
+        assert pending.peek_one(exact_timestamp=job_ts) is None
     finally:
-        for queue in owned:
-            queue.close()
+        pending.close()
 
 
-@pytest.mark.parametrize("failure_owner", ["source", "provider"])
-def test_transient_failure_leaves_valid_item_claimed(
-    tmp_path: Path,
-    failure_owner: str,
-) -> None:
-    jobs, owned = _queues(tmp_path)
-    provider = FakeProvider(fail_replace=failure_owner == "provider")
+def test_duplicate_processing_is_safe_after_lost_delete(tmp_path: Path) -> None:
+    jobs, pending = _queues(tmp_path)
+    provider = FakeProvider()
+    job_ts = jobs.enqueue_message(
+        message_ts=pending.generate_timestamp(), thread="general"
+    )
 
-    def load(job: MessageJob) -> IndexedDocument:
-        if failure_owner == "source":
-            raise RuntimeError("source unavailable")
+    def source(job: MessageJob) -> IndexedDocument:
         return _document(job)
 
     try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        with pytest.raises(RuntimeError, match="unavailable"):
-            process_one(jobs, provider, load)
-
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is not None
-        assert jobs.pending.peek_one(exact_timestamp=job_ts) is None
+        row = pending.peek_one(exact_timestamp=job_ts, with_timestamps=True)
+        assert row is not None
+        assert process_one(jobs, provider, source, row=row)
+        assert process_one(jobs, provider, source, row=row)
+        assert provider.revisions
+        assert pending.peek_one(exact_timestamp=job_ts) is None
     finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_lost_ack_succeeds_only_with_applied_revision_proof(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path, queue_type=LostAckJobQueues)
-    provider = FakeProvider()
-    try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        assert process_one(jobs, provider, lambda job: _document(job))
-
-        assert provider.applied_revision(message_ts) == job_ts
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is not None
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_broker_ack_failure_occurs_after_provider_commit_and_leaves_claim(
-    tmp_path: Path,
-) -> None:
-    jobs, owned = _queues(tmp_path, queue_type=FailingAckJobQueues)
-    provider = FakeProvider()
-    try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        with pytest.raises(RuntimeError, match="broker unavailable"):
-            process_one(jobs, provider, lambda job: _document(job))
-
-        assert provider.applied_revision(message_ts) == job_ts
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is not None
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_lost_ack_without_revision_proof_raises_and_leaves_recovery_state(
-    tmp_path: Path,
-) -> None:
-    jobs, owned = _queues(tmp_path, queue_type=LostAckJobQueues)
-    provider = FakeProvider(applied_override=1)
-    try:
-        message_ts = jobs.meta.generate_timestamp()
-        job_ts = jobs.enqueue_message(message_ts=message_ts, thread="general")
-
-        with pytest.raises(UnconfirmedAcknowledgementError):
-            process_one(jobs, provider, lambda job: _document(job))
-
-        assert jobs.claimed.peek_one(exact_timestamp=job_ts) is not None
-    finally:
-        for queue in owned:
-            queue.close()
-
-
-def test_empty_queue_returns_false_without_calling_source(tmp_path: Path) -> None:
-    jobs, owned = _queues(tmp_path)
-    provider = FakeProvider()
-
-    def source(_job: MessageJob) -> IndexedDocument | None:
-        raise AssertionError("empty queue must not call source loader")
-
-    try:
-        assert not process_one(jobs, provider, source)
-    finally:
-        for queue in owned:
-            queue.close()
+        pending.close()

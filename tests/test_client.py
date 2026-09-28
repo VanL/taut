@@ -2920,6 +2920,40 @@ def test_dm_does_not_skip_message_published_after_membership(
     assert listed.unread_count == 2
 
 
+def test_count_free_list_uses_pending_metadata_without_peeking_bodies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("general")
+    try:
+        reader.read("general")
+    except EmptyResultError:
+        pass
+    sent = writer.say("general", "pending")
+
+    def forbid_body_peek(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("count-free list fetched message bodies")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Queue, "peek_many", forbid_body_peek)
+        listed = reader.list_threads(include_unread_counts=False)
+
+    assert len(listed) == 1
+    assert listed[0].name == "general"
+    assert listed[0].unread
+    assert listed[0].last_ts == sent.ts
+    assert listed[0].unread_count == 0
+    assert [message.ts for message in reader.read_unread("general")] == [sent.ts]
+    with monkeypatch.context() as patch:
+        patch.setattr(Queue, "peek_many", forbid_body_peek)
+        caught_up = reader.list_threads(all_threads=True, include_unread_counts=False)
+    assert len(caught_up) == 1
+    assert not caught_up[0].unread
+    assert caught_up[0].unread_count == 0
+
+
 def test_list_skips_bounded_peek_for_caught_up_memberships(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3192,6 +3226,42 @@ def test_client_close_refusal_preserves_session_for_retry(tmp_path: Path) -> Non
     assert peer.read() == "second"
     assert peer.read() == "survives"
     peer.close()
+
+
+def test_client_close_reports_secondary_failure_and_retries_both_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db)
+    client.queue("persistent", persistent=True)
+    session = client._session
+    transient = client._transient_meta_queue
+    assert session is not None
+    assert transient is not None
+    real_session_close = session.close
+    real_transient_close = transient.close
+
+    def fail_session_close() -> None:
+        raise RuntimeError("session close failed")
+
+    def fail_transient_close() -> None:
+        raise ValueError("meta queue close failed")
+
+    monkeypatch.setattr(session, "close", fail_session_close)
+    monkeypatch.setattr(transient, "close", fail_transient_close)
+
+    with pytest.raises(RuntimeError, match="session close failed") as caught:
+        client.close()
+
+    assert any("meta queue close failed" in note for note in caught.value.__notes__)
+    assert client._session is session
+    assert client._transient_meta_queue is transient
+    monkeypatch.setattr(session, "close", real_session_close)
+    monkeypatch.setattr(transient, "close", real_transient_close)
+    client.close()
+    assert client._session is None
+    assert client._transient_meta_queue is None
 
 
 def test_persistent_client_workers_release_their_thread_cache(

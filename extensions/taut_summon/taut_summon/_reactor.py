@@ -22,13 +22,11 @@ from taut_summon._adapter import AdapterHandle
 class PreparedInjection:
     handle: AdapterHandle
     text: str
-    generation: int
+    generation: object | None
 
 
 @dataclass(frozen=True, slots=True)
 class _DeliveryResult:
-    serial: int
-    generation: int
     error: BaseException | None
 
 
@@ -45,9 +43,7 @@ class SummonReactor(TautWatcher):
         self.prepare_delivery: (
             Callable[[Message | Notification], PreparedInjection | None] | None
         ) = None
-        self.current_generation: Callable[[], int] = lambda: 0
-        self._delivery_serial = 0
-        self._delivery_pending: int | None = None
+        self._delivery_pending = False
         self._delivery_cursor: tuple[str, int] | None = None
         self._delivery_results: queue.SimpleQueue[_DeliveryResult] = queue.SimpleQueue()
         self._delivery_thread: threading.Thread | None = None
@@ -60,7 +56,7 @@ class SummonReactor(TautWatcher):
         super().__init__(runtime, member_id, self._begin_delivery, **kwargs)
 
     def _begin_delivery(self, item: Message | Notification) -> None:
-        if self._delivery_pending is not None:
+        if self._delivery_pending:
             raise RuntimeError("delivery dispatch while injection is pending")
         prepare = self.prepare_delivery
         if prepare is None:
@@ -68,10 +64,9 @@ class SummonReactor(TautWatcher):
         prepared = prepare(item)
         if prepared is None:
             return
-        self._delivery_serial += 1
-        serial = self._delivery_serial
-        self._delivery_pending = serial
+        self._delivery_pending = True
         self._delivery_prepared = prepared
+        results = self._delivery_results
 
         def inject() -> None:
             error: BaseException | None = None
@@ -80,9 +75,7 @@ class SummonReactor(TautWatcher):
             except BaseException as exc:  # noqa: BLE001 - transfer every worker failure to owner
                 error = exc
             finally:
-                self._delivery_results.put(
-                    _DeliveryResult(serial, prepared.generation, error)
-                )
+                results.put(_DeliveryResult(error))
                 self.notify_activity()
 
         self._delivery_thread = threading.Thread(
@@ -92,7 +85,7 @@ class SummonReactor(TautWatcher):
             self._delivery_thread.start()
         except BaseException as error:
             self._delivery_thread = None
-            self._delivery_pending = None
+            self._delivery_pending = False
             self._delivery_prepared = None
             self._delivery_cursor = None
             if isinstance(error, Exception):
@@ -100,14 +93,14 @@ class SummonReactor(TautWatcher):
             raise
 
     def _advance(self, thread: str, timestamp: int) -> None:
-        if self._delivery_pending is not None:
+        if self._delivery_pending:
             self._delivery_cursor = (thread, timestamp)
             return
         super()._advance(thread, timestamp)
 
     def _queue_counts_as_wait_activity(self, config: QueueRuntimeConfig) -> bool:
         return (
-            self.delivery_enabled and self._delivery_pending is None
+            self.delivery_enabled and not self._delivery_pending
         ) or config.name == self.control_queue_name
 
     def _fetch_next_message(self, config: QueueRuntimeConfig) -> tuple[str, int] | None:
@@ -122,7 +115,7 @@ class SummonReactor(TautWatcher):
             result = self._delivery_results.get_nowait()
         except queue.Empty:
             return
-        if result.serial != self._delivery_pending:
+        if not self._delivery_pending:
             return
         worker = self._delivery_thread
         if worker is not None:
@@ -130,13 +123,12 @@ class SummonReactor(TautWatcher):
             if worker.is_alive():
                 raise RuntimeError("injection worker did not retire after its result")
         cursor = self._delivery_cursor
-        self._delivery_pending = None
+        prepared = self._delivery_prepared
+        self._delivery_pending = False
         self._delivery_prepared = None
         self._delivery_cursor = None
         self._delivery_thread = None
-        if result.generation != self.current_generation():
-            self._mark_pending_messages_prechecked()
-            return
+        assert prepared is not None
         if result.error is not None:
             if self.delivery_error is not None:
                 self.delivery_error(result.error)
@@ -146,11 +138,30 @@ class SummonReactor(TautWatcher):
             super()._advance(*cursor)
         self._mark_pending_messages_prechecked()
 
+    def retire_delivery_generation(self, generation: object) -> None:
+        """Retire this generation's injection before a successor may start."""
+
+        prepared = self._delivery_prepared
+        if prepared is None or prepared.generation is not generation:
+            return
+        worker = self._delivery_thread
+        if worker is not None and worker.is_alive():
+            prepared.handle.request_close()
+            worker.join(timeout=5.0)
+            if worker.is_alive():
+                raise RuntimeError("injection worker did not retire with generation")
+        self._delivery_pending = False
+        self._delivery_cursor = None
+        self._delivery_prepared = None
+        self._delivery_thread = None
+        self._delivery_results = queue.SimpleQueue()
+        self._mark_pending_messages_prechecked()
+
     def _process_reactor_turn(self) -> None:
         self._apply_delivery_result()
         if self.owner_turn is not None:
             self.owner_turn()
-        if self._delivery_pending is None or self.control_queue_name is not None:
+        if not self._delivery_pending or self.control_queue_name is not None:
             super()._process_reactor_turn()
 
     def next_wait_timeout(self) -> float | None:
@@ -167,7 +178,7 @@ class SummonReactor(TautWatcher):
             super()._drain_queue()
         finally:
             self._ready_event = ready
-        if self._delivery_pending is not None or not self.delivery_enabled:
+        if self._delivery_pending or not self.delivery_enabled:
             self._ready_after_initial_drain = False
         elif ready is not None:
             ready.set()

@@ -8,7 +8,6 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from taut import _redact
 from taut._redact import redact_sensitive_text
 
 pytestmark = pytest.mark.sqlite_only
@@ -62,33 +61,6 @@ def _private_key_fixture(key_type: str, body: str | None = None) -> str:
     if body is None:
         body = _runtime_value("ZGVidWctcHJpdmF0ZS1", "rZXktYm9keQ==")
     return f"-----BEGIN {key_type}-----\n{body}\n-----END {key_type}-----"
-
-
-_PROVIDER_CREDENTIAL_CASES = (
-    (_runtime_value("gh", "p_", "A" * 36), "ghp_<redacted>"),
-    (_runtime_value("sk_", "live_", "A" * 20), "sk_live_<redacted>"),
-    (_runtime_value("rk_", "live_", "A" * 20), "rk_live_<redacted>"),
-    (
-        _runtime_value("xo", "xb-", "1234567890-", "1234567890abc"),
-        "xoxb-<redacted>",
-    ),
-    (
-        _runtime_value("https://hooks.slack.com/", "services/", "T123/B456/", "A" * 23),
-        "https://hooks.slack.com/services/<redacted>",
-    ),
-    (_runtime_value("S", "G.", "A" * 20, ".", "B" * 39), "SG.<redacted>"),
-    (
-        _runtime_value("sk-ant-", "api03-", "A" * 93, "AA"),
-        "sk-ant-api03-<redacted>",
-    ),
-    (
-        _runtime_value("sk-abc", "T3BlbkFJ", "A" * 20),
-        "sk-<redacted>",
-    ),
-    (_runtime_value("AIza", "Sy", "A" * 33), "AIzaSy<redacted>"),
-    (_runtime_value("AK", "IA", "A" * 16), "AKIA<redacted>"),
-    (_runtime_value("AS", "IA", "A" * 16), "ASIA<redacted>"),
-)
 
 
 def test_redact_sensitive_text_preserves_label_and_json() -> None:
@@ -300,15 +272,9 @@ def test_redact_sensitive_text_preserves_private_key_boundaries_in_json() -> Non
     }
 
 
-@pytest.mark.parametrize(
-    ("credential", "expected"),
-    _PROVIDER_CREDENTIAL_CASES,
-)
-def test_redact_sensitive_text_preserves_provider_prefix(
-    credential: str,
-    expected: str,
-) -> None:
-    assert redact_sensitive_text(f"value={credential}") == f"value={expected}"
+def test_unlabeled_vendor_shaped_text_is_outside_structural_redaction() -> None:
+    credential = _runtime_value("gh", "p_", "A" * 36)
+    assert redact_sensitive_text(f"value={credential}") == f"value={credential}"
 
 
 @pytest.mark.parametrize(
@@ -331,11 +297,11 @@ def test_redact_sensitive_text_preserves_nonsecret_near_misses(text: str) -> Non
 
 
 def test_redact_sensitive_text_handles_repeated_and_overlapping_matches() -> None:
-    credential = _PROVIDER_CREDENTIAL_CASES[0][0]
+    credential = "first-secret"
     text = f"api_key={credential}; password=second-secret; value={credential}"
 
     assert redact_sensitive_text(text) == (
-        "api_key=<redacted>; password=<redacted>; value=ghp_<redacted>"
+        "api_key=<redacted>; password=<redacted>; value=first-secret"
     )
 
 
@@ -375,55 +341,12 @@ _RULE_CASES = {
         _private_key_fixture("PRIVATE KEY", "QUJDRA==").replace("\n", r"\n"),
         _private_key_fixture("PRIVATE KEY", "<redacted>").replace("\n", r"\n"),
     ),
-    "github_token": _PROVIDER_CREDENTIAL_CASES[0],
-    "stripe_secret_key": _PROVIDER_CREDENTIAL_CASES[1],
-    "slack_token": _PROVIDER_CREDENTIAL_CASES[3],
-    "slack_webhook": _PROVIDER_CREDENTIAL_CASES[4],
-    "sendgrid_key": _PROVIDER_CREDENTIAL_CASES[5],
-    "anthropic_key": _PROVIDER_CREDENTIAL_CASES[6],
-    "openai_key": _PROVIDER_CREDENTIAL_CASES[7],
-    "google_api_key": _PROVIDER_CREDENTIAL_CASES[8],
-    "aws_access_key": _PROVIDER_CREDENTIAL_CASES[9],
-    "aws_session_key": _PROVIDER_CREDENTIAL_CASES[10],
 }
 
 
-def test_every_redaction_rule_has_a_firing_case() -> None:
-    rule_ids = {rule.id for rule in _redact._RULES}
-
-    assert rule_ids == set(_RULE_CASES)
-    for rule_id, (text, expected) in _RULE_CASES.items():
-        assert redact_sensitive_text(text) == expected, rule_id
-
-
-def test_redaction_patterns_compile_lazily_in_fresh_process() -> None:
-    code = (
-        "from taut import _redact; "
-        "assert _redact._compiled_rules.cache_info().currsize == 0"
-    )
-
-    subprocess.run([sys.executable, "-c", code], check=True, timeout=5)
-
-
-def test_redaction_patterns_compile_once_sequentially(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_compile = _redact.re.compile
-    calls: list[str] = []
-
-    def recording_compile(pattern: str, flags: int = 0) -> object:
-        calls.append(pattern)
-        return original_compile(pattern, flags)
-
-    _redact._compiled_rules.cache_clear()
-    monkeypatch.setattr(_redact.re, "compile", recording_compile)
-
-    redact_sensitive_text("password=first-secret")
-    first_call_count = len(calls)
-    redact_sensitive_text("password=second-secret")
-
-    assert first_call_count == len(_redact._RULES)
-    assert len(calls) == first_call_count
+@pytest.mark.parametrize(("text", "expected"), tuple(_RULE_CASES.values()))
+def test_structural_redaction_examples(text: str, expected: str) -> None:
+    assert redact_sensitive_text(text) == expected
 
 
 def test_redaction_hostile_maximum_text_is_bounded() -> None:

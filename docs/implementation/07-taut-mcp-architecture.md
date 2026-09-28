@@ -36,7 +36,7 @@ as historical release evidence.
   protocol eras, [MCP-4] shared ensure and identity, [MCP-5] tools and
   cancellation, [MCP-6] results and errors, [MCP-7] resource representation,
   [MCP-8] reactor and subscription behavior, [MCP-9] agent instructions and
-  standard notification adapters, [MCP-10] trust and rate limits, [MCP-11]
+  standard notification adapters, [MCP-10] trust, [MCP-11]
   failures, and
   [MCP-12] proof
 - `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration, [TAUT-4.4]
@@ -143,7 +143,7 @@ operation. A first CLI-shaped call performs the same setup lazily. Either path
 publishes and retains the same child owner until detach, terminal failure, or
 process exit.
 
-An exact canonical ready key with the same token fingerprint is the no-I/O
+An exact canonical ready key with the same supplied token is the no-I/O
 fast path. Another absolute locator enters child-owned resolution and stable
 directory-identity arbitration, so aliases converge without publishing a
 second client. Hidden seats stay cap-counted until their owner exits; releasing
@@ -157,14 +157,13 @@ until that explicit cleanup.
 
 ### Token lifetime and the domain boundary
 
-The process computes an exact-byte SHA-256 fingerprint for resident-binding
-comparison, then removes its raw request reference from live reactor state
-after child dispatch. The child clears the mutable bootstrap token and its
-local validation copy. Its one canonical `TautClient` keeps the constructor
-token required by core continuity operations until the owner closes. A caught
-internal exception traceback may retain request values until traceback
-collection; that local debugging context is outside the live-state cleanup
-invariant.
+The process retains the exact supplied token on its hidden or ready owner.
+Ordinary Python string equality decides resident reuse. Retirement releases
+that reference with the owner. The child validates the token and its one
+canonical `TautClient` keeps the constructor token required by core continuity
+operations until the owner closes. No digest, HMAC comparison, live-frame
+scrubbing, or zeroization contract is needed for an identity selector within
+the existing storage trust boundary.
 
 The token and workspace locator end at the ensure boundary. `server.py`
 removes both before constructing `RunWorkspaceCommand`; `_commands.py`
@@ -175,8 +174,8 @@ token-bearing client, identity cache, or transient command path.
 
 `_tools.py` owns the fixed 21-tool manifest and compiles one Draft 2020-12
 validator from each advertised input schema. The shared handler normalizes
-only omitted SDK arguments from `None` to `{}`, validates before charging the
-rate bucket, and returns one fixed content-free result for known-tool schema
+only omitted SDK arguments from `None` to `{}`, validates, and returns one
+fixed content-free result for known-tool schema
 failure. Unknown tools remain protocol errors.
 
 `_commands.py` is the explicit allowlisted dispatcher for the 18 CLI-shaped
@@ -343,24 +342,22 @@ broker target and the same resolved `Config` to `TautClient`. SQLite and Postgre
 therefore use the same MCP path. The server has no backend-specific branch
 after resolution.
 
-One process-wide monotonic token bucket covers schema-valid tool calls and
-successful reads of the fixed resource. It limits accidental loops; it is not
-access control. Schema rejection and protocol-owned work are free, admitted
-calls are never refunded, and abusive resource polling can throttle a later
-tool.
+There is no process-wide request bucket. A burst of reads of the cached
+resource cannot exhaust admission for a valid tool. Per-workspace busy slots
+and the resident cap still bound concurrent ownership.
 
 Storage access is the security boundary. A continuity token selects an
 identity; it is not a credential, access-control token, or added security
 boundary. Deployments may still classify it as sensitive application data.
 Workspace paths and tokens are intentionally supplied inputs, but they never
 enter fixed diagnostics. Attachment processing does not add the supplied
-request token or derived fingerprint to tool results, protocol control text,
+request token to tool results, protocol control text,
 stderr, or MCP-owned logs. Core Taut member storage retains the existing
-continuity token; the MCP extension persists no additional request-token copy
-or fingerprint. Participant names and message text may appear in domain tool
+continuity token; the MCP extension persists no additional request-token copy.
+Participant names and message text may appear in domain tool
 results, and that content could independently contain the same text as a token;
 it does not enter fixed diagnostics or protocol control text. Caught internal
-exception tracebacks may retain token or fingerprint context for local
+exception tracebacks may retain token context for local
 debugging. Canonical workspace paths are returned identifiers and remain
 untrusted data.
 

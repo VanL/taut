@@ -12,7 +12,7 @@ adapter record is the retired plan 2026-08-10-mcp-search-plan (source `58f8524`;
 
 Core owns the public query grammar, scope, DM visibility, author and kind
 filters, newest-first pagination, exact source hydration, durable work bodies,
-claim timeout, reconciliation, and result facets. These rules live in
+pending processing, reconciliation, and result facets. These rules live in
 `taut/client/_searching.py` and `taut/search/`. The CLI adapter in
 `taut/commands/search.py` parses and renders only; it delegates semantics to
 `TautClient.search()`.
@@ -44,15 +44,18 @@ from its registered SimpleBroker source queue and checked against its digest
 and current visibility before it becomes a `SearchHit`. This makes stale
 postings safe omissions, never authoritative chat records.
 
-Schema initialization keeps the existing provider transaction and lock
-discipline, then creates only the metadata table before it reads the stable
-`schema_version` and `projection_version` pair. No-row state is classified as
-fresh and receives the current metadata row. Existing state must expose both
-stable fields and pass the two independent version gates before any current-row
-insert, update, or provider-object DDL runs. This ordering lets an older or
-newer source shape fail for its version instead of first being interpreted
-through target-only columns. It is not a migration: current provider DDL and
-version numbers are unchanged.
+Each provider reads the stable schema/projection version pair before deciding
+whether installation work is needed. Current version 2 skips installation DDL.
+The supported version-1 transition retains the existing index and generation;
+the provider transaction removes claim tables and publishes version 2 last.
+Core first returns any old claimed queue rows to pending with public broker
+operations under the operator's quiescence precondition. An interrupted move
+can be repeated. The move API need not select the oldest row first: original
+message timestamps are preserved, and no worker drains either queue during the
+upgrade. No projection or document rebuild is part of this upgrade.
+The unchanged-document path advances its revision without replacing postings.
+This comparison and the revision fence occur in the same provider transaction
+for both current and staging generations.
 
 ## Lexical Analysis Decision
 
@@ -95,37 +98,28 @@ search warnings before every domain command, then returns notification
 warnings before search warnings. Warning delivery never changes the successful
 source result and cannot leak into a later operation.
 
-Workers claim one row by exact broker move into
-`taut.search_index.claimed`, then publish a unique lease in
-`taut_search_claims`. Provider commit precedes acknowledgement. A missing
-lease is immediately reclaimable; an active lease becomes visible again after
-60 seconds. The timeout is evidence for retry, not proof of worker death, so
-all provider mutations use monotonic revisions. Malformed jobs go to a
-content-free failed envelope.
+Search captures a finite pending frontier, reads those jobs without consuming
+them, applies the revision-fenced provider mutation, and exact-deletes each job
+only after commit. Concurrent searches may duplicate work. A provider or broker
+failure leaves valid work pending. Malformed bodies are discarded with a bounded
+structural warning; there is no failure queue.
 
-The claim record stores both the required HLC `claimed_at` and wall-clock
-nanoseconds. The HLC is durable diagnostic order; wall time owns the 60-second
-elapsed-time decision because comparing a packed logical clock to elapsed
-nanoseconds would couple core to private timestamp representation.
-
-A search captures pending and claimed work through a fixed frontier. It claims
-pending IDs exactly and idempotently reads through valid work already owned by
-another worker, so it does not wait for the visibility timeout. Reconciliation
-then repairs public-source changes that bypassed enqueue. One registered thread
+One operation-scoped BrokerSession anchors directly created persistent source
+and work handles, which close before the anchor. The drain reads the searchable
+registry once and refreshes it at most once after a source miss. It keeps
+indexed exact-ID probes for unresolved messages. Reconciliation then repairs
+public-source changes that bypassed enqueue. One registered thread
 is fully reconciled per invocation using a durable rotation cursor; per-thread
 watermarks provide the cheaper ordinary path. Explicit `--reindex` and schema
 or projection changes build a new generation while the old one remains live.
 Normal mutations dual-write an active generation when their revision is new
 enough. The provider switches only after the scan and frontier drain succeed.
 
-## Process Rollout Decision
+## Process Boundary
 
-The first release does not launch a process or thread after every source
-mutation. Durable enqueue plus search-time bounded work gives correctness and
-keeps the write path free of process startup, PostgreSQL connection bursts,
-and SQLite lock amplification. The spec permits, but does not require, a
-short-lived detached worker. Enabling it later requires the benchmark gate in
-[SRCH-9.1] and does not change job or provider semantics.
+Search-time pending processing keeps the write path free of process startup,
+PostgreSQL connection bursts, and SQLite lock amplification. No detached
+worker is part of the current search contract.
 
 ## Verification and Operational Signals
 
@@ -134,8 +128,9 @@ Behavioral proof is split by owner:
 - `tests/test_search.py` covers projection, SQLite FTS, revision fences,
   generations, retargeting, no exact-body copy, and real source-shaped
   version-before-mutation refusal.
-- `tests/test_search_jobs.py` and `tests/test_search_worker.py` cover strict job
-  shapes, claim/reclaim races, quarantine, acknowledgement, and work frontiers.
+- `tests/test_search_jobs.py` and `tests/test_search_worker.py` cover strict
+  job shapes, commit-before-delete,
+  malformed-item progress, duplicate work, and finite frontiers.
 - `tests/test_search_client.py` and `tests/test_search_cli.py` cover public
   scope, hydration, filters, reconciliation, warnings, and rendering.
 - `tests/test_shared_contract.py` pins the public portable ASCII result set,
@@ -154,11 +149,10 @@ Behavioral proof is split by owner:
   direct `TautClient.search()` over real PostgreSQL while leaving Unicode
   lexical behavior backend-native.
 
-Operators should treat growing pending/claimed depth, a claimed row older than
-60 seconds, repeat failed envelopes for well-formed work, rebuild failure, or
-search-triggered cursor/activity changes as defects. The index is disposable:
-rollback can disable the command/provider path while preserving source chat,
-and a later `--reindex` recreates derived state.
+Operators should watch for growing pending depth, rebuild failure, or
+search-triggered cursor/activity changes. Pending depth alone does not prove
+index health or freshness. The index remains disposable; explicit `--reindex`
+recreates derived content when needed.
 
 Known non-corrupting limits are intentional for version 1. A SQLite query that
 races a cross-process generation switch can omit a page and succeed on retry.
@@ -175,7 +169,7 @@ combined FTS `MATCH` expression is evaluated against one row. The provider
 therefore intersects each chunk's matches by message id across rows. Replacing
 that intersection with one combined expression would make valid cross-segment
 matches disappear even without a race. A message invalidation's stored thread
-is only a fast source hint. On a miss, the worker exact-peeks the other current
+is only a fast source hint. On a miss, search exact-peeks the other current
 registered searchable queues by immutable message ID and indexes the message
 under the queue where it is found. This makes completed rename markers recovery
 state rather than a permanent redirect graph. The accepted cost is one exact
@@ -186,6 +180,7 @@ stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-08-24-command-runtime-findings-remediation-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
 - retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.

@@ -71,7 +71,7 @@ The dump contains state needed to restore Taut behavior:
 The dump does not contain state that can be rebuilt or that represents a live
 process:
 
-- `taut_search_*` tables and `taut.search_index*` queues
+- `taut_search_*` tables and the unregistered `taut.search_index` pending queue
 - transient extension claims or work/control queues
 - live member anchors or extension driver leases
 - project configuration, backend credentials, terminal policy, or environment
@@ -411,7 +411,7 @@ restored. It does not by itself diagnose data loss.
 
 The following are always excluded:
 
-- every `taut_search_*` object and every search pending, claimed, or failed job
+- every `taut_search_*` object and every pending search job
 - `taut_summon_claims`
 - Summon `sys.ctl_*` and `sys.rsp_*` queues
 - member live-anchor fields and Summon driver pid/start-time fields
@@ -554,9 +554,8 @@ Version 1 loads only into a nonexistent SQLite target or a fresh/empty resolved
 target. An initialized target is eligible when it contains the current empty
 core schema and no broker aliases, pending or claimed messages, core domain
 rows, active load guard, or extension-owned durable or transient rows. Empty
-disposable search
-schema objects do not make a target non-fresh; any pending or claimed search or
-runtime queue row is a broker message and does.
+disposable search schema objects do not make a target non-fresh; any search
+work or runtime queue row is a broker message and does.
 An extension schema-version key is itself owner authority: if the input has no
 component for that owner, a destination carrying its schema key is non-fresh
 even when the extension's other tables are empty. This prevents an
@@ -845,6 +844,7 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans contributor validation before dump publication and retained-marker semantics.
 
 - retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.

@@ -257,7 +257,7 @@ def _assert_result(
             {"all": True},
             "list_threads",
             (),
-            {"all_threads": True},
+            {"all_threads": True, "include_unread_counts": False},
         ),
         (
             "channel_show",
@@ -415,11 +415,11 @@ def test_search_hit_record_projection_is_exact_and_json_safe() -> None:
 
 def test_list_dms_is_a_thin_public_client_proxy() -> None:
     record = object()
-    calls: list[str] = []
+    calls: list[bool] = []
 
     class PublicClientSpy:
-        def list_direct_messages(self) -> list[object]:
-            calls.append("list_direct_messages")
+        def list_direct_messages(self, *, include_unread_counts: bool) -> list[object]:
+            calls.append(include_unread_counts)
             return [record]
 
     result = execute_command(
@@ -429,7 +429,7 @@ def test_list_dms_is_a_thin_public_client_proxy() -> None:
     )
 
     assert result == (record,)
-    assert calls == ["list_direct_messages"]
+    assert calls == [False]
 
 
 def test_list_rejects_all_and_dms_before_public_client_dispatch() -> None:

@@ -83,8 +83,8 @@ default, or a few machines through the Postgres extension.
 ## Features
 
 - **Zero configuration by default** — no server, no daemon, no dotfiles, no
-  account. `taut init` creates one file; that file is the entire SQLite
-  installation.
+  account. `taut init` creates one primary durable SQLite data file. SQLite
+  and SimpleBroker may maintain transient coordination or journal sidecars.
 - **Humans and agents are both first-class** — record-oriented CLI commands
   expose `--json` (ndjson) output; the full-screen TUI and MCP use their native
   human and protocol transports. Agents are recognized automatically (see

@@ -22,7 +22,6 @@ from taut_summon._control import control_in_queue_name
 from taut_summon._state import (
     capture_driver_evidence,
     ensure_summon_schema,
-    get_claim,
     get_session,
     record_session,
 )
@@ -199,14 +198,12 @@ def test_missing_registered_provider_executable_is_handled_and_releases_claims(
     queue = Queue("taut.summon_state", db_path=str(db))
     try:
         row = get_session(queue, members[0].member_id)
-        claim = get_claim(queue, name="reviewer", provider="codex")
     finally:
         queue.close()
     assert row is not None
     assert row["provider"] == "codex"
     assert row["driver_pid"] is None
     assert row["driver_start_time"] is None
-    assert claim is None
 
 
 def _received_entries(path: Path) -> list[dict[str, Any]]:

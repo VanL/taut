@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from io import StringIO
 from pathlib import Path
 from typing import TextIO, cast
@@ -21,7 +22,7 @@ from simplebroker import Queue
 
 from taut import addressing, cli, identity
 from taut._constants import META_QUEUE_NAME
-from taut._exceptions import TautError
+from taut._exceptions import EmptyResultError, TautError
 from taut.client import InitResult, Message, TautClient, _validate_sqlite_path
 from taut.commands._dispatch import dispatch
 from taut.commands._rendering import emit_init as _emit_init
@@ -1634,6 +1635,35 @@ def test_cli_human_list_shows_unread_counts(tmp_path: Path) -> None:
     assert out.split() == ["general", "2", "unread"]
 
 
+@pytest.mark.parametrize("mode", ["--json", "--quiet"])
+def test_cli_machine_list_does_not_fetch_message_bodies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    db = tmp_path / ".taut.db"
+
+    def forbid_body_peek(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("machine list fetched message bodies")
+
+    monkeypatch.setattr(Queue, "peek_many", forbid_body_peek)
+    output = StringIO()
+    errors = StringIO()
+    rc = dispatch(
+        ["--as", "alice", "list", mode],
+        stdout=output,
+        stderr=errors,
+        client_factory=lambda **_kwargs: TautClient(db_path=db, as_name="alice"),
+    )
+
+    assert rc == 0, errors.getvalue()
+    if mode == "--json":
+        assert json.loads(output.getvalue())["unread"] is True
+    else:
+        assert output.getvalue() == ""
+
+
 def test_cli_human_list_with_all_threads_read_uses_empty_result_contract(
     tmp_path: Path,
 ) -> None:
@@ -2392,6 +2422,7 @@ def test_cli_inbox_json_claims_notifications(tmp_path: Path) -> None:
 
 def test_cli_human_mention_uses_full_reply_id(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
@@ -2399,7 +2430,12 @@ def test_cli_human_mention_uses_full_reply_id(
     source_ts = _say_ts(tmp_path, "van", "general", "hello @bob")
     full_id = str(source_ts)
 
-    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+    def forbid_body_count(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("mention hint counted unrelated thread bodies")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Queue, "peek_many", forbid_body_count)
+        rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
 
     assert rc == 0, err
     assert "taut log general" in out
@@ -3551,6 +3587,52 @@ def test_cli_read_encoding_failure_keeps_message_unread(tmp_path: Path) -> None:
     rc, out, err = run_cli("--as", "bob", "read", "general", "--json", cwd=tmp_path)
     assert rc == 0, err
     assert [int(json.loads(line)["ts"]) for line in out.splitlines()] == [message_ts]
+
+
+def test_cli_read_acknowledges_original_member_after_name_reuse(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    db = tmp_path / ".taut.db"
+    with closing(TautClient(db_path=db, as_name="alice")) as writer:
+        writer.join("general")
+    with closing(TautClient(db_path=db, as_name="bob")) as reader:
+        reader.join("general")
+    with closing(TautClient(db_path=db, as_name="alice")) as writer:
+        sent = [writer.say("general", text).ts for text in ("first", "second")]
+
+    class RenameOnFirstFlush(StringIO):
+        renamed = False
+
+        def flush(self) -> None:
+            super().flush()
+            if self.renamed:
+                return
+            self.renamed = True
+            with closing(TautClient(db_path=db, as_name="bob")) as original:
+                original.set_name("robert")
+            with closing(TautClient(db_path=db, as_name="bob")) as replacement:
+                replacement.join("general", new=True)
+
+    output = RenameOnFirstFlush()
+    errors = StringIO()
+    rc = dispatch(
+        ["--as", "bob", "read", "general", "--json"],
+        stdout=output,
+        stderr=errors,
+        client_factory=lambda **_kwargs: TautClient(db_path=db, as_name="bob"),
+    )
+
+    assert rc == 0, errors.getvalue()
+    assert sent == [
+        int(json.loads(line)["ts"])
+        for line in output.getvalue().splitlines()
+        if json.loads(line)["kind"] == "message"
+    ]
+    with closing(TautClient(db_path=db, as_name="robert")) as original:
+        try:
+            remaining = original.read_unread("general", advance=False)
+        except EmptyResultError:
+            remaining = []
+        assert set(sent).isdisjoint(message.ts for message in remaining)
 
 
 def test_cli_harness_can_run_without_forced_pythonioencoding(tmp_path: Path) -> None:

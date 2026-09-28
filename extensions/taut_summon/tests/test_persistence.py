@@ -80,14 +80,6 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
             value=True,
             updated_ts=100,
         )
-        _state.claim_name(
-            queue,
-            name="transient",
-            provider="claude",
-            driver_pid=12345,
-            driver_start_time="old-process",
-            claimed_ts=101,
-        )
     finally:
         queue.close()
 
@@ -119,14 +111,6 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         assert restored["updated_ts"] == 100
         assert restored["driver_pid"] is None
         assert restored["driver_start_time"] is None
-        assert (
-            _state.get_claim(
-                restored_queue,
-                name="transient",
-                provider="claude",
-            )
-            is None
-        )
     finally:
         restored_queue.close()
 
@@ -463,6 +447,47 @@ def test_doctor_passively_validates_active_summon_schema(tmp_path: Path) -> None
         queue.close()
 
 
+@pytest.mark.parametrize("version", [2, 3])
+def test_doctor_accepts_upgradeable_version_without_mutating_it(
+    tmp_path: Path,
+    version: int,
+) -> None:
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run("CREATE TABLE taut_summon_claims (name TEXT PRIMARY KEY)")
+            session.run(
+                "INSERT INTO taut_summon_claims (name) VALUES (?)", ("retired",)
+            )
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                (str(version), _state.SUMMON_SCHEMA_VERSION_KEY),
+            )
+    finally:
+        queue.close()
+
+    extension = next(
+        check
+        for check in TautClient.doctor(db_path=source).checks
+        if check.name == "extension_state"
+    )
+
+    assert extension.status == "pass"
+    assert extension.data["records"] == {"taut-summon": 0}
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        assert _state.get_summon_schema_version(queue) == version
+        with queue.sidecar() as session:
+            assert list(
+                session.run("SELECT name FROM taut_summon_claims", fetch=True)
+            ) == [("retired",)]
+    finally:
+        queue.close()
+
+
 def test_doctor_reports_incompatible_summon_schema_without_migrating(
     tmp_path: Path,
 ) -> None:
@@ -559,39 +584,6 @@ def test_doctor_unknown_metadata_with_active_summon_has_null_records(
         "installed": ["taut-summon"],
         "records": None,
     }
-
-
-def test_transient_summon_claim_makes_load_destination_nonfresh(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source.db"
-    TautClient.init(db_path=source)
-    source_queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
-    try:
-        _state.ensure_summon_schema(source_queue)
-    finally:
-        source_queue.close()
-    dump_path = tmp_path / "backup.taut.jsonl"
-    TautClient.dump(output=dump_path, db_path=source)
-
-    destination = tmp_path / "destination.db"
-    TautClient.init(db_path=destination)
-    destination_queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(destination))
-    try:
-        _state.ensure_summon_schema(destination_queue)
-        _state.claim_name(
-            destination_queue,
-            name="transient",
-            provider="claude",
-            driver_pid=12345,
-            driver_start_time="old-process",
-            claimed_ts=1,
-        )
-    finally:
-        destination_queue.close()
-
-    with pytest.raises(TautError, match="destination is not fresh"):
-        TautClient.load(input_path=dump_path, db_path=destination)
 
 
 def test_unrepresented_empty_summon_schema_makes_destination_nonfresh(

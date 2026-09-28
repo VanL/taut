@@ -2956,38 +2956,64 @@ def test_deletion_refresh_preserves_open_reply_surface(
     asyncio.run(exercise())
 
 
-def test_textual_message_delete_uses_conversation_refresh_completion(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("operation", ["leave", "delete"])
+def test_textual_destructive_command_confirms_real_workspace_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
-    from taut.commands.syntax import core_command_syntax, parse_command_line
+    from _action_completion import AppliedRequest
+
+    from taut import NotFoundError
     from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
 
-    deletion: Future[Any] = Future()
-    observed: list[tuple[Future[Any], str | None, int]] = []
-
-    class Domain:
-        @staticmethod
-        def delete_message(message_id: str) -> Future[Any]:
-            assert message_id == "1234567890123456789"
-            return deletion
-
-    app = TautApp(db_path=None, as_name=None, continuity_token=None)
-    app.visual_state = replace(app.visual_state, active_conversation="general")
-    app._conversation_intent = 7
-    monkeypatch.setattr(app, "_confirm_command", lambda _prompt, action: action())
-    monkeypatch.setattr(
-        app,
-        "_run_deletion",
-        lambda future, *, target, intent: observed.append((future, target, intent)),
+    db_path = tmp_path / "command-confirm.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    alice.join("general")
+    message = alice.say("general", "delete through command")
+    alice.close()
+    command = (
+        "leave general" if operation == "leave" else f"message delete {message.ts}"
     )
-    invocation = parse_command_line(
-        "message delete 1234567890123456789",
-        syntax=core_command_syntax(),
-    )
+    method = "leave_channel" if operation == "leave" else "delete_message"
+    target = "general" if operation == "leave" else str(message.ts)
 
-    app._dispatch_message_operation(invocation, Domain())  # type: ignore[arg-type]
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._domain is not None
+            opened = observed(app).command_line()
+            await pilot.press(":")
+            await observed(app).pushed(opened, focus="#command-line")
+            app.screen.query_one("#command-line", Input).value = command
+            await pilot.press("enter")
+            confirmation = app.screen
+            assert isinstance(confirmation, ConfirmationScreen)
+            assert target in confirmation.prompt
+            deadline = observed(app).scope.now() + 5
+            await observed(app).screens.ready(confirmation, deadline=deadline)
+            with monkeypatch.context() as patch:
+                applied = AppliedRequest(
+                    observed(app).scope, patch, app, app._domain, method
+                )
+                await pilot.press("y")
+                await applied.wait(deadline)
+            await (
+                observed(app)
+                .screens.retired(confirmation)
+                .wait(deadline=deadline, description="confirmation retired")
+            )
 
-    assert observed == [(deletion, "general", 7)]
+    asyncio.run(exercise())
+    observer = TautClient(db_path=db_path, as_name="alice")
+    try:
+        if operation == "leave":
+            assert "general" not in observer.joined_thread_names()
+        else:
+            with pytest.raises(NotFoundError):
+                observer.show_message(str(message.ts))
+    finally:
+        observer.close()
 
 
 def test_superseding_navigation_clears_and_rejects_stale_search(

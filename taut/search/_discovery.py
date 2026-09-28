@@ -99,6 +99,7 @@ def _load_factory(target: str) -> Callable[..., object]:
 
 def _validate_provider(provider: object) -> None:
     required = (
+        "schema_version",
         "ensure_schema",
         "replace_document",
         "delete_document",

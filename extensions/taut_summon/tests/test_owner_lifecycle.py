@@ -58,7 +58,6 @@ def _owner(summon_db: Path) -> Any:
     driver._phase_worker = None
     driver._phase_result = None
     driver._phase_results = queue.SimpleQueue()
-    driver._pump_results = queue.SimpleQueue()
     driver._evidence = capture_driver_evidence()
     return driver
 
@@ -157,7 +156,7 @@ def test_pump_start_failure_retains_handle_for_cleanup(
     def fail(*_args: object) -> None:
         raise RuntimeError("pump thread unavailable")
 
-    monkeypatch.setattr(driver, "_start_generation_pump", fail)
+    monkeypatch.setattr(driver, "_start_pump", fail)
     with pytest.raises(RuntimeError, match="pump thread unavailable"):
         driver._accept_spawn(cast(Any, handle))
     driver._close_owner_generation()
@@ -178,7 +177,7 @@ def test_successful_detach_advances_generation_to_wired(
     ledger = type("Ledger", (), {"generate_timestamp": lambda self: "now"})()
     monkeypatch.setattr(driver, "_ledger", lambda: ledger)
     monkeypatch.setattr(module, "set_wired", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(driver, "_start_generation_pump", lambda *_args: pump)
+    monkeypatch.setattr(driver, "_start_pump", lambda *_args: pump)
     monkeypatch.setattr(driver, "_start_owner_settle", lambda: settled.append(True))
 
     driver._accept_attach("detached")
@@ -202,12 +201,13 @@ def test_terminal_unwind_owns_spawn_result_before_acceptance(summon_db: Path) ->
     assert closed == [True]
 
 
-def test_transport_pump_has_no_broker_client_and_owner_rejects_stale_results(
+def test_transport_pump_has_no_broker_client_and_successor_ignores_retired_results(
     summon_db: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver = _owner(summon_db)
     stale = driver._activate_generation()
+    driver._retire_generation(stale)
     current = driver._activate_generation()
 
     class Handle:
@@ -219,9 +219,7 @@ def test_transport_pump_has_no_broker_client_and_owner_rejects_stale_results(
         pytest.fail("transport worker constructed a Taut client")
 
     monkeypatch.setattr(module, "TautClient", forbidden)
-    thread = threading.Thread(
-        target=driver._pump, args=(stale, Handle(), None, "unused")
-    )
+    thread = threading.Thread(target=driver._pump, args=(stale, Handle()))
     thread.start()
     thread.join(2)
     assert not thread.is_alive()

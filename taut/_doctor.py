@@ -24,11 +24,7 @@ from taut.persistence._components import (
     discover_components,
 )
 from taut.persistence._format import validate_core_records
-from taut.search._jobs import (
-    CLAIMED_QUEUE_NAME,
-    FAILED_QUEUE_NAME,
-    PENDING_QUEUE_NAME,
-)
+from taut.search._jobs import PENDING_QUEUE_NAME
 from taut.state import (
     DEBUG_CAPTURE_KEY,
     CoreSchemaInspectionError,
@@ -269,25 +265,15 @@ def _doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
 
         with open_broker(target, config=config) as broker:
             search_stats = {item.queue: item for item in broker.list_queue_stats()}
-        search_totals = {
-            "pending": search_stats.get(PENDING_QUEUE_NAME),
-            "claimed": search_stats.get(CLAIMED_QUEUE_NAME),
-            "failed": search_stats.get(FAILED_QUEUE_NAME),
-        }
+        pending = search_stats.get(PENDING_QUEUE_NAME)
         search_data: dict[str, object] = {
-            key: 0 if item is None else item.total
-            for key, item in search_totals.items()
+            "pending": 0 if pending is None else pending.total
         }
-        failed = bool(search_data["failed"])
         checks.append(
             _check(
                 "search_work",
-                "fail" if failed else "pass",
-                (
-                    "failed search work requires inspection"
-                    if failed
-                    else "search work queues have no failed rows"
-                ),
+                "pass",
+                "pending search work is informational",
                 search_data,
             )
         )

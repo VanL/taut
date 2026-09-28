@@ -113,16 +113,16 @@ def test_required_coverage_paths_rejects_ambiguous_checkout_suffixes(
     assert "ambiguous coverage data: 2 files match" in missing[0]
 
 
-def test_required_coverage_paths_includes_unique_mcp_rate_debit() -> None:
+def test_required_coverage_paths_includes_unique_mcp_token_binding() -> None:
     module = _load_module()
     path = "extensions/taut_mcp/taut_mcp/_process_reactor.py"
 
-    assert module.REQUIRED_MARKERS[Path(path)] == "self._bucket_tokens -= 1.0"
+    assert module.REQUIRED_MARKERS[Path(path)] == "if entry.token == token:"
     source = (PROJECT_ROOT / path).read_text(encoding="utf-8")
-    assert source.count("self._bucket_tokens -= 1.0") == 1
+    assert source.count("if entry.token == token:") == 1
 
 
-def test_required_coverage_paths_rejects_missing_mcp_rate_debit(
+def test_required_coverage_paths_rejects_missing_mcp_token_binding(
     tmp_path: Path,
 ) -> None:
     module = _load_module()

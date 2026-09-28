@@ -1766,7 +1766,7 @@ class BaseReactor(MultiQueueWatcher):
                 self._turn_active = False
                 should_finalize = self._stop_requested and not self._drive_loop_active
             if should_finalize:
-                self.stop(join=False)
+                self._finalize_run()
 
     def _process_reactor_turn(self) -> None:
         """Execute policy work for one reactor turn."""
@@ -2093,7 +2093,8 @@ class TautWatcher(BaseReactor):
         self.member_id = member_id
         self._user_handler = handler
         self._cursors: dict[str, int] = {}
-        self._failures: dict[tuple[str, int], int] = {}
+        self._pending_chat_handler_failure: Exception | None = None
+        self._failure_cause: Exception | None = None
         self._ready_event: threading.Event | None = None
         self._ready_after_initial_drain = False
         self._thread_filter = set(threads) if threads else None
@@ -2124,6 +2125,7 @@ class TautWatcher(BaseReactor):
                 **{
                     row.name: {
                         "handler": self._make_taut_handler(row.name),
+                        "error_handler": self._chat_error_handler,
                         "mode": QueueMode.PEEK,
                     }
                     for row in memberships
@@ -2155,6 +2157,12 @@ class TautWatcher(BaseReactor):
             name for name in super().list_queues() if name in self._chat_queue_names
         ]
 
+    @property
+    def failure_cause(self) -> Exception | None:
+        """Original chat handler failure, retained for the owning host's report."""
+
+        return self._failure_cause
+
     def notify_ready_after_initial_drain(self, event: threading.Event) -> None:
         """Signal ``event`` once the watcher has started and completed one drain."""
 
@@ -2171,6 +2179,8 @@ class TautWatcher(BaseReactor):
                 self._runtime_cleanup_done = True
             elif failure is None:
                 failure = runtime_failure
+            else:
+                failure.add_note(f"additional cleanup failed: {runtime_failure}")
         if failure is not None:
             raise failure
 
@@ -2200,30 +2210,26 @@ class TautWatcher(BaseReactor):
     ) -> Callable[[str, int, QueueMessageContext], None]:
         def handle(body: str, timestamp: int, _context: QueueMessageContext) -> None:
             message = self._runtime.decode_message(thread, body, timestamp)
-            failure_key = (thread, timestamp)
             try:
                 self._user_handler(message)
             except (StopWatching, WatcherRejected):
                 # Terminal sink failure is not poison content. Its error handler
                 # stops the reactor without advancing this durable chat cursor.
                 raise
-            except Exception:
-                count = self._failures.get(failure_key, 0) + 1
-                self._failures[failure_key] = count
-                if count >= 3:
-                    logger.warning(
-                        "advancing past poison message %s in %s after 3 failures",
-                        timestamp,
-                        thread,
-                    )
-                    self._advance(thread, timestamp)
-                    self._failures.pop(failure_key, None)
-                    return
+            except Exception as exc:
+                self._pending_chat_handler_failure = exc
                 raise
-            self._failures.pop(failure_key, None)
             self._advance(thread, timestamp)
 
         return handle
+
+    def _chat_error_handler(
+        self, exc: Exception, message: str, timestamp: int
+    ) -> bool | None:
+        if exc is self._pending_chat_handler_failure:
+            self._stop_requested = True
+            return False
+        return _taut_default_error_handler(exc, message, timestamp)
 
     def _advance(self, thread: str, timestamp: int) -> None:
         current = self._cursors.get(thread, 0)
@@ -2265,7 +2271,15 @@ class TautWatcher(BaseReactor):
                 # Only that typed rejection ends reconciliation; other errors escape.
                 return
             self._cursors[CACHE_STALE_QUEUE_NAME] = timestamp
-        super()._drain_queue()
+        try:
+            super()._drain_queue()
+        except StopWatching:
+            failure = self._pending_chat_handler_failure
+            if failure is None:
+                raise
+            self._pending_chat_handler_failure = None
+            self._failure_cause = failure
+            raise failure from None
         if not self._ready_after_initial_drain:
             self._ready_after_initial_drain = True
             if self._ready_event is not None:
@@ -2283,19 +2297,14 @@ class TautWatcher(BaseReactor):
                 self.add_queue(
                     thread,
                     self._make_taut_handler(thread),
+                    error_handler=self._chat_error_handler,
                     mode=QueueMode.PEEK,
                 )
                 self._chat_queue_names.add(thread)
         for thread in sorted(configured - current):
             self._remove_thread_queue(thread)
             self._cursors.pop(thread, None)
-            self._clear_failures_for_thread(thread)
 
     def _remove_thread_queue(self, thread: str) -> None:
         self.remove_queue(thread)
         self._chat_queue_names.discard(thread)
-
-    def _clear_failures_for_thread(self, thread: str) -> None:
-        stale_keys = [key for key in self._failures if key[0] == thread]
-        for key in stale_keys:
-            self._failures.pop(key, None)

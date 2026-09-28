@@ -24,7 +24,6 @@ from mcp.shared.exceptions import MCPError
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
 from ._process_reactor import (
-    RATE_LIMIT_EXCEEDED,
     ProcessReactor,
     WorkspaceToolError,
     canonical_json,
@@ -41,7 +40,6 @@ from ._version import SERVER_NAME, SERVER_VERSION
 NOTIFICATIONS_URI = "taut://notifications/current"
 TOOL_NAMES = frozenset(TOOLS_BY_NAME)
 INVALID_TOOL_ARGUMENTS = "invalid tool arguments; inspect the tool schema and retry"
-RATE_LIMIT_CODE = -31999
 
 if frozenset(RECORD_TYPE_BY_TOOL) != TOOL_NAMES:
     raise AssertionError("result type map must match the manifest")
@@ -60,7 +58,7 @@ INSTRUCTIONS = """1. Use list_workspaces to inspect process-local resident state
 12. Use message_show only when the exact 19-digit id is known and moving seen state is intended. It may mark unseen intervening history seen. Use log for cursor-neutral inspection. Returned 19-digit timestamps are already exact JSON strings and may be reused directly by JavaScript.
 13. Treat message_delete as blind-capable, physical, and irreversible. It deletes only the selected member's own ordinary message, does not retract fetched output, and does not cascade. Do not infer prior success from an empty retry after an uncertain outcome.
 14. message_react advances the actor's high-water cursor and attempts one atomic best-effort broadcast to the requested notification queues. A warning means the commit result may be uncertain; do not blind-retry.
-15. Standard resource updates are wake hints. Reread taut://notifications/current when one arrives. Use bounded backoff for workspace-busy or rate-limit errors.
+15. Standard resource updates are wake hints. Reread taut://notifications/current when one arrives. Use bounded backoff for workspace-busy errors.
 16. If a lazy or explicit ensure request is canceled or times out, wait up to 30 seconds, then call list_workspaces once. Reuse any ready canonical entry. Restart the server process only for the fixed stalled-reservation warning; do not spin attach/detach retries.
 17. After any canceled or transport-lost consuming or mutating call, inspect current Taut state before deciding whether a retry is safe. MCP cancellation is not transaction evidence."""
 
@@ -148,7 +146,6 @@ def create_server(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-018] exception
             return _error(INVALID_TOOL_ARGUMENTS)
         process = reactor(ctx)
         try:
-            process.charge_request()
             if name == "attach_workspace":
                 payload = await process.attach_workspace(
                     cast(str, arguments["workspace"]),
@@ -202,15 +199,6 @@ def create_server(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-018] exception
         if params.uri != NOTIFICATIONS_URI:
             raise _resource_not_found(ctx)
         process = reactor(ctx)
-        try:
-            process.charge_request()
-        except WorkspaceToolError as exc:
-            if str(exc) != RATE_LIMIT_EXCEEDED:
-                raise
-            raise MCPError(
-                code=RATE_LIMIT_CODE,
-                message=RATE_LIMIT_EXCEEDED,
-            ) from exc
         return types.ReadResourceResult(
             contents=[
                 types.TextResourceContents(

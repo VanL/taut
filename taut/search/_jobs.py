@@ -1,4 +1,4 @@
-"""Durable search work-item and claim primitives.
+"""Durable pending search invalidations.
 
 Spec references:
 - docs/specs/06-search.md [SRCH-8.1], [SRCH-8.2], [SRCH-9.2]
@@ -6,13 +6,10 @@ Spec references:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import secrets
-import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from collections.abc import Generator
+from dataclasses import dataclass
+from typing import Final, Literal
 
 from simplebroker import Queue
 from simplebroker.ext import TimestampError, TimestampGenerator
@@ -23,7 +20,6 @@ from taut._exceptions import ThreadNameError
 PENDING_QUEUE_NAME: Final[str] = "taut.search_index"
 CLAIMED_QUEUE_NAME: Final[str] = "taut.search_index.claimed"
 FAILED_QUEUE_NAME: Final[str] = "taut.search_index.failed"
-CLAIM_TIMEOUT_NS: Final[int] = 60_000_000_000
 
 StructuralErrorCode = Literal[
     "duplicate_field",
@@ -36,41 +32,12 @@ StructuralErrorCode = Literal[
     "not_object",
     "unexpected_fields",
 ]
-_ERROR_CODES: Final[frozenset[str]] = frozenset(
-    {
-        "duplicate_field",
-        "invalid_entity",
-        "invalid_rename",
-        "invalid_json",
-        "invalid_message_ts",
-        "invalid_thread",
-        "invalid_version",
-        "not_object",
-        "unexpected_fields",
-    }
-)
 _MESSAGE_FIELDS: Final[frozenset[str]] = frozenset(
     {"entity", "message_ts", "thread", "v"}
 )
 _RENAME_FIELDS: Final[frozenset[str]] = frozenset(
     {"affected", "entity", "new", "old", "v"}
 )
-_CLAIMS_DDL: Final[str] = """
-CREATE TABLE IF NOT EXISTS taut_search_claims (
-    job_ts     BIGINT PRIMARY KEY,
-    claimed_at BIGINT NOT NULL,
-    claimed_unix_ns BIGINT NOT NULL,
-    worker_id  TEXT NOT NULL,
-    lease_id   TEXT NOT NULL UNIQUE,
-    phase      TEXT NOT NULL
-)
-"""
-_HOUSEKEEPING_DDL: Final[str] = """
-CREATE TABLE IF NOT EXISTS taut_search_housekeeping (
-    key   TEXT PRIMARY KEY,
-    value BIGINT NOT NULL
-)
-"""
 
 
 class MalformedSearchJob(ValueError):
@@ -99,27 +66,6 @@ class ThreadRenameJob:
 
 
 SearchJob = MessageJob | ThreadRenameJob
-
-
-@dataclass(frozen=True, slots=True)
-class ClaimedJob:
-    """One exactly moved work row plus its durable lease evidence."""
-
-    body: str
-    job_ts: int
-    claimed_at: int
-    claimed_unix_ns: int
-    worker_id: str
-    lease_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ClaimRow:
-    claimed_at: int
-    claimed_unix_ns: int
-    worker_id: str
-    lease_id: str
-    phase: str
 
 
 def encode_message_job(*, message_ts: int, thread: str) -> str:
@@ -247,374 +193,37 @@ def decode_search_job(body: str) -> SearchJob:
     return decode_message_job(body)
 
 
-def sanitized_failure_body(
-    body: str,
-    *,
-    original_job_ts: int,
-    error_code: str,
-) -> str:
-    """Return content-free diagnostic JSON for one malformed claimed body."""
-
-    if not isinstance(body, str):
-        raise TypeError("search job body must be a string")
-    if error_code not in _ERROR_CODES:
-        raise ValueError("unknown search job structural error code")
-    encoded = body.encode("utf-8")
-    return json.dumps(
-        {
-            "error": error_code,
-            "original_job_ts": _validate_message_ts(original_job_ts),
-            "sha256": hashlib.sha256(encoded).hexdigest(),
-            "utf8_bytes": len(encoded),
-            "v": 1,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
 @dataclass(slots=True)
 class JobQueues:
-    """Caller-owned queues plus search-owned durable lease metadata."""
+    """Caller-owned pending invalidations. Source and index remain authoritative."""
 
     pending: Queue
-    claimed: Queue
-    failed: Queue
-    meta: Queue
-    worker_id: str = field(default_factory=lambda: secrets.token_hex(16))
-    clock_ns: Callable[[], int] = time.time_ns
-
-    def ensure_schema(self) -> None:
-        with self.meta.sidecar(transaction=True) as session:
-            session.run(_CLAIMS_DDL)
-            session.run(_HOUSEKEEPING_DDL)
 
     def enqueue_message(self, *, message_ts: int, thread: str) -> int:
         return self.pending.write(
             encode_message_job(message_ts=message_ts, thread=thread)
         )
 
-    def claim_one(self, *, exact_timestamp: int | None = None) -> ClaimedJob | None:
-        """Atomically move one pending row, then publish a fresh lease."""
-
-        moved = self.pending.move_one(
-            self.claimed,
-            exact_timestamp=exact_timestamp,
-            with_timestamps=True,
-        )
-        if moved is None:
-            return None
-        body, job_ts = moved
-        claimed_at = self.meta.generate_timestamp()
-        claimed_unix_ns = self.clock_ns()
-        lease_id = secrets.token_hex(16)
-        if not self._publish_claim(
-            job_ts=job_ts,
-            claimed_at=claimed_at,
-            claimed_unix_ns=claimed_unix_ns,
-            worker_id=self.worker_id,
-            lease_id=lease_id,
-        ):
-            return None
-        return ClaimedJob(
-            body=body,
-            job_ts=job_ts,
-            claimed_at=claimed_at,
-            claimed_unix_ns=claimed_unix_ns,
-            worker_id=self.worker_id,
-            lease_id=lease_id,
-        )
-
     def work_frontier(self) -> int | None:
-        """Capture the greatest pending or claimed job ID currently visible."""
+        """Capture a finite boundary without consuming work."""
 
-        latest: int | None = None
-        for queue in (self.pending, self.claimed):
-            after: int | None = None
-            while True:
-                rows = queue.peek_many(
-                    1000,
-                    with_timestamps=True,
-                    after_timestamp=after,
-                )
-                if not rows:
-                    break
-                latest = max(latest or 0, rows[-1][1])
-                after = rows[-1][1]
-        return latest
+        return self.pending.latest_pending_timestamp()
 
-    def pending_ids_through(self, frontier: int) -> tuple[int, ...]:
-        """Snapshot pending job IDs no newer than ``frontier``."""
+    def pending_rows_through(self, frontier: int) -> Generator[tuple[str, int]]:
+        """Read the captured work without claiming it."""
 
-        return tuple(
-            job_ts for _body, job_ts in self._queue_rows_through(self.pending, frontier)
-        )
-
-    def claimed_rows_through(self, frontier: int) -> tuple[tuple[str, int], ...]:
-        """Snapshot claimed bodies no newer than ``frontier`` for read-through."""
-
-        return self._queue_rows_through(self.claimed, frontier)
-
-    @staticmethod
-    def _queue_rows_through(
-        queue: Queue,
-        frontier: int,
-    ) -> tuple[tuple[str, int], ...]:
-        rows: list[tuple[str, int]] = []
         after: int | None = None
         while True:
-            page = queue.peek_many(
+            page = self.pending.peek_many(
                 1000,
                 with_timestamps=True,
                 after_timestamp=after,
                 before_timestamp=frontier + 1,
             )
             if not page:
-                break
-            rows.extend(page)
+                return
+            yield from page
             after = page[-1][1]
-        return tuple(rows)
-
-    def lease_matches(self, job_ts: int, lease_id: str) -> bool:
-        row = self._claim_row(job_ts)
-        return row is not None and secrets.compare_digest(row.lease_id, lease_id)
-
-    def remove_claim_if_lease(self, job_ts: int, lease_id: str) -> bool:
-        """Delete claim metadata only when the caller still owns its lease."""
-
-        with self.meta.sidecar(transaction=True) as session:
-            rows = list(
-                session.run(
-                    """
-                    DELETE FROM taut_search_claims
-                    WHERE job_ts = ? AND lease_id = ?
-                    RETURNING 1
-                    """,
-                    (job_ts, lease_id),
-                    fetch=True,
-                )
-            )
-        return bool(rows)
-
-    def acknowledge(self, job_ts: int, lease_id: str) -> bool:
-        """Make committed work terminal, then exact-delete its claimed row."""
-
-        if not self._mark_terminal(job_ts, lease_id):
-            return False
-        deleted = self.claimed.delete(message_id=job_ts)
-        self.remove_claim_if_lease(job_ts, lease_id)
-        return deleted
-
-    def reclaim_expired(
-        self, *, now: int | None = None, limit: int = 1000
-    ) -> list[int]:
-        """Return missing-lease or expired rows to pending without sleeps."""
-
-        if now is None:
-            now = self.clock_ns()
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        rows = self.claimed.peek_many(limit, with_timestamps=True)
-        reclaimed: list[int] = []
-        for _body, job_ts in rows:
-            if self._recover_claimed_job(job_ts=job_ts, now=now):
-                reclaimed.append(job_ts)
-        self.cleanup_orphan_claims(limit=limit)
-        return reclaimed
-
-    def _recover_claimed_job(self, *, job_ts: int, now: int) -> bool:
-        claim = self._claim_row(job_ts)
-        if claim is None:
-            return self._move_claimed_to_pending(job_ts)
-        if claim.phase == "terminal":
-            self.claimed.delete(message_id=job_ts)
-            self.remove_claim_if_lease(job_ts, claim.lease_id)
-            return False
-        if claim.phase == "active" and not _claim_expired(
-            claimed_unix_ns=claim.claimed_unix_ns,
-            now=now,
-        ):
-            return False
-        if claim.phase == "active" and not self._mark_reclaiming(job_ts, claim):
-            return False
-        moved = self._move_claimed_to_pending(job_ts)
-        self.remove_claim_if_lease(job_ts, claim.lease_id)
-        return moved
-
-    def quarantine(self, claim: ClaimedJob, *, error_code: str) -> bool:
-        """Write sanitized failure evidence before deleting malformed work."""
-
-        if not self.lease_matches(claim.job_ts, claim.lease_id):
-            return False
-        failure = sanitized_failure_body(
-            claim.body,
-            original_job_ts=claim.job_ts,
-            error_code=error_code,
-        )
-        self.failed.write(failure)
-        if not self._mark_terminal(claim.job_ts, claim.lease_id):
-            return False
-        deleted = self.claimed.delete(message_id=claim.job_ts)
-        self.remove_claim_if_lease(claim.job_ts, claim.lease_id)
-        return deleted
-
-    def cleanup_orphan_claims(self, *, limit: int = 1000) -> list[int]:
-        """Remove lease rows whose claimed queue row no longer exists."""
-
-        cursor = self._housekeeping_cursor("claim_cleanup")
-        rows = self._claim_cleanup_page(after=cursor, limit=limit)
-        if not rows and cursor:
-            cursor = 0
-            rows = self._claim_cleanup_page(after=cursor, limit=limit)
-        if rows:
-            self._set_housekeeping_cursor("claim_cleanup", int(rows[-1][0]))
-        elif cursor:
-            self._set_housekeeping_cursor("claim_cleanup", 0)
-        removed: list[int] = []
-        for raw_job_ts, raw_lease_id in rows:
-            job_ts = int(raw_job_ts)
-            if self.claimed.peek_one(exact_timestamp=job_ts) is not None:
-                continue
-            if self.remove_claim_if_lease(job_ts, str(raw_lease_id)):
-                removed.append(job_ts)
-        return removed
-
-    def _claim_cleanup_page(self, *, after: int, limit: int) -> list[tuple[Any, ...]]:
-        with self.meta.sidecar() as session:
-            return list(
-                session.run(
-                    """
-                    SELECT job_ts, lease_id
-                    FROM taut_search_claims
-                    WHERE job_ts > ?
-                    ORDER BY job_ts
-                    LIMIT ?
-                    """,
-                    (after, limit),
-                    fetch=True,
-                )
-            )
-
-    def _housekeeping_cursor(self, key: str) -> int:
-        with self.meta.sidecar() as session:
-            rows = list(
-                session.run(
-                    "SELECT value FROM taut_search_housekeeping WHERE key = ?",
-                    (key,),
-                    fetch=True,
-                )
-            )
-        return 0 if not rows else int(rows[0][0])
-
-    def _set_housekeeping_cursor(self, key: str, value: int) -> None:
-        with self.meta.sidecar(transaction=True) as session:
-            session.run(
-                """
-                INSERT INTO taut_search_housekeeping (key, value)
-                VALUES (?, ?)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                """,
-                (key, value),
-            )
-
-    def _publish_claim(
-        self,
-        *,
-        job_ts: int,
-        claimed_at: int,
-        claimed_unix_ns: int,
-        worker_id: str,
-        lease_id: str,
-    ) -> bool:
-        """Publish only into an empty claim slot; a late mover never wins."""
-
-        with self.meta.sidecar(transaction=True) as session:
-            rows = list(
-                session.run(
-                    """
-                    INSERT INTO taut_search_claims (
-                        job_ts, claimed_at, claimed_unix_ns,
-                        worker_id, lease_id, phase
-                    ) VALUES (?, ?, ?, ?, ?, 'active')
-                    ON CONFLICT (job_ts) DO NOTHING
-                    RETURNING 1
-                    """,
-                    (job_ts, claimed_at, claimed_unix_ns, worker_id, lease_id),
-                    fetch=True,
-                )
-            )
-        return bool(rows)
-
-    def _mark_terminal(self, job_ts: int, lease_id: str) -> bool:
-        """CAS active work into a state recovery will only acknowledge."""
-
-        with self.meta.sidecar(transaction=True) as session:
-            rows = list(
-                session.run(
-                    """
-                    UPDATE taut_search_claims
-                    SET phase = 'terminal'
-                    WHERE job_ts = ?
-                      AND lease_id = ?
-                      AND phase IN ('active', 'terminal')
-                    RETURNING 1
-                    """,
-                    (job_ts, lease_id),
-                    fetch=True,
-                )
-            )
-        return bool(rows)
-
-    def _mark_reclaiming(self, job_ts: int, claim: _ClaimRow) -> bool:
-        with self.meta.sidecar(transaction=True) as session:
-            rows = list(
-                session.run(
-                    """
-                    UPDATE taut_search_claims
-                    SET phase = 'reclaiming'
-                    WHERE job_ts = ?
-                      AND lease_id = ?
-                      AND phase = 'active'
-                      AND claimed_at = ?
-                    RETURNING 1
-                    """,
-                    (job_ts, claim.lease_id, claim.claimed_at),
-                    fetch=True,
-                )
-            )
-        return bool(rows)
-
-    def _move_claimed_to_pending(self, job_ts: int) -> bool:
-        moved = self.claimed.move_one(
-            self.pending,
-            exact_timestamp=job_ts,
-            with_timestamps=True,
-        )
-        return moved is not None
-
-    def _claim_row(self, job_ts: int) -> _ClaimRow | None:
-        with self.meta.sidecar() as session:
-            rows = list(
-                session.run(
-                    """
-                    SELECT claimed_at, claimed_unix_ns, worker_id, lease_id, phase
-                    FROM taut_search_claims
-                    WHERE job_ts = ?
-                    """,
-                    (job_ts,),
-                    fetch=True,
-                )
-            )
-        if not rows:
-            return None
-        row = rows[0]
-        return _ClaimRow(
-            claimed_at=int(row[0]),
-            claimed_unix_ns=int(row[1]),
-            worker_id=str(row[2]),
-            lease_id=str(row[3]),
-            phase=str(row[4]),
-        )
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -677,16 +286,8 @@ def _validate_affected(value: object) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
-def _claim_expired(*, claimed_unix_ns: int, now: int) -> bool:
-    return now - claimed_unix_ns >= CLAIM_TIMEOUT_NS
-
-
 __all__ = [
-    "CLAIMED_QUEUE_NAME",
-    "CLAIM_TIMEOUT_NS",
-    "FAILED_QUEUE_NAME",
     "PENDING_QUEUE_NAME",
-    "ClaimedJob",
     "JobQueues",
     "MalformedSearchJob",
     "MessageJob",
@@ -697,5 +298,4 @@ __all__ = [
     "decode_thread_rename_job",
     "encode_message_job",
     "encode_thread_rename_job",
-    "sanitized_failure_body",
 ]

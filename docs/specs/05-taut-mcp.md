@@ -192,9 +192,9 @@ it before command admission; when ensure creates a child, that child remains
 resident and becomes visible to `list_workspaces` and the notification
 resource before the domain command is dispatched.
 
-An exact ready workspace plus the same token fingerprint reuses the resident
+An exact ready workspace plus the same supplied token reuses the resident
 child without filesystem or database resolution. The same workspace plus a
-different fingerprint returns `workspace already attached; detach to replace
+different token returns `workspace already attached; detach to replace
 token`. A missing locator uses the existing hidden-seat, child resolution,
 stable-directory-identity, alias-arbitration, validation, and publication
 sequence. Concurrent ensure calls never create two published clients for one
@@ -220,17 +220,15 @@ only JSON/schema validity, operating-system absoluteness, and strict UTF-8
 encoding of the supplied locator and token strings; it performs no `stat`,
 config read, `realpath`, or other filesystem operation.
 
-Shared ensure admission has one fixed order: (1) protocol and JSON Schema validation;
-(2) [MCP-10] bucket charge; (3) master-only strict UTF-8 checks for locator and
-token in that order, absoluteness check, and only then exact-byte token digest
-computation; (4) one
+Shared ensure admission has one fixed order: (1) protocol and JSON Schema
+validation; (2) master-only strict UTF-8 checks for locator and token in that
+order, then the absoluteness check; (3) one
 non-awaiting master serial-point transition that first applies exact published-
-canonical lookup, then exact hidden-string lookup, direct-ready fingerprint
+canonical lookup, then exact hidden-string lookup, direct-ready token equality
 behavior, cap check for a missing
-path, and hidden-seat installation; and (5), only for a new seat, the
+path, and hidden-seat installation; and (4), only for a new seat, the
 non-awaiting queue/setup/start dispatch sequence below. Any earlier failure
-stops the sequence. No filesystem or child work moves before step 5, and no
-registry/admission state is inspected before the bucket charge.
+stops the sequence. No filesystem or child work moves before step 4.
 
 The candidate child first performs the same project/config resolution as a
 `TautClient` created from that explicit directory, without constructing the
@@ -281,7 +279,7 @@ paths are code-point-equal **or** both have usable directory identities and
 their `(st_dev, st_ino)` pairs are equal. They do not need to satisfy both
 predicates. Arbitration uses that match rule in one total order,
 stopping at the first match: (1) any published entry, applying [MCP-6]'s
-attach-column result (ready fingerprint success/conflict or the published
+attach-column result (ready token success/conflict or the published
 degraded/detaching status); (2) any non-retiring hidden candidate with stored
 matching metadata, returning `workspace busy; retry after backoff`; (3) any retiring
 candidate with stored matching metadata, also returning busy; or (4) no match,
@@ -301,8 +299,8 @@ client without a grant.
 Hidden `retiring` is the single cleanup state for every successfully started
 candidate that will not publish ready, except [MCP-4]'s published validation-
 timeout tombstone. Its transition into `retiring` sends candidate stop/control
-and one payload-free wake exactly once for that transition, deletes the hidden
-digest, retires the generation from grants and publication, and settles the
+and one payload-free wake exactly once for that transition, releases the hidden
+token, retires the generation from grants and publication, and settles the
 ensure result at the master serial point. Its
 causes include a no-validation-grant terminal, resolution timeout, ordinary
 resolution/config failure, and ordinary post-grant validation/backend/
@@ -314,7 +312,7 @@ cleanup.
 
 Every retiring entry retains its original locator, optional canonical
 metadata, cap seat, completion/queue references, path exclusion, and membership in
-the process join set until its owner callable clears the raw token, closes any
+the process join set until its owner callable closes any
 partial child-owned resources, and exits. The master then reaps it through the
 ordinary event-drain/liveness checks. The distinct
 `candidate_cleanup_deadline` is five monotonic seconds after entry, except a
@@ -338,14 +336,13 @@ protections above remain until observed exit.
 The ensure serial point has two disjoint terminal branches. If the request
 started a candidate and therefore has a hidden seat for its generation, every
 no-validation-grant outcome, including same-token success, enters `retiring`:
-it sends stop/control and one payload-free wake for that transition, deletes
-the hidden digest, and retains the cap/path/join seat until owner exit. If the
+it sends stop/control and one payload-free wake for that transition, releases
+the hidden token, and retains the cap/path/join seat until owner exit. If the
 initial exact published-canonical lookup resolves the request before any seat
 or child exists, ready same-token success, ready different-token conflict, and
-direct degraded/detaching results perform no child stop or cleanup work; they
-remove only the transient request digest and master raw-token reference from
-live reactor state before settling the result. A caught internal traceback may
-retain those request values as described by [MCP-10]. An implementation must
+direct degraded/detaching results perform no child stop or cleanup work. A
+caught internal traceback may retain request values as described by [MCP-10].
+An implementation must
 not send direct published hits
 through the hidden-candidate cleanup branch or remove a started losing seat
 before its owner exits.
@@ -377,7 +374,7 @@ exposes the canonical identifier.
 
 The canonical string from the winning ready entry is the stable workspace
 identifier returned to the client. Identity-using callers should reuse it:
-an exact ready-key lookup plus matching token fingerprint is the no-I/O fast
+an exact ready-key lookup plus matching token is the no-I/O fast
 path. An identity-using call may instead supply another absolute locator. If
 that string is not an exact published key, it enters the same candidate
 resolution and stable-directory-identity arbitration as explicit attach; an
@@ -405,7 +402,7 @@ detach a workspace or wait for cleanup`.
 After the master-only string checks, each identity-using ensure enters the process
 serial point, atomically checks exact-locator provisional conflicts and then
 the cap, installs one hidden reservation with a new generation and the
-request-token digest specified below, and leaves the serial point before
+supplied token string, and leaves the serial point before
 starting resolution on the candidate child. An
 exact-locator ensure while that provisional candidate exists receives
 `workspace busy; retry after backoff`, unless the same string is already an exact published
@@ -452,7 +449,7 @@ resolver, import internal queue-name derivation, decode raw notification
 bodies, or move either operation to the master thread. The master never
 validates through or uses that client. An ordinary failure before publication reports its fixed
 error and enters the shared hidden `retiring` state before the response is
-settled. The owner thread closes partial state and clears its raw token; the
+settled. The owner thread closes partial state; the
 reservation and path exclusion remain until observed thread exit, then reap
 leaves no published registry state. Thus even an ordinary post-grant failure
 cannot overlap a second client during close. Successful validation
@@ -468,7 +465,7 @@ uncertain queued or already-running callable's first handshake. That callable
 has never received `Bootstrap`: it cannot resolve a workspace, read configuration,
 or open a client. It only consumes stop and returns; executor worker retirement
 remains the library's concern, and later attachments may reuse the executor.
-The master removes the hidden reservation and drops digest/token references,
+The master removes the hidden reservation and its token reference,
 returning the fixed attachment failure. MCP cancellation cannot interleave
 inside this sequence. Before dispatch there is no owner execution; after
 successful submission/publication the phase deadline and child outcome own the
@@ -506,40 +503,13 @@ token. A different token conflicts until the workspace is detached. A
 degraded or detaching entry must finish detachment before any reattachment;
 no token can create a second generation while an earlier child might still
 be live. Tokens are scoped to their selected Taut database; equality of
-token text across databases has no cross-workspace meaning. For a ready
-entry, the process registry retains only SHA-256 of the exact UTF-8 bytes
-of the supplied token string, with no trimming or Unicode normalization. It
-computes the raw 32-byte digest on the master for every ensure request,
-stores it when a hidden reservation is admitted, and compares digests with
-`hmac.compare_digest`,
-transfers that same digest atomically into a successful ready publication,
-and never outputs or persists it. That hidden digest is what makes
-alias-versus-ready arbitration possible before a validation grant. It is
-an invariant that removing any hidden seat deletes its digest in the same
-master transition. Every entry into shared `retiring` cleanup deletes the
-digest in that transition, covering every no-validation-grant terminal, resolution timeout,
-and ordinary pre- or post-grant failure while its seat remains. Cancellation
-before dispatch and child-start rollback delete the digest with immediate seat
-removal. Validation timeout/tombstone deletes it during canonical publication.
-Ready transfer is the sole hidden-seat transition that preserves
-the same digest. Live fingerprints are required invariants; absence in a
-live state is an internal assertion failure, not an attachment-recovery branch. Clean detach, identity loss, or reactor
-failure deletes the ready digest; degraded entries never compare
-fingerprints. The process reactor removes its raw-token reference from live
-reactor state immediately after successful candidate executor submission,
-completing a direct ready-entry fingerprint comparison, or completing rollback.
-SDK- or host-owned request copies remain the exposure described by [MCP-10].
-Caught internal exception traceback frames may retain a request token or
-fingerprint until traceback collection; this is allowed local debugging state,
-not a persistent or externally emitted copy.
-Any transient request digest not transferred into a hidden seat or ready entry
-is removed from live reactor state before its result is settled, including
-direct-ready idempotent success and different-token conflict.
-Any charged master-side rejection that installs no hidden seat, including
-exact-hidden busy, cap exhaustion, direct degraded/detaching status, or a
-path/token semantic failure, removes its transient request digest and raw-token
-reference from live reactor state before returning the fixed result. A caught
-traceback may retain the rejected request values as described by [MCP-10].
+token text across databases has no cross-workspace meaning. The process
+registry retains the exact supplied string on a hidden or ready owner and
+compares ordinary string equality, without trimming or normalization.
+Publication transfers that owner value to the ready entry. Retirement
+releases it with the owning entry. Expected diagnostics and protocol results
+do not echo tokens. SDK- or host-owned copies and caught internal traceback
+frames remain outside Taut's process-state retention contract.
 
 One immutable member id is bound independently to each ready resident
 workspace. Member rename does not change it. `attach_workspace` and every
@@ -548,14 +518,11 @@ continuity token and no name, member id, or alternative identity selector.
 `detach_workspace` carries only the exact canonical workspace because it
 performs no Taut identity operation.
 
-Request decoding and the process reactor may hold host-owned raw token
-strings temporarily. After candidate executor submission, the process reactor
-drops its raw reference and keeps only the exact-byte SHA-256 fingerprint
-needed for resident-binding comparison. The workspace child clears its
-bootstrap envelope and local request copy after validation. Its one canonical
-`TautClient` retains the constructor token required by core public operations
-until detach, terminal loss, or process teardown. No second token-bearing
-client or adapter identity cache is created.
+Request decoding and the process reactor may hold the supplied token string.
+The workspace child validates it and its one canonical `TautClient` retains
+the constructor token required by core public operations until detach,
+terminal loss, or process teardown. No second token-bearing client or adapter
+identity cache is created.
 
 `detach_workspace` rejects a workspace whose parent admission slot is
 occupied, regardless of public status, with `workspace busy; retry after backoff`. A hidden
@@ -567,7 +534,7 @@ and wake; no later ordinary command can enter that generation. The aggregate
 publishes the `detaching` state with an empty notification list. Successful
 detach requires the master to observe owner execution completion within five seconds.
 In its `finally`, the child closes its `TautClient` and every SimpleBroker
-queue, clears its token, drops its reference to the in-memory inbound queue,
+queue, drops its reference to the in-memory inbound queue,
 puts a final owner-stopped event when possible, and returns. The event wakes
 the master but is not success by itself. Detach installs a master-owned phase
 latch and an absolute five-second monotonic deadline. Receipt of
@@ -579,15 +546,15 @@ pending installs the timeout outcome. The first transition at the
 master serial point completes the detach future exactly once; later wakes,
 checks, and deadline callbacks are no-ops. The master never calls `join()` on
 its event-loop thread. On success it removes the registry entry, drops parent
-queue/completion references, updates the aggregate resource, and forgets the
-fingerprint. The process-owned event queue remains live for other
+queue/completion references, updates the aggregate resource, and releases the
+resident token. The process-owned event queue remains live for other
 children. The returned detached record retains the last bound member id. A
 missing workspace is a successful idempotent no-op.
 
 If child teardown misses five seconds, the entry changes to
 `reactor_failed`, its generation is retired for routing and event handling,
 and the tool returns an error; other workspaces remain usable. The parent
-forgets the fingerprint, while the stalled child may retain the raw token
+releases its token, while the stalled child may retain the raw token
 until that owner thread exits or the process ends. No attach can replace the
 entry or create another client for that canonical path. A later
 `detach_workspace` atomically changes `reactor_failed` back to `detaching`,
@@ -622,7 +589,7 @@ Identity bootstrap remains an ordinary Taut task.
 
 If an out-of-band change removes a bound member or invalidates its continuity
 claim, only that workspace becomes `identity_lost`. Its reactor stops database
-work, clears its raw token, retains a content-free status entry, and rejects
+work, retains a content-free status entry, and rejects
 ordinary tools until detach and reattach with a valid token. Other workspaces
 and the MCP process remain usable. A command that discovers identity loss
 sends one completion event containing the `isError` outcome, the
@@ -838,14 +805,14 @@ Input schemas carry no `$schema` key.
 | `inbox` | `workspace: string`, `token: string`, `limit: integer` | `workspace`, `token` | lazily ensures the workspace if needed; default 1,000; range 1..1,000 |
 | `log` | `workspace: string`, `token: string`, `thread: string`, `since: string, integer, or null`, `limit: integer` | `workspace`, `token`, `thread` | lazily ensures the workspace if needed; default limit 100; range 1..1,000; DM log is actor-scoped, cursor-neutral, and activity-neutral |
 | `search` | `workspace: string`, `token: string`, `query: string`, `channels: array[string]`, `direct_messages: array[string]`, `all_direct_messages: boolean`, `from_member: string or null`, `kinds: array[message\|notice\|foreign]`, `before: string or null`, `limit: integer`, `reindex: boolean` | `workspace`, `token`, `query` | lazily ensures the workspace; freezes every selector array to a tuple; calls `TautClient.search` once with defaults `[]`, `[]`, false, null, `[]`, null, 50, false; adds no retry or post-filter |
-| `list` | `workspace: string`, `token: string`, `all: boolean`, `dms: boolean` | `workspace`, `token` | lazily ensures the workspace if needed; both booleans default false; `all && dms` is rejected before child dispatch; `dms=true` calls `TautClient.list_direct_messages()` |
+| `list` | `workspace: string`, `token: string`, `all: boolean`, `dms: boolean` | `workspace`, `token` | lazily ensures the workspace if needed; both booleans default false; `all && dms` is rejected before child dispatch; selects the public list API with `include_unread_counts=False` |
 | `channel_rename` | `workspace: string`, `token: string`, `old_name: string`, `new_name: string` | all | lazily ensures the workspace if needed; channel rename only |
 | `who` | `workspace: string`, `token: string`, `thread: string or null` | `workspace`, `token` | lazily ensures the workspace if needed; retains core read-only selection and computed-presence semantics |
 | `whoami` | `workspace: string`, `token: string` | both | lazily ensures the workspace if needed; fixed `explain=False`; read-only selection does not touch activity or heal a claim |
 
 The application compiles one Draft 2020-12 validator from each exact
-advertised input schema and validates `tools/call` arguments before bucket
-charge. If the SDK supplies omitted `arguments` as `None`, the shared adapter
+advertised input schema and validates `tools/call` arguments. If the SDK
+supplies omitted `arguments` as `None`, the shared adapter
 normalizes it to `{}` before validation; no other value is coerced.
 `list_workspaces` therefore accepts omitted or explicit-empty arguments,
 while a tool with required properties returns the ordinary schema-invalid
@@ -857,7 +824,7 @@ expose the rejected value or validator exception. An unknown tool, malformed
 MCP envelope, or invalid protocol metadata remains an SDK-owned protocol
 error, not this tool result.
 
-After validation and bucket charge, shared routing consumes `workspace` and
+After validation, shared routing consumes `workspace` and
 `token`. It passes both to `ensure_workspace`, then removes both from the
 domain-command argument mapping. The raw token never appears in a
 master-to-child domain-command envelope, result, or fixed error.
@@ -907,15 +874,8 @@ atomic admission step. Detach marks an entry `detaching` at the same serial
 point before it requests child stop. `list_workspaces` snapshots only fully
 published entries at that serial point, so neither it nor ordinary routing
 observes a half-published attach. The applicable no-wait slot is checked
-only after the [MCP-10] process token bucket. Immediately after protocol
-and JSON Schema validation, every tool request atomically consumes one bucket
-token before semantic path checks, registry/status lookup, lifecycle
-transition, or parent-slot reservation. This includes busy, missing,
-degraded, conflict, cap, path, and idempotent/no-op results and prevents every
-schema-valid retry loop from spinning for free. If the bucket is empty, the
-request returns the applicable rate-limit error without inspecting or
-changing registry/admission state and without dispatch. Protocol/schema
-rejection occurs before this policy and consumes no token.
+at this serial point after request validation. There is no process-wide
+request quota; workspace slots and the resident cap remain admission bounds.
 
 Request cancellation is a queued control input and never a rollback
 boundary. The child keeps the existing cancel-before-start boundary and
@@ -945,9 +905,8 @@ completion order: await the child event; if its generation is still current,
 install the outcome's status and notification snapshot and recompute the
 aggregate; free the parent admission slot; then either hand the outcome to a
 live transport or discard it after cancellation/disconnect. The workspace remains
-busy through snapshot installation even after its requester cancels. An
-admitted command consumes its [MCP-10] bucket token with no refund after
-cancellation. A caller must inspect the selected workspace's current Taut
+busy through snapshot installation even after its requester cancels.
+A caller must inspect the selected workspace's current Taut
 state before retrying an interrupted consuming or mutating call. SDK
 cancellation behavior, including the absence of a canceled stdio response, must be proven
 at the stdio protocol boundary. `channel_show` carries the child's already
@@ -1051,7 +1010,7 @@ attachment returns the same record. Detach returns the prior record with
 published entries.
 Workspace status is one of `ready`, `detaching`, `identity_lost`,
 `reactor_failed`, or `detached`. `backend` is the non-secret backend name
-only; output never includes a token, token fingerprint, DSN, backend target,
+only; output never includes a token, DSN, backend target,
 config contents, or aliases for the workspace path. Write and thread
 membership tools return their primary record: for example `join` and `leave`
 return the notice message, and `channel_rename` returns the renamed thread.
@@ -1188,9 +1147,9 @@ The registry/status routing matrix is normative:
 | `ready`, parent admission slot free | CLI-shaped command dispatches; attach returns existing record | `workspace already attached; detach to replace token` | begin one detach |
 | `ready`, parent admission slot occupied | CLI-shaped command returns `workspace busy; retry after backoff`; attach returns the existing record | `workspace already attached; detach to replace token` | `workspace busy; retry after backoff` |
 | `detaching` | `workspace busy; retry after backoff` | same | `workspace busy; retry after backoff`; do not send another stop/wake |
-| `identity_lost` | `workspace identity lost; detach and reattach` | same | begin detach; no token or fingerprint is required |
-| `reactor_failed` | `workspace reactor failed; detach and reattach` | same | run [MCP-4]'s bounded retry-detach; no token or fingerprint is required |
-| validation-timeout tombstone | `workspace attach timed out; use list_workspaces then detach` | same | run [MCP-4]'s bounded retry-detach; no token or fingerprint is required |
+| `identity_lost` | `workspace identity lost; detach and reattach` | same | begin detach; no token is required |
+| `reactor_failed` | `workspace reactor failed; detach and reattach` | same | run [MCP-4]'s bounded retry-detach; no token is required |
+| validation-timeout tombstone | `workspace attach timed out; use list_workspaces then detach` | same | run [MCP-4]'s bounded retry-detach; no token is required |
 
 Attach and CLI-shaped calls accept any absolute locator and may enter
 resolution. `detach_workspace` first performs exact published-canonical
@@ -1201,9 +1160,7 @@ cached state.
 
 Legacy resource-not-found responses use JSON-RPC `-32002`; modern responses
 use `-32602`. The adapter chooses that protocol-owned code through the
-SDK-owned era context, never a domain branch. Application resource-read rate
-limiting uses `-31999` (`RateLimited`), outside JSON-RPC's
-`-32768..-32000` reserved range. The extension allocates no new code in
+SDK-owned era context, never a domain branch. The extension allocates no new code in
 legacy `-32000..-32019` or MCP-owned `-32020..-32099`.
 
 ## 7. Current Notifications Resource [MCP-7]
@@ -1402,7 +1359,7 @@ producer. To bound ordinary event production, a child's native notification
 wakes only set a child-local dirty flag after that child has emitted a
 snapshot; native-only snapshot events are emitted at most once per 0.5-second
 observation interval. Command-completion and lifecycle-terminal events remain
-immediate. The process token bucket bounds command completions, while the
+immediate. Per-workspace admission bounds concurrent command work, while the
 eight-seat cap bounds native-only snapshot production. A master loop that is
 itself unable to drain remains a process-local memory residual and a
 process-reactor failure, not a reason to block a child `put_nowait`.
@@ -1455,7 +1412,7 @@ for the candidate child to resolve and receive its master grant, then to
 construct its client, validate identity, and publish its first completed
 snapshot. The process reactor
 atomically replaces the matching generation reservation with the ready entry,
-installs its fingerprint, and recomputes the aggregate. Detach atomically
+installs its token, and recomputes the aggregate. Detach atomically
 marks the entry `detaching` and non-routable
 before requesting stop, then removes it only after observed owner execution completion;
 a
@@ -1476,7 +1433,7 @@ A healthy child confirms cursor-qualified source rows through the shared
 watcher and schedules a paced `TautClient.peek_inbox()` snapshot. It claims no
 pointer, advances no durable chat or notification cursor, creates or heals no
 identity, records no acknowledgement, touches no member activity, and changes
-no member anchor or fingerprint. Its source cursors are in-memory readiness
+no member anchor or token comparison. Its source cursors are in-memory readiness
 bookmarks only. If this peek
 reports the promoted core API's missing-member identity
 error, the child emits the same atomic `identity_lost` status and empty
@@ -1595,7 +1552,7 @@ initialization and modern discovery. They require:
     warning means the commit result may be uncertain; do not blind-retry.
 15. Standard resource updates are wake hints. Reread
     `taut://notifications/current` when one arrives. Use bounded backoff for
-    workspace-busy or rate-limit errors.
+    workspace-busy errors.
 16. If a lazy or explicit ensure request is canceled or times out, wait up to
     30 seconds, then call `list_workspaces` once. Reuse any ready canonical
     entry. Restart the server process only for the fixed stalled-reservation
@@ -1634,18 +1591,16 @@ keying, file-authority, redaction, and host-compatibility contract; it is not
 inferred from core CLI environment rules.
 
 Each request host may temporarily hold its supplied token string. The process
-reactor computes only the exact-byte SHA-256 fingerprint needed for resident
-binding comparison and removes the raw-token and transient-digest references
-from live reactor state after their owner transition. The child validates the
-raw token and clears its bootstrap envelope and local request copy. The one
-child-owned `TautClient` retains its constructor token because core public
-operations use it for continuity; that canonical client is not a second host
-copy. Caught internal exception traceback frames may retain request tokens or
-fingerprints temporarily because that context can aid local debugging. Core
-Taut member storage retains the existing continuity token; `taut-mcp` persists
-no additional request-token copy or fingerprint. Expected attachment failures
-do not return or log request tokens or fingerprints, place them in fixed
-diagnostics, serialize them to protocol output, or emit them to stderr.
+reactor retains the exact supplied string on its hidden or ready owner and
+compares it by ordinary Python string equality. The child validates the raw
+token. Its one canonical `TautClient` retains its constructor token because
+core public operations use it for continuity. Retiring an owner releases the
+process-owned token reference with that owner. There is no fingerprint,
+cryptographic comparison, live-frame scrubbing, or zeroization contract.
+Core Taut member storage retains the existing continuity token; `taut-mcp`
+persists no additional token copy. Expected attachment failures do not echo
+request tokens in diagnostics, protocol output, or stderr. SDK- and host-owned
+copies and caught traceback frames may retain the supplied value.
 
 An attachment path grants the server the same local project access that a
 separately configured `TautClient` would have. The server provides no sandbox
@@ -1670,30 +1625,9 @@ The master serial point and no-wait parent admission slots in [MCP-5] permit
 at most one command per workspace while allowing different workspaces to
 progress concurrently.
 
-One process-wide in-memory token bucket covers all 21 schema-valid tool calls
-and successful direct reads of the fixed aggregate resource across both
-protocol eras: capacity 40, refill 20 operations per second. The process
-reactor owns a continuous monotonic-time bucket initialized to 40.0. On each
-charged attempt at time `now`, it sets
-`tokens = min(40.0, tokens + max(0, now - last) * 20.0)` and `last = now`;
-if `tokens >= 1.0` it subtracts exactly 1.0 and admits policy evaluation,
-otherwise it rejects without subtraction. Refill uses no timer.
-
-A tool token is charged immediately after successful application schema
-validation and before UTF-8/path checks, ensure lookup, registry/admission
-inspection, or dispatch. It is never refunded for busy, degraded, conflict,
-cap, path, idempotent/no-op, cancellation, disconnect, or domain outcomes.
-A successful request for `taut://notifications/current` is charged before
-reading cached text. Protocol/envelope/schema rejection, unknown
-tool/resource protocol errors, legacy initialization/ping/list/subscription
-methods, modern discovery/list/listen subscription work, child recomputes,
-child-to-parent events, and server-owned notifications are free.
-
-Exhausted tools return the fixed `isError` text `rate limit exceeded; retry
-after backoff`. An exhausted resource read returns application JSON-RPC error
-`-31999` (`RateLimited`) with the same text. The bucket is loop-damage
-control, not access control; aggressive resource polling may throttle later
-tool admission. It is not configurable and resets only with the process.
+There is no process-wide request-rate bucket. Repeated reads of the cached
+notification resource do not consume an admission quota for later tool calls.
+The per-workspace busy slot and resident cap remain enforced.
 Core message-size, name, limit, and text validation remains authoritative.
 MCP framing remains SDK-owned and Taut adds no frame-size limit. A real stdio
 continuity probe sends one newline-delimited, schema-invalid JSON-RPC tool-call
@@ -1717,7 +1651,7 @@ contaminate stdout framing.
 
 Identity loss and uncaught child failures remain isolated to one workspace.
 The process reactor records the terminal status, clears its notification
-snapshot and ready fingerprint, rejects identity-using calls until exact
+snapshot and ready token, rejects identity-using calls until exact
 canonical detach, and leaves other children usable. A detach-timeout child
 follows [MCP-4]'s retired-generation and retry-detach rule; no second client
 for its canonical path may start while that failed entry remains. Once
@@ -1896,14 +1830,9 @@ Required proof includes:
   acknowledgment, subscription-id correlation, two concurrent listeners,
   listener cancellation, graceful server closure, and proof that legacy and
   modern delivery trackers cannot suppress each other;
-- application rate limiting uses `-31999`; no new extension-defined error
-  uses `-32768..-32000`, and no undefined MCP-owned code is emitted;
-- deterministic fake-clock proof covers capacity 40, refill 20/second, the
-  exact continuous monotonic refill/cap/one-token formula, schema-before-rate
-  and rate-before-semantic ordering, every charged busy/degraded/conflict/
-  cap/path/no-op/canceled/disconnected outcome, no refund, every free protocol
-  and server-owned path, process-reset behavior, successful fixed-resource
-  reads, and deliberate later-tool starvation under abusive resource polling;
+- a burst of fixed-resource reads followed by a valid tool call remains
+  available without an application quota error; workspace busy and resident
+  cap still enforce their independent admission bounds;
 - a modern client that never initializes exercises the child-to-master wake
   bridge, notification update, ordinary tool future, and clean shutdown on
   the lifespan-captured loop; a regression to a sync handler fails this test.
@@ -1927,7 +1856,7 @@ Required proof includes:
   eligible exact row, `inbox`
   claims pointers, and `list`/`who`/`whoami` retain their declared read-only
   identity behavior; attach validation reads an existing member without identity,
-  claim, activity, anchor, or fingerprint mutation
+  claim, activity, or anchor mutation
 - exact `channel_show` and `channel_topic` schema, description,
   annotation, dispatch, and result proofs. Schema probes include missing
   fields, additional properties, null clear, blank/Cf-only core rejection,
@@ -1945,14 +1874,14 @@ Required proof includes:
   closed channel/DM/subthread discriminated union through both `list` and
   `channel_rename`.
 - real SQLite and PostgreSQL state probes for `list`, `who`, and `whoami`:
-  start from a stable existing-member anchor, token fingerprint, computed
+  start from a stable existing-member anchor, supplied token, computed
   presence, and activity timestamp; call each tool through its ordinary
-  existing-member path; prove `last_active_ts`, anchor, token fingerprint,
+  existing-member path; prove `last_active_ts`, anchor, token,
   claim rows, and computed presence are byte-for-byte or value-for-value
   unchanged. The test must fail if any activity, identity, claim, or presence
   machinery is touched
 - every cell of [MCP-6]'s status-by-operation routing matrix, including ready
-  same/different fingerprints, ordinary access to a hidden candidate,
+  same/different tokens, ordinary access to a hidden candidate,
   identity-lost attach, second detach during `detaching`, and retry-detach for
   every `reactor_failed` origin
 - real workspace-reactor command, refresh, snapshot, and outer-loop unexpected
@@ -2069,9 +1998,8 @@ Required proof includes:
   unavailable-directory-identity, fixed absolute-path rejection for empty/
   relative/cwd-relative locators, invalid-token-UTF-8, missing/invalid token,
   backend, cap, same-token idempotence, and different-token conflict cases;
-  fixed content-free attachment-error mapping; exact-byte fingerprint behavior
-  including normalization-distinct tokens; code inspection confirming direct
-  `hmac.compare_digest` use rather than a timing test; no revalidation on ready
+  fixed content-free attachment-error mapping; exact string equality including
+  normalization-distinct tokens; no revalidation on ready
   idempotent attach; and single-flight first attach
 - ambient-identity isolation: with conflicting process-wide `TAUT_AS` and
   `TAUT_TOKEN` values, attachment still validates and operates as the member
@@ -2095,17 +2023,17 @@ Required proof includes:
 - concurrent alias ensures for one directory identity, including
   first-resolution-event wins, no second validation grant/client, alias
   discovery consuming a provisional seat, and
-  cap exhaustion before alias discovery; the hidden seat's digest is available
+  cap exhaustion before alias discovery; the hidden seat's token is available
   for alias-versus-ready same-token success, different-token conflict, and
   degraded/detaching collision; every no-validation-grant terminal sends exactly one
-  stop/wake, deletes its digest, retains a cap-counted retiring seat/process
-  join entry until observed owner exit, clears the child token, and is reaped;
+  stop/wake, releases its token, retains a cap-counted retiring seat/process
+  join entry until observed owner exit and is reaped;
   a forced stuck-cleanup case reaches the five-second warning without blocking
   another workspace; during retirement the alias locator is busy but an exact
   published canonical key takes precedence and remains usable; ready
-  publication transfers the digest; seven concurrent alias-idempotent results
+  publication transfers the token; seven concurrent alias-idempotent results
   beside one ready entry deliberately exhaust all eight seats until reap; and every other
-  enumerated exit deletes it
+  enumerated exit releases it
 - published-seat identity retention and OR matching: publish under one
   canonical spelling, then resolve another spelling with a different
   `realpath` string but the same usable `(st_dev, st_ino)` and prove the
@@ -2199,7 +2127,7 @@ Required proof includes:
   that resource reads cause no pointer, cursor, identity, activity,
   acknowledgement, attachment, or edge-tracker mutation, and elapsed-time
   proof that repeated child peeks do not change activity, member anchors, or
-  fingerprints; removing
+  tokens; removing
   the bound member makes core peek raise its existing identity error and makes
   the child publish `identity_lost` without recreating the member; a later
   owner exit settles any occupied command but does not replace that public
@@ -2240,8 +2168,8 @@ Required proof includes:
   discarded; neither order reads parent reactor state, mutates a shared cancel
   flag, leaks the admission slot, or completes the command id twice
 - cancellation before the non-awaiting resolution-dispatch sequence leaves no
-  started thread, queue reference, reservation, digest, or token reference;
-  queue setup/executor submission failure removes the reservation and secrets;
+  started thread, queue reference, or reservation; queue setup/executor
+  submission failure removes the reservation;
   actual native thread-start failure leaves an unadmitted callable with only
   Stop, whether still queued or already claimed by an existing worker, never
   filesystem/client authority; a later attachment succeeds; cancellation after
@@ -2249,32 +2177,22 @@ Required proof includes:
 - a candidate crash before emitting an ordinary resolution/validation outcome
   returns fixed `workspace attachment failed; use list_workspaces before
   retrying`, enters retiring, and is reaped
-- every charged semantic/serial rejection that installs no seat removes the
-  transient digest and parent raw-token reference from live reactor state,
-  including invalid path/token, exact-hidden busy, cap, and direct degraded/
-  detaching outcomes; caught internal traceback frames may retain request
-  values
-- direct-ready same-token success and different-token conflict remove the
-  transient request digest from live reactor state before result settlement
-  because neither transfers it into a new hidden or ready entry
+- semantic/serial rejection that installs no seat returns the fixed error
+  without token echo, including invalid path/token, exact-hidden busy, cap,
+  and direct degraded/detaching outcomes
+- direct-ready same-token success and different-token conflict retain one
+  published owner and return fixed result shapes without token echo
 - separate attach-terminal branches: direct published ready/degraded/
   detaching hits create no hidden seat or child and perform no stop, while a
   started alias candidate that reaches the same published outcomes always
   sends one retiring stop/wake and remains cap-counted until owner exit
 - per-workspace identity loss and child fault isolation, content-free degraded
   entries, atomic identity-loss result/status/snapshot ordering, healthy-child
-  continuity, process-reactor fatal exit, and deterministic process-wide
-  tool/resource token-bucket refill/exhaustion, including resource error code
-  `-31999`, exact continuous monotonic refill/cap/one-token formula, charging
-  before UTF-8/absolute-path and registry/admission state for every schema-valid
-  busy, missing, degraded, conflict, cap, path, idempotent/no-op, and dispatched
-  call, no state change when the bucket is empty, no refund for admitted
-  pre-start cancellation, and deliberate tool starvation under abusive
-  resource polling
+  continuity, process-reactor fatal exit, and resource-read bursts that do not
+  reject a following valid tool call
 - continuity-token non-echo across every server-owned output and diagnostic,
-  live per-request process/bootstrap-copy lifetime, allowed caught internal
-  traceback retention, canonical child
-  `TautClient` constructor-token retention, parent-only fingerprint lifecycle,
+  allowed caught internal traceback retention, canonical child
+  `TautClient` constructor-token retention, resident token equality,
   no raw token in a domain-command envelope, explicit
   host-transcript exposure guidance, DSN/participant redaction, and hostile
   workspace paths kept out of stderr/control templates
@@ -2308,7 +2226,8 @@ release-byte owner; the MCP tag gate publishes those bytes to PyPI and GitHub
 without rebuilding. The same root workflow owns one MCP `not pg_only` coverage producer in
 its root system environment and combines that named shard into the existing
 same-run report; root coverage source includes `taut_mcp`, and the required
-unique rate-admission marker makes a missing, empty, or path-misconfigured shard
+MCP resident-token equality marker makes a missing, empty, or
+path-misconfigured shard
 fatal. Live MCP PostgreSQL behavior remains owned by the required canonical MCP
 compatibility workflow.
 
@@ -2331,6 +2250,10 @@ wheel to register its `mcp` manifest.
 | [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, `extensions/taut_mcp/tests/test_stdio_server.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
 
 ## Related Plans
+
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — simplifies
+  resident token equality and removes process-wide request quotas while
+  retaining per-workspace admission and the resident cap.
 
 - `docs/plans/2026-09-24-mcp-not-found-result-contract-plan.md` — fixes
   non-private misses reporting not-found as empty success, classifies empty

@@ -183,7 +183,9 @@ class ThreadsMixin(_ClientBase):
             notify_mentions=False,
         )
 
-    def list_threads(self, *, all_threads: bool = False) -> list[Thread]:
+    def list_threads(
+        self, *, all_threads: bool = False, include_unread_counts: bool = True
+    ) -> list[Thread]:
         self._ensure_no_incomplete_channel_rename()
         resolved = self._resolve_member(
             create=False,
@@ -203,13 +205,20 @@ class ThreadsMixin(_ClientBase):
             ]
         by_thread = {row["thread"]: row for row in memberships}
         result = [
-            self._thread_from_row(row, by_thread.get(row["name"])) for row in rows
+            self._thread_from_row(
+                row,
+                by_thread.get(row["name"]),
+                include_unread_counts=include_unread_counts,
+            )
+            for row in rows
         ]
         if not all_threads and not any(thread.unread for thread in result):
             raise EmptyResultError("no unread threads")
         return result
 
-    def list_direct_messages(self) -> list[Thread]:
+    def list_direct_messages(
+        self, *, include_unread_counts: bool = True
+    ) -> list[Thread]:
         """Return every valid direct message accessible to the acting member."""
 
         self.last_thread_display_names.clear()
@@ -230,7 +239,11 @@ class ThreadsMixin(_ClientBase):
             if context is None:
                 continue
             self._remember_direct_message_display_name(context)
-            result.append(self._thread_from_row(row, membership))
+            result.append(
+                self._thread_from_row(
+                    row, membership, include_unread_counts=include_unread_counts
+                )
+            )
         if not result:
             raise EmptyResultError("no direct messages")
         return sorted(
@@ -369,6 +382,8 @@ class ThreadsMixin(_ClientBase):
         self,
         row: ThreadRow,
         membership: MembershipRow | None,
+        *,
+        include_unread_counts: bool = True,
     ) -> Thread:
         require_topic_compatible_kind(kind=row["kind"], meta=row["meta"])
         topic_record = (
@@ -376,10 +391,19 @@ class ThreadsMixin(_ClientBase):
         )
         queue = self.queue(row["name"])
         latest_pending_ts = self._last_message_ts(queue)
-        unread_count = self._unread_count(
-            queue,
-            membership,
-            latest_pending_ts=latest_pending_ts,
+        unread = (
+            membership is not None
+            and latest_pending_ts is not None
+            and latest_pending_ts > membership["last_seen_ts"]
+        )
+        unread_count = (
+            self._unread_count(
+                queue,
+                membership,
+                latest_pending_ts=latest_pending_ts,
+            )
+            if include_unread_counts
+            else 0
         )
         raw_members = row["meta"].get("members")
         members: tuple[str, ...] = ()
@@ -407,7 +431,7 @@ class ThreadsMixin(_ClientBase):
             name=row["name"],
             kind=row["kind"],
             parent=row["parent"],
-            unread=unread_count > 0,
+            unread=unread,
             last_ts=latest_pending_ts,
             unread_count=unread_count,
             members=members,

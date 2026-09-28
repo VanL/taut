@@ -338,7 +338,7 @@ jobs:
         timeout-minutes: 10
         run: |
           mypy taut tests bin/release.py bin/release-artifact.py bin/require-green-workflows.py --config-file pyproject.toml
-          mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
+          mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_summon/tests/conftest.py --config-file pyproject.toml
 
   summon-local-llm:
     name: taut-summon local LLM

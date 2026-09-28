@@ -162,48 +162,24 @@ taut dismiss NAME
       deliberate choice): refuse loudly with the collision and a hint
       to pick another name. Silently renaming a name the user chose
       would surprise both people and scripts (L1, L2).
-    This chosen-name refusal applies at resolution time, before anything is
-    created. A collision that appears after the transient claim is handled the
-    same way for implied and chosen names: release that claim, choose the
-    documented loud fallback, and retry. A chosen name bypasses automatic
-    selection at initial resolution and refuses an already-visible collision.
-    If a route collision appears only after its transient claim was acquired,
-    the fallback is automatic and therefore uses [IAN-4.2] display casing for
-    both implied and initially chosen requests.
-  - **Bootstrap ordering** resolves the token/env cycle, the concurrent-summon
-    race, and the rule that a foreign member must never be adopted:
-    0. *Claim the name*: transactionally insert (name key, provider) into
-       the transient claims table ([SUM-8]). The claim boundary normalizes the
-       display candidate to its lowercase [IAN-4.2] route key, so `Claude` and
-       `claude` serialize through one slot. A loser of a concurrent
-       same-name summon gets the constraint error and applies the
-       collision rule above — nothing exists yet, so it applies
-       cleanly: an implied name retries with the `choose_name`
-       fallback (two simultaneous `taut summon claude` yield two
-       members, never one shared member); a chosen name refuses loudly
-       (two simultaneous `taut summon reviewer --provider claude`
-       yield one `reviewer` and one clean refusal). Claims from dead
-       drivers are reclaimable by evidence.
-    1. *Create under the claimed final name* — first summon only:
-       `TautClient(identity_capture=<driver capture>,
-       as_name=<claimed-final-name>).join(thread, new=True)`. Core's
-       fail-not-adopt behavior ([IAN-3.3]) makes this atomic with respect to the
-       visible route: if occupied, no member, membership, or notice is created.
-       The driver releases the claim, chooses the next allowed fallback, and
-       retries. A successful create yields the token and final visible name in
-       one step. Summon never creates a temporary visible member and never
-       deletes a partially visible member as collision cleanup.
+    This chosen-name refusal applies at every timing, including a collision
+    discovered by core during create. An implied name retries the bounded
+    `choose_name()` fallback. Core's atomic `join(..., new=True)` under the
+    final name owns creation exclusion; Summon never adopts an existing member.
+  - **Bootstrap ordering** resolves the token/env cycle and concurrent creates:
+    1. *Create under the final name*: `TautClient(identity_capture=<driver
+       capture>, as_name=<final-name>).join(thread, new=True)`. Core's
+       fail-not-adopt behavior ([IAN-3.3]) leaves no member, membership or
+       notice on collision. Two simultaneous implied summons choose distinct
+       names; two chosen-name summons yield one creator and one refusal.
     2. *Join remaining requested threads* before publishing readiness.
-    3. *Record the session*: insert the member-id-keyed sessions row
-       ([SUM-8]) and delete the claim row — old names become claimable
-       again the moment they are no longer load-bearing.
+    3. *Record the session* by member id ([SUM-8]).
     4. *Spawn the harness* with `TAUT_TOKEN=<ledger token>` in its
        environment ([SUM-6]).
     5. *Re-anchor to the child*: `TautClient(identity_capture=
        <child capture>, token=<ledger token>).rejoin()` — token-only
-       selection (`rejoin` rejects a name combined with a token by
-       contract, [TAUT-8.1]); rejoin re-associates the child as the
-       member's anchor through the public path ([IAN-3.4]).
+       selection ([TAUT-8.1]); rejoin associates the child as member anchor
+       through the public path ([IAN-3.4]).
     Each candidate attempt owns and closes exactly one creator client. A failure
     after member creation but before session publication may leave a final-named
     non-summoned member. The initiating terminal reports its name and continuity
@@ -214,7 +190,7 @@ taut dismiss NAME
     lookup), read the sessions row, and run exactly steps 4-5 — one
     shape for every summon, no private state calls anywhere.
     When re-summon receives `--persona`, it updates the existing member through
-    a token-selected `TautClient.set_persona()` after the driver claim succeeds
+    a token-selected `TautClient.set_persona()` after the session driver claim succeeds
     and inside the release-protected bootstrap path, before spawning. The
     returned member id must match the claimed session member. Claim loss never
     mutates persona; update failure spawns no child and releases normally. The
@@ -296,8 +272,12 @@ be fetched, including queues already active in the turn that started delivery.
 After control consolidation, only the fixed control queue counts as broker
 wait activity. Local results and owned deadlines remain serviceable. The owner
 forces broad discovery after applying a result. Cancellation is not poison:
-it leaves the cursor unchanged. Adapter/source failures also preserve it;
-malformed delivery and user-handler failures retain the existing poison policy.
+it leaves the cursor unchanged. Adapter/source failures also preserve it.
+Malformed delivery keeps its existing decode policy. An ordinary synchronous
+preparation or formatting exception stops Summon, leaves the agent cursor
+unchanged, and surfaces the original failure. After fixing its cause, an
+explicit restart for the same member redelivers the unread record. No
+automatic skip or recovery ledger is added.
 A notification pointer claim-consumed before failed injection is not replayed.
 Self-filtering and formatting remain the existing watcher handler's policy;
 rate accounting remains the independent owner audit described in [SUM-10].
@@ -987,41 +967,27 @@ outside Summon's recovery guarantee.
 
 ## 8. Session Ledger and Single-Driver Guard [SUM-8]
 
-- **Two extension-owned sidecar tables**, split by lifetime:
-  - `taut_summon_claims` — **transient**. One row per in-flight
-    bootstrap: (name, provider) PRIMARY KEY. Version-3 writers store the
-    lowercase [IAN-4.2] route key in `name`; a unique expression index on
-    `(LOWER(name), provider)` is the concurrent-summon serialization point
-    ([SUM-4] step 0). Claim lookup and release use the same `LOWER(name)` key,
-    so an already-running version-2 writer cannot create an invisible
-    mixed-case route during rollout. The remaining fields are driver pid +
-    start-time evidence and claimed timestamp. Deleted at [SUM-4] step 3; a row whose
-    driver evidence is dead is reclaimable. Because claims are
-    transient, a name a member has since renamed away from is claimable
-    again — the name key never permanently occupies anything.
-    Summon schema version 3 migrates version-2 claim names to lowercase route
-    keys and creates the unique route expression index in one transaction. The
-    index construction serializes with concurrent claim inserts on supported
-    SQL backends; migration re-reads and normalizes rows under that lock. If two
-    legacy or racing rows for the same provider collapse to one route key,
-    migration fails loudly before changing either row or the stored version; an
-    operator must let or make one transient claim clear and retry. The index
-    plus normalized lookup keeps a late version-2 writer visible and unique
-    after migration.
-  - `taut_summon_sessions` — **durable**. One row per summoned member:
-    `member_id` PRIMARY KEY (created only after the member exists, so never
-    NULL on any backend), the member's continuity token (captured at creation,
-    output-visible once per [TAUT-8.2]), provider name, driver pid/start-time
-    evidence, the PTY onboarding `wired` flag, and updated timestamp. The
-    historical nullable `provider_session_id` SQL column remains physical
-    compatibility ballast in schema version 3, but new writes leave it NULL.
+- **One extension-owned durable sidecar table**:
+  `taut_summon_sessions` has one row per summoned member. Its
+  `member_id` PRIMARY KEY is created only after the member exists; the row
+  stores the continuity token, provider, driver pid/start-time evidence,
+  onboarding `wired` flag, and update timestamp. The historical nullable
+  `provider_session_id` SQL column remains physical compatibility ballast;
+  new writes leave it NULL. Version 4 drops the obsolete transient
+  `taut_summon_claims` table and preserves every session row. Supported
+  versions 2 and 3 upgrade directly to 4 under the extension's forward-only
+  version gate. No claim-row normalization is required because claims are
+  discarded, and no mixed-version writer protocol is supported. Stop old
+  Summon processes before the first new-version driver or controller starts.
+  Doctor's passive check accepts versions 2, 3, and 4 when their common durable session
+  projection is readable; it does not perform the upgrade.
 - **Names never key durable state.** Names are mutable current values,
   not identity ([IAN-2.2]; `set name` can rename a summoned member
   mid-run like anyone else). Every post-creation lookup — `stop NAME`,
   `status NAME`, re-summon by name — resolves the *current* name
   through core (public `who()`/route lookup) to a `member_id` and reads
   `taut_summon_sessions` by its key. Re-summoning an old, renamed-away
-  name finds no member and no claim — it creates a fresh member, which
+  name finds no member — it creates a fresh member, which
   is what the words say (L2). Created via
   `Queue.sidecar()` under the same rules as core tables ([TAUT-3.3]);
   versioned under its own `taut_meta` key `summon_schema_version` so
@@ -1037,8 +1003,8 @@ outside Summon's recovery guarantee.
   `provider_session_id` field is not part of the typed model, status output, or
   version-2 record, and version 2 rejects it. The exact version-1 reader still
   requires that field, validates it as string or null, and discards it.
-  Bootstrap claims and driver pid/start-time evidence are transient and are
-  never exported; restored driver evidence is null. The component writer
+  Driver pid/start-time evidence is transient and is never exported; restored
+  driver evidence is null. The component writer
   represents `updated_ts` as [TAUT-3.5]'s canonical string; accepted string or
   exact JSON integer input is normalized to an integer before the Summon
   sidecar write.
@@ -1046,7 +1012,7 @@ outside Summon's recovery guarantee.
   live driver (pid + start-time still alive, same evidence style as
   presence). Two drivers injecting into two harness sessions as one
   member would double-speak (L2: a person is in one place). `--takeover`
-  replaces a dead or abandoned claim.
+  replaces dead or abandoned driver evidence.
   A claim succeeds only when a same-transaction readback carries the caller's
   exact pid/start-time evidence. Predicated writes use null-safe expected
   evidence, so partial-null corruption can be replaced only by explicit
@@ -1057,11 +1023,11 @@ outside Summon's recovery guarantee.
   path that may replace a partial-null legacy row.
 - **Wired flag:** the per-(member, provider) `wired` flag ([SUM-7.4]) is
   durable state and a versioned ledger schema change. `SUMMON_SCHEMA_VERSION`
-  is 3, and `taut_summon_sessions` includes
+  is 4, and `taut_summon_sessions` includes
   `wired INTEGER NOT NULL DEFAULT 0`. A stored version 1 database fails
   closed with the existing "recreate the development database" path. Version 2
-  already has the wired column and uses the claim-key migration above; no
-  `ALTER TABLE` is required. The
+  already has the wired column; versions 2 and 3 preserve it on upgrade.
+  No `ALTER TABLE` is required. The
   typed session row carries `wired: bool`. The load-bearing column sites
   are `_SESSION_SELECT_BY_MEMBER`, `_SESSION_SELECT_ALL`, the `INSERT` in
   `record_session`, and `_session_row`.
@@ -1081,8 +1047,8 @@ every other stored-provider mismatch remain errors. Status may display the
 stored legacy provider value before replacement.
 
 Migration compatibility is defined by the predecessor's named semantic
-schema, not physical column order. The v2 to v3 proof starts from a checked-in
-fixture copied from the actual v2 release. Running the v3 installer and
+schema, not physical column order. The v2 to v4 proof starts from a checked-in
+fixture copied from the actual v2 release. Running the v4 installer and
 rewriting its version marker is not a v2 fixture.
 
 ## 9. Control Plane [SUM-9]
@@ -1130,7 +1096,7 @@ rewriting its version marker is not a v2 fixture.
   blocking phases run only after the reactor exists.
 - One source is acquired and driven for the foreground run. A broker or OS
   error escaping its owner turn unwinds the driver, closes source resources,
-  retires native work, and releases the ledger claim. Cleanup preserves the
+  retires native work, and releases the session driver slot. Cleanup preserves the
   primary failure. No source replacement or source retry deadline exists.
   A healthy provider is not restarted merely because a broker source failed.
   Provider exit remains a native event; its bounded crash backoff is a harness
@@ -1289,7 +1255,7 @@ rewriting its version marker is not a v2 fixture.
 - Broker source failure ends the driver after normal cleanup; the caller
   decides whether to restart it.
 - Driver crash: cursors and ledger make restart safe (at-least-once
-  injection); the stale ledger claim is reclaimable by evidence. Because the
+  injection); stale session driver evidence is reclaimable. Because the
   PTY slave is the provider's controlling terminal, closing the master on
   driver death delivers the operating system's `SIGHUP` to the provider's
   foreground group. Taut promises nothing beyond that OS behavior: a provider
@@ -1312,17 +1278,17 @@ rewriting its version marker is not a v2 fixture.
 - Transport pump failure is published to the owner as an immutable generation
   result. Only the owner performs storage work and classifies its failures.
   An escaping control policy or broker failure closes the
-  provider, completes checked teardown, releases its claim and fails loudly.
+  provider, completes checked teardown, releases its driver slot and fails loudly.
   A live provider without a functioning control lane is forbidden.
 - Two summons, one member → refused by the single-driver guard.
-- Every spawn owns a generation token and its exit state. The pump publishes only immutable results tagged with its generation. The
-  owner rejects stale results before any shared or external side effect. A stale pump may not update driver fields,
-  durable ledger state, control state, presence, or wake
-  state for any adapter event. The token is retired before a generation is
-  abandoned. One checked-join helper owns every pump join; timeout prevents
-  generation N+1. During normal STOP/resume it is the primary fatal error and
-  makes STOP reply error; during cleanup it is secondary and never masks the
-  original failure.
+- Each running generation owns its native workers and immutable result queue.
+  Only that generation's owner consumes and applies results. Retirement
+  completes checked pump and injection joins before a successor starts;
+  failed retirement prevents the successor. An in-flight injection in a
+  retired generation leaves its record unread and cannot strand the successor's
+  delivery gate. Retired results cannot change successor state or external
+  effects. During normal STOP/resume a failed join is fatal and makes the STOP
+  reply an error; during cleanup it does not mask an earlier failure.
 
 ## 12. Verification Expectations [SUM-12]
 
@@ -1354,8 +1320,8 @@ rewriting its version marker is not a v2 fixture.
   and no duplicate capture inside driver supervision. The setting and local
   queue remain real.
 - Schema tests install the historical version-2 fixture directly and prove
-  successful normalization plus fail-before-mutation handling for colliding
-  case variants on real SQLite and PostgreSQL sidecars.
+  session preservation and obsolete claim-table removal on real SQLite and
+  PostgreSQL sidecars. Version-3 upgrades preserve the same durable rows.
 - Deterministic PTY lifecycle is proven against the packaged scripted child
   over the production platform PTY. It models a TUI with alternate screen,
   terminal queries, continuous redraw, delayed readiness, optional bracketed
@@ -1415,7 +1381,7 @@ rewriting its version marker is not a v2 fixture.
   broker activity before a long audit interval, due-now audits without spin,
   and cleanup of every partial initial acquisition. A real broker operation
   failing inside the owner turn must end the run without source replacement,
-  retire the provider, and release the ledger claim or leave it reclaimable by
+  retire the provider, and release the session-driver claim or leave it reclaimable by
   evidence. Cleanup failures must preserve that primary error. Wake,
   STOP-during-blocked-inject, fatal-exit, and cleanup cases use a real SQLite
   broker and scripted provider; mocks may cover adapter or clock boundaries,
@@ -1427,7 +1393,9 @@ rewriting its version marker is not a v2 fixture.
   versions release as one synchronized set.
 - Firing tests cover invalid partial record evidence, indeterminate takeover,
   both partial-null takeover orientations, claim write postconditions,
-  mid-bootstrap fallback-claim collision, double SIGINT, PTY reply/inject and
+  concurrent chosen- and implied-name join collisions, five-attempt implied
+  exhaustion, blocked-injection crash turnover with successor replay, double
+  SIGINT, PTY reply/inject and
   attach-writer serialization, active-plus-queued write cancel,
   inject-after-close-start fencing, reader-start-during-close, concurrent
   close, post-interrupt reuse, readiness-wait close normalization, invalid PTY

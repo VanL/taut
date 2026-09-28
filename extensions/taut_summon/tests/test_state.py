@@ -1,8 +1,7 @@
 """Session-ledger and single-driver-guard tests for the summon extension.
 
-Contract under test: docs/specs/04-summon.md [SUM-8] — the two-table
-ledger split (transient ``taut_summon_claims``, durable member_id-keyed
-``taut_summon_sessions``), the extension-owned ``summon_schema_version``
+Contract under test: docs/specs/04-summon.md [SUM-8] — the member_id-keyed
+``taut_summon_sessions`` ledger, the extension-owned ``summon_schema_version``
 meta key with a fail-closed gate, and the evidence-based single-driver
 guard (pid + start-time liveness, ``--takeover`` semantics).
 
@@ -25,26 +24,22 @@ from typing import Any, cast
 import pytest
 import taut_summon._state as state_module
 from simplebroker import Queue
-from simplebroker.ext import DatabaseError, IntegrityError
+from simplebroker.ext import DatabaseError
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
     SUMMON_SCHEMA_VERSION_KEY,
-    ClaimConflictError,
     DriverConflictError,
     SummonSchemaVersionError,
     SummonStateError,
     capture_driver_evidence,
     claim_driver,
-    claim_name,
     driver_liveness,
     ensure_summon_schema,
-    get_claim,
     get_session,
     get_summon_schema_version,
     get_wired,
     list_sessions,
     record_session,
-    release_claim,
     release_driver,
     set_wired,
 )
@@ -168,18 +163,8 @@ def test_ensure_summon_schema_is_idempotent(state_queue: Queue) -> None:
 
     assert get_summon_schema_version(state_queue) == SUMMON_SCHEMA_VERSION
 
-    # Both tables exist and are usable after the double install.
+    # The durable session table exists and is usable after the double install.
     ts = state_queue.generate_timestamp()
-    pid, start = capture_driver_evidence()
-    claim_name(
-        state_queue,
-        name="claude",
-        provider="claude",
-        driver_pid=pid,
-        driver_start_time=start,
-        claimed_ts=ts,
-    )
-    assert get_claim(state_queue, name="claude", provider="claude") is not None
     record_session(
         state_queue,
         member_id="m_test",
@@ -206,15 +191,6 @@ def test_version_gate_refuses_newer_schema(state_queue: Queue) -> None:
 def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
     ensure_summon_schema(state_queue)
     ts = state_queue.generate_timestamp()
-    pid, start = capture_driver_evidence()
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="scripted",
-        driver_pid=pid,
-        driver_start_time=start,
-        claimed_ts=ts,
-    )
     record_session(
         state_queue,
         member_id="m_refusal_probe",
@@ -237,19 +213,13 @@ def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
                     fetch=True,
                 )
             )
-            claims = tuple(
-                session.run(
-                    "SELECT * FROM taut_summon_claims ORDER BY name, provider",
-                    fetch=True,
-                )
-            )
             sessions = tuple(
                 session.run(
                     "SELECT * FROM taut_summon_sessions ORDER BY member_id",
                     fetch=True,
                 )
             )
-        return get_summon_schema_version(state_queue), schema, claims, sessions
+        return get_summon_schema_version(state_queue), schema, sessions
 
     before = schema_snapshot()
     with pytest.raises(SummonSchemaVersionError):
@@ -257,104 +227,69 @@ def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
     assert schema_snapshot() == before
 
 
-def test_version_two_migrates_claim_names_to_lowercase_route_keys(
-    state_queue: Queue,
-) -> None:
+def test_version_two_discards_claims_and_preserves_sessions(state_queue: Queue) -> None:
     _install_summon_schema_v2(state_queue)
     with state_queue.sidecar(transaction=True) as session:
         session.run(
-            """
-            INSERT INTO taut_summon_claims (
-                name, provider, driver_pid, driver_start_time, claimed_ts
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO taut_summon_claims (name, provider, driver_pid, driver_start_time, claimed_ts) VALUES (?, ?, ?, ?, ?)",
             ("Reviewer", "scripted", 123, "legacy-start", 1),
+        )
+        session.run(
+            "INSERT INTO taut_summon_sessions (member_id, token, provider, updated_ts) VALUES (?, ?, ?, ?)",
+            ("m_legacy", "legacy-token", "scripted", 2),
         )
 
     ensure_summon_schema(state_queue)
 
-    assert get_summon_schema_version(state_queue) == 3
-    migrated = get_claim(state_queue, name="REVIEWER", provider="scripted")
-    assert migrated is not None
-    assert migrated["name"] == "reviewer"
-
-
-def test_version_two_case_variant_claims_fail_before_migration(
-    state_queue: Queue,
-) -> None:
-    _install_summon_schema_v2(state_queue)
-    with state_queue.sidecar(transaction=True) as session:
-        for name, pid in (("Reviewer", 123), ("reviewer", 456)):
-            session.run(
-                """
-                INSERT INTO taut_summon_claims (
-                    name, provider, driver_pid, driver_start_time, claimed_ts
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (name, "scripted", pid, f"legacy-{pid}", pid),
-            )
-
-    def migration_source_snapshot() -> tuple[
-        int | None, tuple[tuple[object, ...], ...]
-    ]:
-        with state_queue.sidecar() as session:
-            claims = tuple(
-                tuple(row)
-                for row in session.run(
-                    """
-                    SELECT name, provider, driver_pid,
-                           driver_start_time, claimed_ts
-                    FROM taut_summon_claims
-                    ORDER BY provider, name
-                    """,
+    assert get_summon_schema_version(state_queue) == SUMMON_SCHEMA_VERSION
+    row = get_session(state_queue, "m_legacy")
+    assert row is not None
+    assert row["token"] == "legacy-token"
+    with state_queue.sidecar() as session:
+        assert (
+            list(
+                session.run(
+                    "SELECT name FROM sqlite_master WHERE name = 'taut_summon_claims'",
                     fetch=True,
                 )
             )
-        return get_summon_schema_version(state_queue), claims
-
-    before = migration_source_snapshot()
-    with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
-        ensure_summon_schema(state_queue)
-    assert before[0] == 2
-    assert migration_source_snapshot() == before
-
-
-def test_version_three_index_and_lookup_cover_a_late_version_two_writer(
-    state_queue: Queue,
-) -> None:
-    ensure_summon_schema(state_queue)
-    with state_queue.sidecar(transaction=True) as session:
-        session.run(
-            """
-            INSERT INTO taut_summon_claims (
-                name, provider, driver_pid, driver_start_time, claimed_ts
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            ("Legacy", "scripted", 123, "legacy-start", 1),
+            == []
         )
 
-    visible = get_claim(state_queue, name="legacy", provider="scripted")
-    assert visible is not None
-    assert visible["name"] == "Legacy"
 
-    with pytest.raises(IntegrityError):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
-        with state_queue.sidecar(transaction=True) as session:
-            session.run(
-                """
-                INSERT INTO taut_summon_claims (
-                    name, provider, driver_pid, driver_start_time, claimed_ts
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                ("legacy", "scripted", 456, "new-start", 2),
-            )
-
-    assert release_claim(
+def test_version_three_upgrade_preserves_sessions(state_queue: Queue) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
         state_queue,
-        name="LEGACY",
+        member_id="m_existing",
+        token="existing-token",
         provider="scripted",
-        driver_pid=123,
-        driver_start_time="legacy-start",
+        updated_ts=1,
     )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run("CREATE TABLE taut_summon_claims (name TEXT PRIMARY KEY)")
+        session.run("INSERT INTO taut_summon_claims (name) VALUES (?)", ("stale",))
+        session.run(
+            "UPDATE taut_meta SET value = ? WHERE key = ?",
+            ("3", SUMMON_SCHEMA_VERSION_KEY),
+        )
+
+    ensure_summon_schema(state_queue)
+
+    assert get_summon_schema_version(state_queue) == SUMMON_SCHEMA_VERSION
+    row = get_session(state_queue, "m_existing")
+    assert row is not None
+    assert row["token"] == "existing-token"
+    with state_queue.sidecar() as session:
+        assert (
+            list(
+                session.run(
+                    "SELECT name FROM sqlite_master WHERE name = 'taut_summon_claims'",
+                    fetch=True,
+                )
+            )
+            == []
+        )
 
 
 def test_summon_schema_leaves_core_version_key_alone(state_queue: Queue) -> None:
@@ -1138,174 +1073,6 @@ def test_release_driver_rejects_partial_confirmation(state_queue: Queue) -> None
     )
 
 
-# --- claims table (bootstrap serialization) ---------------------------------
-
-
-def test_claim_name_refuses_live_claim(
-    state_queue: Queue, live_child: subprocess.Popen[bytes]
-) -> None:
-    ensure_summon_schema(state_queue)
-    child_pid, child_start = capture_driver_evidence(live_child.pid)
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=child_pid,
-        driver_start_time=child_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-    my_pid, my_start = capture_driver_evidence()
-
-    with pytest.raises(ClaimConflictError, match="live"):
-        claim_name(
-            state_queue,
-            name="reviewer",
-            provider="claude",
-            driver_pid=my_pid,
-            driver_start_time=my_start,
-            claimed_ts=state_queue.generate_timestamp(),
-        )
-
-
-def test_claim_name_serializes_display_case_through_one_route_key(
-    state_queue: Queue, live_child: subprocess.Popen[bytes]
-) -> None:
-    ensure_summon_schema(state_queue)
-    child_pid, child_start = capture_driver_evidence(live_child.pid)
-    stored = claim_name(
-        state_queue,
-        name="Scripted",
-        provider="scripted",
-        driver_pid=child_pid,
-        driver_start_time=child_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-    my_pid, my_start = capture_driver_evidence()
-
-    with pytest.raises(ClaimConflictError, match="live"):
-        claim_name(
-            state_queue,
-            name="scripted",
-            provider="scripted",
-            driver_pid=my_pid,
-            driver_start_time=my_start,
-            claimed_ts=state_queue.generate_timestamp(),
-        )
-
-    assert stored["name"] == "scripted"
-    assert get_claim(state_queue, name="SCRIPTED", provider="scripted") == stored
-
-
-def test_claim_name_reclaims_dead_claim(state_queue: Queue) -> None:
-    ensure_summon_schema(state_queue)
-    dead_pid, dead_start = _dead_evidence()
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=dead_pid,
-        driver_start_time=dead_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-    my_pid, my_start = capture_driver_evidence()
-
-    row = claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=my_pid,
-        driver_start_time=my_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-
-    assert row["driver_pid"] == my_pid
-
-
-def test_claim_name_distinct_names_do_not_conflict(state_queue: Queue) -> None:
-    ensure_summon_schema(state_queue)
-    my_pid, my_start = capture_driver_evidence()
-
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=my_pid,
-        driver_start_time=my_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-    claim_name(
-        state_queue,
-        name="claudette",
-        provider="claude",
-        driver_pid=my_pid,
-        driver_start_time=my_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-
-    assert get_claim(state_queue, name="reviewer", provider="claude") is not None
-    assert get_claim(state_queue, name="claudette", provider="claude") is not None
-
-
-def test_release_claim_deletes_the_row(state_queue: Queue) -> None:
-    ensure_summon_schema(state_queue)
-    my_pid, my_start = capture_driver_evidence()
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=my_pid,
-        driver_start_time=my_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-
-    assert (
-        release_claim(
-            state_queue,
-            name="reviewer",
-            provider="claude",
-            driver_pid=my_pid,
-            driver_start_time=my_start,
-        )
-        is True
-    )
-    assert get_claim(state_queue, name="reviewer", provider="claude") is None
-    assert (
-        release_claim(
-            state_queue,
-            name="reviewer",
-            provider="claude",
-            driver_pid=my_pid,
-            driver_start_time=my_start,
-        )
-        is False
-    )
-
-
-def test_release_claim_is_ownership_checked(state_queue: Queue) -> None:
-    # Same rule as release_driver: stale evidence releases nothing.
-    ensure_summon_schema(state_queue)
-    my_pid, my_start = capture_driver_evidence()
-    claim_name(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=my_pid,
-        driver_start_time=my_start,
-        claimed_ts=state_queue.generate_timestamp(),
-    )
-
-    stale_release = release_claim(
-        state_queue,
-        name="reviewer",
-        provider="claude",
-        driver_pid=my_pid + 1,
-        driver_start_time="not-the-stored-evidence",
-    )
-
-    assert stale_release is False
-    assert get_claim(state_queue, name="reviewer", provider="claude") is not None
-
-
 # --- core-oblivious proof ----------------------------------------------------
 
 
@@ -1313,8 +1080,8 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
     """A db bearing summon tables and sys.* queues stays fully core-valid.
 
     The representative core flow (init / join / say / read / whoami) runs
-    against a database that already carries the summon ledger, a claim,
-    and an unregistered ``sys.*`` control queue — none of which core may
+    against a database that already carries the summon ledger and an
+    unregistered ``sys.*`` control queue — neither of which core may
     notice ([SUM-8]; plan invariant "extension-owned state only").
     """
 
@@ -1324,14 +1091,6 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
         ensure_summon_schema(queue)
         ts = queue.generate_timestamp()
         pid, start = capture_driver_evidence()
-        claim_name(
-            queue,
-            name="claude",
-            provider="claude",
-            driver_pid=pid,
-            driver_start_time=start,
-            claimed_ts=ts,
-        )
         record_session(
             queue,
             member_id="m_summoned",

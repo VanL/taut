@@ -15,7 +15,7 @@ from taut import DoctorCheck, DoctorReport, TautClient, TautError
 from taut._constants import META_QUEUE_NAME
 from taut.persistence import PersistenceComponentSpec
 from taut.persistence._components import RegisteredPersistenceComponent
-from taut.search._jobs import CLAIMED_QUEUE_NAME, FAILED_QUEUE_NAME, PENDING_QUEUE_NAME
+from taut.search._jobs import PENDING_QUEUE_NAME
 from tests.conftest import ensure_taut_project_config, run_cli
 
 pytestmark = pytest.mark.sqlite_only
@@ -163,7 +163,7 @@ def test_doctor_reports_exact_healthy_initialized_workspace(tmp_path: Path) -> N
             "registered_threads": 0,
         },
         {"active": [], "installed": ["taut-summon"], "records": {}},
-        {"claimed": 0, "failed": 0, "pending": 0},
+        {"pending": 0},
         {"enabled": False, "sink": "disabled"},
     ]
     assert all(check.detail and "\n" not in check.detail for check in report.checks)
@@ -433,15 +433,10 @@ def test_doctor_observes_broker_and_exact_search_queue_totals(tmp_path: Path) ->
         assert general.read() is not None
     finally:
         general.close()
-    owned = [
-        Queue(name, db_path=str(db_path))
-        for name in (PENDING_QUEUE_NAME, CLAIMED_QUEUE_NAME, FAILED_QUEUE_NAME)
-    ]
+    owned = [Queue(PENDING_QUEUE_NAME, db_path=str(db_path))]
     try:
         owned[0].write("pending")
         owned[0].write("pending-2")
-        owned[1].write("claimed")
-        owned[2].write("failed")
     finally:
         for queue in owned:
             queue.close()
@@ -461,12 +456,8 @@ def test_doctor_observes_broker_and_exact_search_queue_totals(tmp_path: Path) ->
     claimed = broker.data["claimed"]
     assert isinstance(claimed, int) and claimed >= 1
     search = _doctor_check(report, "search_work")
-    assert search.status == "fail"
-    assert search.data == {
-        "claimed": expected[CLAIMED_QUEUE_NAME],
-        "failed": expected[FAILED_QUEUE_NAME],
-        "pending": expected[PENDING_QUEUE_NAME],
-    }
+    assert search.status == "pass"
+    assert search.data == {"pending": expected[PENDING_QUEUE_NAME]}
 
 
 def test_doctor_ignores_foreign_broker_queues_and_search_provider(

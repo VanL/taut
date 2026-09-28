@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from taut.commands.syntax import CommandPath
-from taut_tui.actions import ActionId
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,16 +22,15 @@ class TuiCommandBinding:
     """One explicit native TUI owner for a mirrored command path."""
 
     path: CommandPath
-    action_id: ActionId | None = None
     cli_only: bool = False
 
     def __post_init__(self) -> None:
-        if not self.path or (self.cli_only and self.action_id is not None):
-            raise ValueError("binding needs a path and one execution disposition")
+        if not self.path:
+            raise ValueError("binding needs a path")
 
 
-def _native(path: CommandPath, action_id: ActionId | None = None) -> TuiCommandBinding:
-    return TuiCommandBinding(path, action_id)
+def _native(path: CommandPath) -> TuiCommandBinding:
+    return TuiCommandBinding(path)
 
 
 def _cli_only(path: CommandPath) -> TuiCommandBinding:
@@ -40,35 +38,35 @@ def _cli_only(path: CommandPath) -> TuiCommandBinding:
 
 
 _BINDINGS = (
-    _native(("init",), ActionId.WORKSPACE_INITIALIZE),
-    _native(("join",), ActionId.CHANNEL_JOIN),
-    _native(("leave",), ActionId.CHANNEL_LEAVE),
-    _native(("set", "name"), ActionId.IDENTITY_SET_NAME),
-    _native(("say",), ActionId.MESSAGE_SEND),
-    _native(("reply",), ActionId.MESSAGE_REPLY),
+    _native(("init",)),
+    _native(("join",)),
+    _native(("leave",)),
+    _native(("set", "name")),
+    _native(("say",)),
+    _native(("reply",)),
     _native(("message", "show")),
-    _native(("message", "delete"), ActionId.MESSAGE_DELETE),
-    _native(("message", "react"), ActionId.MESSAGE_REACT),
-    _native(("channel", "show"), ActionId.CHANNEL_SHOW_TOPIC),
+    _native(("message", "delete")),
+    _native(("message", "react")),
+    _native(("channel", "show")),
     _native(("channel", "topic")),
-    _native(("channel", "rename"), ActionId.CHANNEL_RENAME),
+    _native(("channel", "rename")),
     _native(("read",)),
-    _native(("inbox",), ActionId.NOTIFICATIONS_OPEN),
+    _native(("inbox",)),
     _native(("log",)),
-    _native(("search",), ActionId.SEARCH_OPEN),
-    _native(("system", "doctor"), ActionId.SYSTEM_DOCTOR),
-    _native(("system", "dump"), ActionId.SYSTEM_DUMP),
+    _native(("search",)),
+    _native(("system", "doctor")),
+    _native(("system", "dump")),
     _native(("system", "debug", "enable")),
     _native(("system", "debug", "disable")),
     _native(("list",)),
     _cli_only(("watch",)),
     _native(("who",)),
-    _native(("whoami",), ActionId.IDENTITY_SHOW),
-    _native(("rejoin",), ActionId.IDENTITY_REJOIN),
-    _native(("summon",), ActionId.SUMMON_START),
-    _native(("dismiss",), ActionId.SUMMON_DISMISS),
-    _native(("q",), ActionId.APPLICATION_QUIT),
-    _native(("quit",), ActionId.APPLICATION_QUIT),
+    _native(("whoami",)),
+    _native(("rejoin",)),
+    _native(("summon",)),
+    _native(("dismiss",)),
+    _native(("q",)),
+    _native(("quit",)),
     _cli_only(("system", "load")),
 )
 

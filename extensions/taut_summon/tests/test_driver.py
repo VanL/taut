@@ -27,6 +27,7 @@ import threading
 import time
 import types
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -67,8 +68,6 @@ from taut_summon._driver import (
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
     ensure_summon_schema,
-    get_session,
-    list_sessions,
 )
 from taut_summon.interaction import (
     ShellSummonInteraction,
@@ -79,8 +78,7 @@ from taut_summon.interaction import (
 )
 from taut_summon.models import SummonOperationError, SummonRequest
 
-import taut.client._identity as core_identity_module
-from taut.client import Member, Message, TautClient
+from taut.client import Message, TautClient
 from taut.identity import capture_process
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
@@ -1078,10 +1076,57 @@ def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:
     assert pump.join_calls == [0.01]
     assert driver._active_generation is None
     assert driver._shutdown_error is not None
+    with pytest.raises(DriverError, match="did not retire"):
+        driver._activate_generation()
     outcome = driver._finalize_stop_shutdown_outcome()
     assert outcome.release_confirmed is True
     assert outcome.teardown_error is not None
     assert outcome.release_error is None
+
+
+def test_failed_injection_retirement_prevents_successor_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingReactor:
+        def retire_delivery_generation(self, _generation: object) -> None:
+            raise RuntimeError("injection worker did not retire")
+
+    class Handle:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(driver_module, "SummonReactor", FailingReactor)
+    driver = _new_driver(_run_request())
+    driver._watcher = cast(Any, FailingReactor())
+    generation = driver._activate_generation()
+
+    with pytest.raises(RuntimeError, match="injection worker did not retire"):
+        driver._teardown_generation(generation, cast(Any, Handle()), None)
+
+    assert driver._active_generation is None
+    with pytest.raises(
+        DriverError, match="previous provider generation did not retire"
+    ):
+        driver._activate_generation()
+
+
+def test_finish_teardown_latches_failed_injection_retirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingReactor:
+        def retire_delivery_generation(self, _generation: object) -> None:
+            raise RuntimeError("injection worker did not retire")
+
+    monkeypatch.setattr(driver_module, "SummonReactor", FailingReactor)
+    driver = _new_driver(_run_request())
+    driver._watcher = cast(Any, FailingReactor())
+    generation = driver._activate_generation()
+    driver._owner_running = cast(Any, types.SimpleNamespace(generation=generation))
+
+    with pytest.raises(RuntimeError, match="injection worker did not retire"):
+        driver._finish_owner_teardown()
+
+    assert driver._retirement_failed is True
 
 
 def test_generation_cleanup_failures_do_not_mask_primary_error() -> None:
@@ -1114,6 +1159,49 @@ def test_generation_cleanup_failures_do_not_mask_primary_error() -> None:
     assert caught is not None
     notes = getattr(caught, "__notes__", [])
     assert any("AdapterError: close failed" in note for note in notes)
+    assert any("DriverError: event pump did not stop" in note for note in notes)
+
+
+def test_generation_retirement_and_join_failures_both_reach_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingReactor:
+        def retire_delivery_generation(self, _generation: object) -> None:
+            raise RuntimeError("injection worker did not retire")
+
+    class Handle:
+        def close(self) -> None:
+            pass
+
+    class StuckPump:
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout == 0.01
+
+        def is_alive(self) -> bool:
+            return True
+
+    monkeypatch.setattr(driver_module, "SummonReactor", FailingReactor)
+    driver = _new_driver(_run_request())
+    driver._watcher = cast(Any, FailingReactor())
+    generation = driver._activate_generation()
+    caught: ValueError | None = None
+
+    try:
+        raise ValueError("primary failure")
+    except ValueError as primary:
+        caught = primary
+        driver._teardown_generation(
+            generation,
+            cast(Any, Handle()),
+            cast(Any, StuckPump()),
+            timeout=0.01,
+        )
+
+    assert caught is not None
+    notes = getattr(caught, "__notes__", [])
+    assert any(
+        "RuntimeError: injection worker did not retire" in note for note in notes
+    )
     assert any("DriverError: event pump did not stop" in note for note in notes)
 
 
@@ -1405,7 +1493,7 @@ def test_first_summon_creates_agent_member_with_ledger_row(
     for thread in ("general", "dev"):
         assert any(m.member_id == member.member_id for m in _who(summon_db, thread))
 
-    # Durable session row; transient claim gone after bootstrap ([SUM-8]).
+    # Durable session row follows bootstrap ([SUM-8]).
     row = _session_row(summon_db, member.member_id)
     assert row is not None
     assert row["provider"] == "scripted"
@@ -1416,14 +1504,6 @@ def test_first_summon_creates_agent_member_with_ledger_row(
     start = driver.starts()[0]
     assert start["env_token"] == row["token"]
     assert start["env_db"] == str(summon_db)
-
-    queue = Queue("taut_summon_test_reader", db_path=str(summon_db))
-    try:
-        from taut_summon._state import get_claim
-
-        assert get_claim(queue, name="scripted", provider="scripted") is None
-    finally:
-        queue.close()
 
     authored_notices = [
         item
@@ -1943,6 +2023,56 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
     assert _unread() >= 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX provider signal")
+def test_crashed_generation_replays_blocked_injection_in_successor(
+    summon_db: Path,
+    tmp_path: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={"responses": [[{"stall": True}]]},
+        tag="blocked-turnover",
+    )
+    driver.wait_for_start()
+    wait_until(
+        lambda: bool(driver.messages(generation=0)),
+        message="first provider entered its stalled response",
+    )
+    old_pid = driver.child_pid()
+    blocked_text = "blocked-replay-" + "x" * 1_000_000
+    say(summon_db, tmp_path, "general", blocked_text)
+    say(summon_db, tmp_path, "general", "tail-after-turnover")
+    _await_control_request(
+        summon_db,
+        driver.owned_member_id(),
+        "PING",
+        driver=driver,
+        session_row=driver.wait_for_owned_session(),
+    )
+    assert not any("blocked-replay-" in text for text in driver.messages(generation=0))
+
+    driver.scenario_path.write_text("{}", encoding="utf-8")
+    os.kill(old_pid, signal.SIGKILL)
+    driver.wait_for_start(2)
+    wait_until(
+        lambda: any(
+            "tail-after-turnover" in text for text in driver.messages(generation=1)
+        ),
+        message="successor delivery of unread tail",
+    )
+
+    old = driver.messages(generation=0)
+    fresh = driver.messages(generation=1)
+    assert not any("blocked-replay-" in text for text in old)
+    assert not any("tail-after-turnover" in text for text in old)
+    assert sum("blocked-replay-" in text for text in fresh) == 1
+    assert sum("tail-after-turnover" in text for text in fresh) == 1
+    assert driver.stop() == 0
+
+
 def test_midrun_join_injects_from_join_cursor(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -1971,250 +2101,6 @@ def test_midrun_join_injects_from_join_cursor(
 
 
 # --- concurrency and guards ---------------------------------------------------
-
-
-def _hold_claim(db: Path, name: str, provider: str) -> subprocess.Popen[bytes]:
-    """Plant a live in-flight claim: a real sleeping child is the driver."""
-
-    from taut_summon._state import (
-        capture_driver_evidence,
-        claim_name,
-        ensure_summon_schema,
-    )
-
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-    pid, start = capture_driver_evidence(child.pid)
-    queue = Queue("taut_summon_test_reader", db_path=str(db))
-    try:
-        ensure_summon_schema(queue)
-        claim_name(
-            queue,
-            name=name,
-            provider=provider,
-            driver_pid=pid,
-            driver_start_time=start,
-            claimed_ts=queue.generate_timestamp(),
-        )
-    finally:
-        queue.close()
-    return child
-
-
-def test_step0_claim_collision_refuses_chosen_name(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    # A live in-flight claim on a *chosen* name refuses loudly at step 0:
-    # nothing exists yet, so refusal is clean ([SUM-4] round-14 rule).
-    child = _hold_claim(summon_db, "reviewer", "scripted")
-    try:
-        driver = driver_factory(
-            summon_db, "reviewer", "general", provider="scripted", tag="chosen"
-        )
-        assert driver.wait() == 1
-        assert "in flight" in driver.stderr_tail()
-        assert _member_by_name(summon_db, "reviewer") is None
-    finally:
-        child.kill()
-        child.wait()
-
-
-def test_step0_claim_collision_falls_back_for_implied_name(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    # The same collision on an *implied* name retries through the
-    # choose_name pool: the user asked for *a* scripted ([SUM-4] step 0).
-    child = _hold_claim(summon_db, "scripted", "scripted")
-    try:
-        driver = driver_factory(summon_db, "scripted", "general", tag="implied")
-        # bootstrap=False: the pool fallback means the final member name is
-        # not the run argument; the wait below is this test's own barrier.
-        driver.wait_for_start(bootstrap=False)
-        fallback = None
-
-        def _fallback_member_exists() -> bool:
-            nonlocal fallback
-            for member in _who(summon_db):
-                if member.name not in {"scripted", "van"}:
-                    fallback = member
-                    return True
-            return False
-
-        wait_until(
-            _fallback_member_exists,
-            message="pool-fallback member",
-        )
-        assert fallback is not None
-        session_row = _wait_for_session_row(
-            summon_db,
-            fallback.member_id,
-            message="pool-fallback member session row",
-        )
-        _await_control_request(
-            summon_db,
-            fallback.member_id,
-            "PING",
-            driver=driver,
-            session_row=session_row,
-        )
-        assert _member_by_name(summon_db, "scripted") is None
-        assert driver.stop() == 0
-    finally:
-        child.kill()
-        child.wait()
-
-
-def test_driver_process_stops_exact_owned_fallback_after_control_is_ready(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    """Harness shutdown follows process evidence, not the requested name."""
-
-    site_dir = tmp_path / "delayed-claim-site"
-    site_dir.mkdir()
-    entered = tmp_path / "entered-delayed-claim"
-    release = tmp_path / "release-delayed-claim"
-    (site_dir / "sitecustomize.py").write_text(
-        """\
-import os
-from pathlib import Path
-
-from taut_summon import _driver
-
-_original_claim_name = _driver.claim_name
-_entered = Path(os.environ["TAUT_SUMMON_TEST_CLAIM_ENTERED"])
-_release = Path(os.environ["TAUT_SUMMON_TEST_CLAIM_RELEASE"])
-
-
-def _claim_then_wait(*args, **kwargs):
-    result = _original_claim_name(*args, **kwargs)
-    _entered.touch()
-    while not _release.exists():
-        import time
-        time.sleep(0.01)
-    return result
-
-
-_driver.claim_name = _claim_then_wait
-""",
-        encoding="utf-8",
-    )
-    pythonpath = os.pathsep.join((str(site_dir), _base_env()["PYTHONPATH"]))
-    owner = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        control_interval=0.05,
-        extra_env={
-            "PYTHONPATH": pythonpath,
-            "TAUT_SUMMON_TEST_CLAIM_ENTERED": str(entered),
-            "TAUT_SUMMON_TEST_CLAIM_RELEASE": str(release),
-        },
-        tag="identity-owner",
-    )
-    wait_until(entered.exists, timeout=10.0, message="first driver's name claim")
-
-    prelog_site = tmp_path / "pre-summoned-log-site"
-    prelog_site.mkdir()
-    prelog_entered = tmp_path / "entered-pre-summoned-log"
-    prelog_release = tmp_path / "release-pre-summoned-log"
-    (prelog_site / "sitecustomize.py").write_text(
-        """\
-import os
-import time
-from pathlib import Path
-
-from taut_summon import _driver
-
-_original_info = _driver.logger.info
-_entered = Path(os.environ["TAUT_SUMMON_TEST_PRELOG_ENTERED"])
-_release = Path(os.environ["TAUT_SUMMON_TEST_PRELOG_RELEASE"])
-
-
-def _info_after_release(message, *args, **kwargs):
-    if message.startswith("summoned '"):
-        _entered.touch()
-        while not _release.exists():
-            time.sleep(0.01)
-    _original_info(message, *args, **kwargs)
-
-
-_driver.logger.info = _info_after_release
-""",
-        encoding="utf-8",
-    )
-    fallback_pythonpath = os.pathsep.join((str(prelog_site), _base_env()["PYTHONPATH"]))
-    fallback = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        control_interval=0.05,
-        extra_env={
-            "PYTHONPATH": fallback_pythonpath,
-            "TAUT_SUMMON_TEST_PRELOG_ENTERED": str(prelog_entered),
-            "TAUT_SUMMON_TEST_PRELOG_RELEASE": str(prelog_release),
-        },
-        tag="identity-fallback",
-    )
-    wait_until(
-        prelog_entered.exists,
-        timeout=10.0,
-        message="fallback control readiness before summoned log",
-    )
-    assert fallback._last_summoned_member_id() is None
-    fallback_member_id = fallback.owned_member_id()
-    fallback_row = fallback.wait_for_owned_session()
-
-    release.touch()
-    owner.wait_for_start()
-    owner_member_id = owner.owned_member_id()
-    assert fallback_member_id != owner_member_id
-    assert fallback_row["driver_pid"] == fallback.proc.pid
-
-    stop_result: list[int] = []
-    stop_error: list[Exception] = []
-
-    def _stop_fallback() -> None:
-        try:
-            stop_result.append(fallback.stop(timeout=30.0))
-        except (AssertionError, subprocess.TimeoutExpired) as exc:
-            stop_error.append(exc)
-
-    stopper = threading.Thread(target=_stop_fallback)
-    stopper.start()
-    try:
-        owner_reply = _control_request(
-            summon_db,
-            owner_member_id,
-            "PING",
-            timeout=5.0,
-        )
-        assert owner_reply is not None
-        assert owner_reply["status"] == "ok"
-        assert owner.proc.poll() is None
-
-        assert stopper.is_alive()
-        assert fallback._last_summoned_member_id() is None
-        prelog_release.touch()
-        stopper.join(timeout=30.0)
-        assert not stopper.is_alive()
-        assert stop_error == []
-        assert stop_result == [0]
-        assert fallback.proc.poll() == 0
-
-        owner_reply = _control_request(
-            summon_db,
-            owner_member_id,
-            "PING",
-            timeout=5.0,
-        )
-        assert owner_reply is not None
-        assert owner_reply["status"] == "ok"
-        assert owner.proc.poll() is None
-    finally:
-        release.touch()
-        prelog_release.touch()
-        stopper.join(timeout=30.0)
-
-    assert owner.stop() == 0
 
 
 def test_driver_process_stop_failure_preserves_child_and_redacts_session_token(
@@ -2285,352 +2171,6 @@ _control.ControlPolicy.install = _publish_after_release
     assert driver.stop() == 0
 
 
-def test_midbootstrap_fallback_conflict_reclaims_before_next_create(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every attempted final name is covered by a successful live claim."""
-
-    events: list[str] = []
-
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
-    class FakeCreator:
-        def __init__(self, **kwargs: Any) -> None:
-            self.name = cast(str, kwargs["as_name"])
-            self.last_created_member: Member | None = None
-
-        def join(
-            self,
-            _thread: str,
-            *,
-            persona: str | None = None,
-            new: bool = False,
-        ) -> None:
-            del persona
-            assert new is True
-            events.append(f"join:{self.name}")
-            if self.name == "reviewer":
-                raise driver_module.IdentityError("taken")
-            self.last_created_member = Member(
-                member_id="m_reviewer",
-                name=self.name,
-                aliases=(),
-                kind="agent",
-                presence="here",
-                last_active_ts=1,
-                token="tok",
-            )
-
-        def close(self) -> None:
-            events.append(f"close:{self.name}")
-
-    def claim_name(_queue: Any, *, name: str, **_kwargs: Any) -> None:
-        events.append(f"claim:{name}")
-        if name == "reviewer-2":
-            raise driver_module.ClaimConflictError("claim held")
-
-    def release_name(_queue: Any, *, name: str, **_kwargs: Any) -> bool:
-        events.append(f"release:{name}")
-        return True
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeCreator)
-    monkeypatch.setattr(driver_module, "claim_name", claim_name)
-    monkeypatch.setattr(driver_module, "release_claim", release_name)
-    monkeypatch.setattr(driver_module, "record_session", lambda *_a, **_kw: None)
-
-    request = SummonRequest(
-        name="reviewer",
-        threads=("general",),
-        persona=None,
-        system_prompt_file=None,
-        rate_limit=None,
-        provider_flag="scripted",
-    )
-    driver = _new_driver(request)
-    driver._queue = cast(Any, FakeQueue())
-    driver._evidence = (1234, "1.0")
-    fallbacks = iter(("reviewer-2", "reviewer-3"))
-    monkeypatch.setattr(
-        driver, "_automatic_name", cast(Any, lambda *_args: next(fallbacks))
-    )
-    monkeypatch.setattr(driver, "_ensure_threads", cast(Any, lambda *_args: None))
-
-    result = driver._first_summon(
-        cast(Any, object()),
-        "reviewer",
-        "reviewer",
-        "scripted",
-        False,
-    )
-
-    assert result.member_name == "reviewer-3"
-    assert events == [
-        "claim:reviewer",
-        "join:reviewer",
-        "release:reviewer",
-        "close:reviewer",
-        "claim:reviewer-2",
-        "claim:reviewer-3",
-        "join:reviewer-3",
-        "close:reviewer-3",
-        "release:reviewer-3",
-    ]
-
-
-def test_direct_name_all_candidate_exhaustion_leaves_no_summon_debris(
-    summon_db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[SUM-4]: five real insert collisions create no Summon-owned residue."""
-
-    request = SummonRequest(
-        name="reviewer",
-        threads=("general",),
-        persona=None,
-        system_prompt_file=None,
-        rate_limit=None,
-        provider_flag="scripted",
-    )
-    queue = Queue("taut.summon_state", db_path=str(summon_db))
-    driver_module.ensure_summon_schema(queue)
-    resolver = TautClient(db_path=summon_db)
-    before_members = [(item.member_id, item.name) for item in resolver.who()]
-    before_membership = [item.member_id for item in resolver.who("general")]
-    before_log = [(item.ts, item.text) for item in resolver.log("general")]
-    with queue.sidecar(transaction=True) as session:
-        session.run(
-            """
-            CREATE TRIGGER summon_test_reject_every_member_insert
-            BEFORE INSERT ON taut_members
-            BEGIN
-                SELECT RAISE(ABORT, 'forced route collision');
-            END
-            """
-        )
-
-    closed: list[str] = []
-    real_close = TautClient.close
-
-    def close_spy(client: TautClient) -> None:
-        if client.as_name is not None:
-            closed.append(client.as_name)
-        real_close(client)
-
-    monkeypatch.setattr(driver_module.TautClient, "close", close_spy)
-    driver = _new_driver(request, db_path=str(summon_db))
-    driver._queue = queue
-    driver._evidence = driver_module.capture_driver_evidence()
-    try:
-        with pytest.raises(DriverError, match="after 5 attempts"):
-            driver._first_summon(resolver, "reviewer", "reviewer", "scripted", False)
-
-        assert len(closed) == 5
-        assert len(set(closed)) == 5
-        assert [
-            (item.member_id, item.name) for item in resolver.who()
-        ] == before_members
-        assert [item.member_id for item in resolver.who("general")] == before_membership
-        assert [(item.ts, item.text) for item in resolver.log("general")] == before_log
-        assert list_sessions(queue) == []
-        with queue.sidecar() as session:
-            claim_count = list(  # noqa: RUF015 approved [DOM-10.2.1] [RUFF-SUP-077] exception
-                session.run("SELECT COUNT(*) FROM taut_summon_claims", fetch=True)
-            )[0][0]
-        assert claim_count == 0
-    finally:
-        resolver.close()
-        queue.close()
-
-
-def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_member(
-    summon_db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[SUM-4]: durable insert evidence survives later bootstrap failure."""
-
-    request = SummonRequest(
-        name="reviewer",
-        threads=("general",),
-        persona=None,
-        system_prompt_file=None,
-        rate_limit=None,
-        provider_flag="scripted",
-    )
-    queue = Queue("taut.summon_state", db_path=str(summon_db))
-    driver_module.ensure_summon_schema(queue)
-    resolver = TautClient(db_path=summon_db)
-    before_membership = [item.member_id for item in resolver.who("general")]
-    before_log = [(item.ts, item.text) for item in resolver.log("general")]
-    with queue.sidecar(transaction=True) as session:
-        session.run(
-            """
-            CREATE TRIGGER summon_test_reject_first_candidates
-            BEFORE INSERT ON taut_members
-            WHEN NEW.display_name IN ('reviewer', 'Ada')
-            BEGIN
-                SELECT RAISE(ABORT, 'forced route collision');
-            END
-            """
-        )
-
-    closed: list[str] = []
-    real_close = TautClient.close
-
-    def close_spy(client: TautClient) -> None:
-        if client.as_name is not None:
-            closed.append(client.as_name)
-        real_close(client)
-
-    def fail_after_member_insert(_client: Any, _member: Any, _created_ts: int) -> None:
-        raise DatabaseError("forced post-insert readback failure")
-
-    driver = _new_driver(request, db_path=str(summon_db))
-    driver._queue = queue
-    driver._evidence = driver_module.capture_driver_evidence()
-    try:
-        with monkeypatch.context() as failure_patch:
-            failure_patch.setattr(driver_module.TautClient, "close", close_spy)
-            failure_patch.setattr(
-                core_identity_module.IdentityMixin,
-                "_ensure_notification_thread",
-                fail_after_member_insert,
-            )
-            with pytest.raises(DriverError) as raised:
-                driver._first_summon(
-                    resolver, "reviewer", "reviewer", "scripted", False
-                )
-
-        message = str(raised.value)
-        match = re.search(r"Residual continuity token: ([^. ]+)", message)
-        assert match is not None
-        token = match.group(1)
-        assert closed == ["reviewer", "Ada", "Grace"]
-        residual = _member_by_name(summon_db, "grace")
-        assert residual is not None
-        assert get_session(queue, residual.member_id) is None
-        assert [item.member_id for item in resolver.who("general")] == before_membership
-        assert [(item.ts, item.text) for item in resolver.log("general")] == before_log
-        with queue.sidecar() as session:
-            claim_count = list(  # noqa: RUF015 approved [DOM-10.2.1] [RUFF-SUP-077] exception
-                session.run("SELECT COUNT(*) FROM taut_summon_claims", fetch=True)
-            )[0][0]
-        assert claim_count == 0
-
-        recovery = TautClient(db_path=summon_db, token=token)
-        try:
-            moved = recovery.set_name("grace-residual")
-        finally:
-            recovery.close()
-        assert moved.member_id == residual.member_id
-
-        with queue.sidecar(transaction=True) as session:
-            session.run("DROP TRIGGER summon_test_reject_first_candidates")
-        retry = _new_driver(request, db_path=str(summon_db))
-        retry._queue = queue
-        retry._evidence = driver_module.capture_driver_evidence()
-        boot = retry._first_summon(resolver, "reviewer", "reviewer", "scripted", False)
-        assert boot.member_name == "reviewer"
-        assert get_session(queue, boot.member_id) is not None
-    finally:
-        resolver.close()
-        queue.close()
-
-
-@pytest.mark.parametrize(
-    "failure_point", ("ensure_threads", "creator_close", "record_session")
-)
-def test_first_summon_failure_releases_transient_name_claim(
-    failure_point: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    releases: list[tuple[str, str]] = []
-
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
-    class FakeCreator:
-        def __init__(self, **kwargs: Any) -> None:
-            self.name = cast(str, kwargs["as_name"])
-            self.last_created_member: Member | None = None
-
-        def join(
-            self,
-            _thread: str,
-            *,
-            persona: str | None = None,
-            new: bool = False,
-        ) -> None:
-            del persona
-            assert new is True
-            self.last_created_member = Member(
-                member_id="m_reviewer",
-                name=self.name,
-                aliases=(),
-                kind="agent",
-                presence="here",
-                last_active_ts=1,
-                token="tok",
-            )
-
-        def close(self) -> None:
-            if failure_point == "creator_close":
-                raise DatabaseError("bootstrap step failed: creator_close")
-
-    def release_claim(_queue: Any, *, name: str, provider: str, **_kwargs: Any) -> bool:
-        releases.append((name, provider))
-        return True
-
-    def fail_record(*_args: Any, **_kwargs: Any) -> None:
-        if failure_point == "record_session":
-            raise DatabaseError("bootstrap step failed: record_session")
-
-    monkeypatch.setattr(driver_module, "TautClient", FakeCreator)
-    monkeypatch.setattr(driver_module, "claim_name", lambda *_a, **_kw: None)
-    monkeypatch.setattr(driver_module, "release_claim", release_claim)
-    monkeypatch.setattr(driver_module, "record_session", fail_record)
-
-    request = SummonRequest(
-        name="reviewer",
-        threads=("general",),
-        persona=None,
-        system_prompt_file=None,
-        rate_limit=None,
-        provider_flag="scripted",
-    )
-    driver = _new_driver(request)
-    driver._queue = cast(Any, FakeQueue())
-    driver._evidence = (1234, "1.0")
-    monkeypatch.setattr(
-        driver,
-        "_ensure_threads",
-        cast(
-            Any,
-            lambda *_args: (
-                (_ for _ in ()).throw(
-                    DatabaseError("bootstrap step failed: ensure_threads")
-                )
-                if failure_point == "ensure_threads"
-                else None
-            ),
-        ),
-    )
-
-    with pytest.raises(
-        DriverError,
-        match="Residual continuity token: tok.*TAUT_TOKEN=tok taut set name",
-    ):
-        driver._first_summon(
-            cast(Any, object()),
-            "reviewer",
-            "reviewer",
-            "scripted",
-            False,
-        )
-
-    assert releases == [("reviewer", "scripted")]
-
-
 def test_post_create_failure_reports_real_residual_member_recovery(
     summon_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2674,10 +2214,6 @@ def test_post_create_failure_reports_real_residual_member_recovery(
         residual = _member_by_name(summon_db, "reviewer")
         assert residual is not None
         assert _session_row(summon_db, residual.member_id) is None
-        from taut_summon._state import get_claim
-
-        assert get_claim(queue, name="reviewer", provider="scripted") is None
-
         recovery = TautClient(db_path=summon_db, token=token)
         try:
             moved = recovery.set_name("reviewer-residual")
@@ -2693,8 +2229,8 @@ def test_post_create_failure_reports_real_residual_member_recovery(
 def test_concurrent_implied_summons_never_share_a_member(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
-    # Two implied-name summons race through the claim table ([SUM-4]
-    # step 0). Started back-to-back their bootstraps overlap; whichever
+    # Two implied-name summons race through core name creation ([SUM-4]).
+    # Started back-to-back their bootstraps overlap; whichever
     # interleaving wins, the invariant is: two distinct members, or one
     # member plus one clean refusal — never one shared member.
     a = driver_factory(summon_db, "scripted", "general", tag="race-a")
@@ -2739,6 +2275,180 @@ def test_concurrent_implied_summons_never_share_a_member(
 
     for d in live:
         assert d.stop() == 0
+
+
+def test_implied_name_join_collision_creates_two_distinct_members(
+    summon_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    barrier = threading.Barrier(2)
+    real_join = TautClient.join
+
+    def join_at_race(
+        client: TautClient,
+        thread: str,
+        *,
+        persona: str | None = None,
+        new: bool = False,
+    ) -> Message | None:
+        if new and client.as_name == "Scripted":
+            barrier.wait(timeout=10)
+        return real_join(client, thread, persona=persona, new=new)
+
+    monkeypatch.setattr(TautClient, "join", join_at_race)
+
+    def create() -> _BootstrapResult:
+        request = SummonRequest(
+            name="scripted",
+            threads=("general",),
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            provider_flag=None,
+        )
+        driver = _new_driver(request, db_path=str(summon_db))
+        ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+        resolver = TautClient(db_path=summon_db)
+        try:
+            ensure_summon_schema(ledger)
+            driver._queue = ledger
+            driver._evidence = driver_module.capture_driver_evidence()
+            return driver._first_summon(
+                resolver, "scripted", "Scripted", "scripted", True
+            )
+        finally:
+            resolver.close()
+            ledger.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(create)
+        second = pool.submit(create)
+        created = [first.result(timeout=15), second.result(timeout=15)]
+
+    assert len({item.member_id for item in created}) == 2
+    assert len({item.member_name for item in created}) == 2
+    assert "Scripted" in {item.member_name for item in created}
+    for item in created:
+        row = _session_row(summon_db, item.member_id)
+        assert row is not None
+        assert row["provider"] == "scripted"
+
+
+def test_implied_name_refuses_after_five_real_join_collisions(
+    summon_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = SummonRequest(
+        name="scripted",
+        threads=("general",),
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        provider_flag=None,
+    )
+    driver = _new_driver(request, db_path=str(summon_db))
+    ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+    resolver = TautClient(db_path=summon_db)
+    real_join = TautClient.join
+    collided: list[str] = []
+
+    def occupy_before_join(
+        client: TautClient,
+        thread: str,
+        *,
+        persona: str | None = None,
+        new: bool = False,
+    ) -> Message | None:
+        if new:
+            assert client.as_name is not None
+            collided.append(client.as_name)
+            competitor = TautClient(db_path=summon_db, as_name=client.as_name)
+            try:
+                real_join(competitor, thread, new=True)
+            finally:
+                competitor.close()
+        return real_join(client, thread, persona=persona, new=new)
+
+    monkeypatch.setattr(TautClient, "join", occupy_before_join)
+    try:
+        ensure_summon_schema(ledger)
+        driver._queue = ledger
+        driver._evidence = driver_module.capture_driver_evidence()
+        with pytest.raises(DriverError, match="after 5 attempts"):
+            driver._first_summon(resolver, "scripted", "Scripted", "scripted", True)
+    finally:
+        resolver.close()
+        ledger.close()
+
+    assert len(collided) == len(set(collided)) == 5
+    assert all(
+        _session_row(summon_db, member.member_id) is None for member in _who(summon_db)
+    )
+
+
+def test_concurrent_chosen_name_across_providers_has_one_core_creator(
+    summon_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's final-name join excludes a concurrent creator across providers."""
+
+    barrier = threading.Barrier(2)
+    real_join = TautClient.join
+
+    def join_at_race(
+        client: TautClient,
+        thread: str,
+        *,
+        persona: str | None = None,
+        new: bool = False,
+    ) -> Message | None:
+        if new and client.as_name == "reviewer":
+            barrier.wait(timeout=10)
+        return real_join(client, thread, persona=persona, new=new)
+
+    monkeypatch.setattr(TautClient, "join", join_at_race)
+
+    def create(provider: str) -> _BootstrapResult:
+        request = SummonRequest(
+            name="reviewer",
+            threads=("general",),
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            provider_flag=provider,
+        )
+        driver = _new_driver(request, db_path=str(summon_db))
+        ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+        resolver = TautClient(db_path=summon_db)
+        try:
+            ensure_summon_schema(ledger)
+            driver._queue = ledger
+            driver._evidence = driver_module.capture_driver_evidence()
+            return driver._first_summon(
+                resolver, "reviewer", "reviewer", provider, False
+            )
+        finally:
+            resolver.close()
+            ledger.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(create, provider) for provider in ("scripted", "codex")]
+        outcomes: list[_BootstrapResult | DriverError] = []
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=15))
+            except DriverError as exc:
+                outcomes.append(exc)
+
+    created = [item for item in outcomes if isinstance(item, _BootstrapResult)]
+    refused = [item for item in outcomes if isinstance(item, DriverError)]
+    assert len(created) == len(refused) == 1
+    assert "already exists" in str(refused[0])
+    members = [member for member in _who(summon_db) if member.name == "reviewer"]
+    assert len(members) == 1
+    assert members[0].member_id == created[0].member_id
+    row = _session_row(summon_db, members[0].member_id)
+    assert row is not None
+    assert row["provider"] == created[0].provider
 
 
 def test_second_summon_of_live_member_is_refused(

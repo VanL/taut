@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import os
 import queue
 import signal
@@ -2203,9 +2202,13 @@ def test_taut_watcher_preserves_first_cleanup_failure_and_retries_runtime(
     )
     monkeypatch.setattr(runtime, "close", fail_runtime_close)
 
-    with pytest.raises(RuntimeError, match="reactor cleanup sentinel"):
+    with pytest.raises(RuntimeError, match="reactor cleanup sentinel") as caught:
         watcher.stop(join=False)
 
+    assert any(
+        "additional cleanup failed: runtime cleanup sentinel" in note
+        for note in caught.value.__notes__
+    )
     assert runtime_close_calls == 1
     assert watcher._resources_closed is False
     assert watcher._runtime_cleanup_done is False
@@ -2466,13 +2469,11 @@ def test_explicit_watch_filter_drops_left_thread_on_refresh(tmp_path: Path) -> N
     client.join("foo")
     client.join("bar")
     watcher = client.watch(lambda _message: None, threads=["foo", "bar"])
-    watcher._failures[("foo", 1)] = 2
 
     client.leave("foo")
     watcher._refresh_memberships()
 
     assert watcher.list_queues() == ["bar"]
-    assert ("foo", 1) not in watcher._failures
     watcher.stop()
 
 
@@ -3123,72 +3124,112 @@ def test_taut_watcher_ready_signal_fires_after_initial_drain(tmp_path: Path) -> 
         assert not thread.is_alive()
 
 
-def test_watcher_poison_message_advances_after_three_failures(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("drive", ["run", "turn"])
+def test_chat_handler_failure_stops_and_replays_on_explicit_restart(
+    tmp_path: Path, drive: str
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    sender = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
     client.join("foo")
+    sender.join("foo")
+    _drain_unread(client, "foo")
     attempts: list[int] = []
-    caplog.set_level(logging.WARNING, logger="taut.watcher")
+    failure = RuntimeError("handler sentinel")
 
     def fail(item: Message | Notification) -> None:
         if not isinstance(item, Message):
             return
         attempts.append(item.ts)
-        raise RuntimeError("boom")
+        raise failure
 
     watcher = _white_box_watcher(
         client,
         fail,
         membership_refresh_interval=0.05,
     )
-    thread = watcher.start()
+    message = sender.say("foo", "poison")
+    with pytest.raises(RuntimeError, match="handler sentinel") as caught:
+        if drive == "run":
+            watcher.run_until_stopped()
+        else:
+            watcher.process_once()
+    assert caught.value is failure
+    assert attempts == [message.ts]
+    assert watcher._resources_closed is True
+    assert not _cursor_reached(client, watcher, "foo", message.ts)
+    replayed: list[int] = []
+    fresh = client.watch(_record_message_timestamps(replayed))
     try:
-        eventually(
-            thread.is_alive,
-            timeout=3.0,
-            interval=0.01,
-            description="poison-message watcher thread starts",
-        )
-
-        message = client.say("foo", "poison")
-        failure_key = (message.thread, message.ts)
-
-        def poison_message_advanced() -> bool:
-            return (
-                attempts.count(message.ts) == 3
-                and failure_key not in watcher._failures
-                and _cursor_reached(client, watcher, "foo", message.ts)
-            )
-
-        eventually(
-            poison_message_advanced,
-            timeout=3.0,
-            interval=0.01,
-            description=(
-                "watcher retries the poison message three times and advances its cursor"
-            ),
-            snapshot=lambda: {
-                "thread_alive": thread.is_alive(),
-                "target_ts": message.ts,
-                "attempt_count": attempts.count(message.ts),
-                "failure_pending": failure_key in watcher._failures,
-                "cursor": watcher._cursors.get("foo", 0),
-            },
-        )
-
-        assert attempts.count(message.ts) == 3
-        assert failure_key not in watcher._failures
-        with pytest.raises(EmptyResultError):
-            client.list_threads()
-        assert thread.is_alive()
-        assert f"advancing past poison message {message.ts} in foo" in caplog.text
+        fresh.process_once()
+        assert replayed == [message.ts]
     finally:
-        watcher.stop()
-        thread.join(timeout=2)
-        assert not thread.is_alive()
+        fresh.stop()
+
+
+def test_chat_handler_failure_on_dynamic_queue_preserves_cursor(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    receiver = TautClient(db_path=db, as_name="van")
+    sender = TautClient(db_path=db, as_name="bob")
+    receiver.join("foo")
+    sender.join("foo")
+    _drain_unread(receiver, "foo")
+    seen: list[int] = []
+
+    def fail(item: Message | Notification) -> None:
+        if isinstance(item, Message) and item.thread == "late":
+            seen.append(item.ts)
+            raise ValueError("late handler failed")
+
+    watcher = receiver.watch(fail)
+    receiver.join("late")
+    sender.join("late")
+    _drain_unread(receiver, "late")
+    message = sender.say("late", "fail")
+    with pytest.raises(ValueError, match="late handler failed"):
+        watcher.run_until_stopped()
+    assert "late" in watcher.list_queues()
+    assert seen == [message.ts]
+    assert not _cursor_reached(receiver, watcher, "late", message.ts)
+    assert watcher._resources_closed is True
+
+
+@pytest.mark.parametrize("drive", ["run", "turn"])
+def test_chat_handler_failure_keeps_primary_when_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drive: str
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    receiver = TautClient(db_path=db, as_name="van")
+    sender = TautClient(db_path=db, as_name="bob")
+    receiver.join("foo")
+    sender.join("foo")
+    _drain_unread(receiver, "foo")
+    failure = ValueError("primary handler failure")
+
+    def fail(item: Message | Notification) -> None:
+        if isinstance(item, Message):
+            raise failure
+
+    watcher = receiver.watch(fail)
+    message = sender.say("foo", "fail")
+    real_close = watcher._runtime.close
+
+    def fail_close() -> None:
+        raise RuntimeError("secondary close failure")
+
+    monkeypatch.setattr(watcher._runtime, "close", fail_close)
+    with pytest.raises(ValueError, match="primary handler failure") as caught:
+        if drive == "run":
+            watcher.run_until_stopped()
+        else:
+            watcher.process_once()
+    assert caught.value is failure
+    assert any("secondary close failure" in note for note in failure.__notes__)
+    assert not _cursor_reached(receiver, watcher, "foo", message.ts)
+    monkeypatch.setattr(watcher._runtime, "close", real_close)
+    watcher.stop(join=False)
 
 
 def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(

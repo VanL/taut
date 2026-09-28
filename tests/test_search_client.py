@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from simplebroker import Queue
+from simplebroker import Queue, open_broker
 
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import EmptyResultError
@@ -20,12 +20,15 @@ from taut.client import _searching as searching
 from taut.client._searching import SearchingMixin
 from taut.envelope import encode_envelope
 from taut.search._jobs import (
+    CLAIMED_QUEUE_NAME,
+    FAILED_QUEUE_NAME,
     PENDING_QUEUE_NAME,
     ThreadRenameJob,
     decode_message_job,
     decode_search_job,
 )
 from taut.search._sqlite import SQLiteSearchProvider
+from taut.state import ThreadRow
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -69,6 +72,174 @@ def test_search_bootstraps_index_and_returns_hydrated_source(tmp_path: Path) -> 
     ]
 
 
+def test_search_upgrades_legacy_claimed_work_without_rebuilding_index(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    client = TautClient(db_path=db_path, as_name="alice")
+    client.join("general")
+    first = client.say("general", "first stable needle")
+    assert [hit.ts for hit in client.search("needle")] == [first.ts]
+    second = client.say("general", "second stable needle")
+    pending = Queue(PENDING_QUEUE_NAME, db_path=str(db_path))
+    claimed = Queue(CLAIMED_QUEUE_NAME, db_path=str(db_path))
+    failed = Queue(FAILED_QUEUE_NAME, db_path=str(db_path))
+    try:
+        work = pending.peek_many(10, with_timestamps=True)
+        second_job = next(
+            job_ts
+            for body, job_ts in work
+            if decode_message_job(body).message_ts == second.ts
+        )
+        assert (
+            pending.move_one(claimed, exact_timestamp=second_job, with_timestamps=True)
+            is not None
+        )
+        failed.write("obsolete failure")
+        with client._meta_queue.sidecar(transaction=True) as session:
+            before = list(
+                session.run(
+                    "SELECT current_generation FROM taut_search_metadata",
+                    fetch=True,
+                )
+            )
+            session.run(
+                "UPDATE taut_search_metadata SET schema_version = 1 WHERE singleton = 1"
+            )
+            session.run("CREATE TABLE taut_search_claims (job_ts BIGINT PRIMARY KEY)")
+            session.run("CREATE TABLE taut_search_housekeeping (key TEXT PRIMARY KEY)")
+
+        assert [hit.ts for hit in client.search("needle")] == [second.ts, first.ts]
+        with client._meta_queue.sidecar() as session:
+            after = list(
+                session.run(
+                    "SELECT current_generation, schema_version FROM taut_search_metadata",
+                    fetch=True,
+                )
+            )
+            obsolete = list(
+                session.run(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'taut_search_%' "
+                    "AND type = 'table'",
+                    fetch=True,
+                )
+            )
+        assert after == [(before[0][0], 2)]
+        assert ("taut_search_claims",) not in obsolete
+        assert ("taut_search_housekeeping",) not in obsolete
+        with open_broker(str(db_path)) as broker:
+            totals = {item.queue: item.total for item in broker.list_queue_stats()}
+        assert totals.get(CLAIMED_QUEUE_NAME, 0) == 0
+        assert totals.get(FAILED_QUEUE_NAME, 0) == 0
+    finally:
+        failed.close()
+        claimed.close()
+        pending.close()
+        client.close()
+
+
+def test_interrupted_search_upgrade_repeats_without_losing_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    client = TautClient(db_path=db_path, as_name="alice")
+    client.join("general")
+    with pytest.raises(EmptyResultError, match="no search results"):
+        client.search("seed")
+    message = client.say("general", "upgrade retry needle")
+    pending = Queue(PENDING_QUEUE_NAME, db_path=str(db_path))
+    claimed = Queue(CLAIMED_QUEUE_NAME, db_path=str(db_path))
+    try:
+        row = pending.peek_many(1, with_timestamps=True)[0]
+        assert (
+            pending.move_one(claimed, exact_timestamp=row[1], with_timestamps=True)
+            is not None
+        )
+        with client._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_search_metadata SET schema_version = 1 WHERE singleton = 1"
+            )
+        original = SQLiteSearchProvider.ensure_schema
+        failed = False
+
+        def fail_once(provider: SQLiteSearchProvider) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("upgrade interrupted")
+            original(provider)
+
+        monkeypatch.setattr(SQLiteSearchProvider, "ensure_schema", fail_once)
+        with pytest.raises(RuntimeError, match="upgrade interrupted"):
+            client.search("needle")
+        assert claimed.peek_many(10) == []
+        assert pending.peek_one(exact_timestamp=row[1]) is not None
+        assert [hit.ts for hit in client.search("needle")] == [message.ts]
+    finally:
+        claimed.close()
+        pending.close()
+        client.close()
+
+
+def test_search_replays_pending_work_after_commit_before_delete_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    client = TautClient(db_path=db_path, as_name="alice")
+    client.join("general")
+    with pytest.raises(EmptyResultError, match="no search results"):
+        client.search("needle")
+    message = client.say("general", "replayable search needle")
+    real_delete = Queue.delete
+    failed = False
+
+    def fail_once(queue: Queue, *args: object, **kwargs: object) -> bool:
+        nonlocal failed
+        if queue.name == PENDING_QUEUE_NAME and not failed:
+            failed = True
+            raise RuntimeError("broker delete failed")
+        return real_delete(queue, *args, **kwargs)
+
+    monkeypatch.setattr(Queue, "delete", fail_once)
+    with pytest.raises(RuntimeError, match="broker delete failed"):
+        client.search("needle")
+    provider = SQLiteSearchProvider(sidecar=client._meta_queue.sidecar)
+    try:
+        assert provider.applied_revision(message.ts) is not None
+        assert client.queue(PENDING_QUEUE_NAME).peek_many(10)
+        assert [hit.ts for hit in client.search("needle")] == [message.ts]
+        assert client.queue(PENDING_QUEUE_NAME).peek_many(10) == []
+    finally:
+        provider.close()
+        client.close()
+
+
+def test_search_discards_malformed_job_and_continues_to_valid_work(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    client = TautClient(db_path=db_path, as_name="alice")
+    client.join("general")
+    pending = Queue(PENDING_QUEUE_NAME, db_path=str(db_path))
+    try:
+        pending.write("private malformed body")
+        message = client.say("general", "healthy search needle")
+        assert [hit.ts for hit in client.search("needle")] == [message.ts]
+        assert client.last_search_warnings
+        assert "invalid_json" in client.last_search_warnings[0]
+        assert "private malformed body" not in client.last_search_warnings[0]
+        assert pending.peek_many(10) == []
+    finally:
+        pending.close()
+        client.close()
+
+
 def test_search_closes_provider_when_schema_setup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -80,6 +251,9 @@ def test_search_closes_provider_when_schema_setup_fails(
     class FailingProvider:
         closed = 0
 
+        def schema_version(self) -> None:
+            return None
+
         def ensure_schema(self) -> None:
             raise RuntimeError("schema failed")
 
@@ -90,7 +264,7 @@ def test_search_closes_provider_when_schema_setup_fails(
     monkeypatch.setattr(
         SearchingMixin,
         "_search_provider",
-        lambda _self: provider,
+        lambda _self, _meta: provider,
     )
 
     with pytest.raises(RuntimeError, match="schema failed"):
@@ -213,7 +387,6 @@ def test_search_dm_scope_is_current_participant_only(tmp_path: Path) -> None:
 
 def test_search_follows_message_identity_across_reused_channel_names(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / ".taut.db"
     TautClient.init(db_path=db_path)
@@ -225,20 +398,9 @@ def test_search_follows_message_identity_across_reused_channel_names(
     alice.rename_channel("alpha", "gamma")
     alice.join("aardvark")
 
-    closed_sources: list[str] = []
-    real_close = Queue.close
-
-    def record_close(queue: Queue) -> None:
-        if queue.name in {"aardvark", "gamma"}:
-            closed_sources.append(queue.name)
-        real_close(queue)
-
-    monkeypatch.setattr(Queue, "close", record_close)
-
     assert [(hit.thread, hit.ts) for hit in alice.search("original needle")] == [
         ("gamma", original.ts)
     ]
-    assert {"aardvark", "gamma"}.issubset(closed_sources)
 
     alice.join("alpha")
     reused = alice.say("alpha", "reused channel needle")
@@ -286,6 +448,33 @@ def test_search_reconciles_two_rename_jobs_committed_newest_first(
     assert [(hit.thread, hit.ts) for hit in alice.search("rename needle")] == [
         ("final", message.ts)
     ]
+
+
+def test_deletion_heavy_drain_uses_one_registry_snapshot_and_one_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    alice.join("general")
+    messages = [alice.say("general", f"delete batch {i}") for i in range(30)]
+    assert len(alice.search("delete batch", limit=30)) == 30
+    for message in messages:
+        alice.delete_message(str(message.ts))
+
+    reads = 0
+    original = alice._state.list_threads
+
+    def counted(_self: object, *, include_internal: bool = False) -> list[ThreadRow]:
+        nonlocal reads
+        reads += 1
+        return original(include_internal=include_internal)
+
+    monkeypatch.setattr(type(alice._state), "list_threads", counted)
+    with pytest.raises(EmptyResultError, match="no search results"):
+        alice.search("delete batch")
+    assert 2 <= reads <= 3  # scope, drain snapshot, at most one refresh
 
 
 def test_search_incremental_reconciliation_repairs_missed_append_before_later_append(
@@ -432,7 +621,7 @@ def test_stale_hydration_schedules_content_free_repair(
     monkeypatch.setattr(
         SearchingMixin,
         "_reconcile_search_index",
-        lambda _self, _provider, _rows: None,
+        lambda _self, _provider, _rows, *, meta: None,
     )
 
     with pytest.raises(EmptyResultError, match="no search results"):

@@ -8,6 +8,31 @@ from typing import Protocol
 
 from simplebroker.ext import SidecarSession
 
+SEARCH_SCHEMA_VERSION = 2
+SEARCH_PROJECTION_VERSION = 1
+
+
+def validate_search_versions(schema_version: int, projection_version: int) -> int:
+    """Validate the stable singleton fields before shape-dependent work."""
+
+    if schema_version > SEARCH_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"search schema version {schema_version} is newer than "
+            f"supported version {SEARCH_SCHEMA_VERSION}"
+        )
+    if projection_version > SEARCH_PROJECTION_VERSION:
+        raise RuntimeError(
+            f"search projection version {projection_version} is newer than "
+            f"supported version {SEARCH_PROJECTION_VERSION}"
+        )
+    if schema_version not in (1, SEARCH_SCHEMA_VERSION):
+        raise RuntimeError(f"unsupported search schema version {schema_version}")
+    if projection_version != SEARCH_PROJECTION_VERSION:
+        raise RuntimeError(
+            f"unsupported search projection version {projection_version}"
+        )
+    return schema_version
+
 
 @dataclass(frozen=True, slots=True)
 class IndexedDocument:
@@ -50,6 +75,8 @@ class SidecarAccessor(Protocol):
 
 class SearchProvider(Protocol):
     """Small physical-index seam implemented by each SQL backend."""
+
+    def schema_version(self) -> int | None: ...
 
     def ensure_schema(self) -> None: ...
 

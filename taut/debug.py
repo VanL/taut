@@ -64,7 +64,7 @@ def capture_exception(
     broker_target: BrokerTarget | str | None = None,
     broker_config: Config | None = None,
 ) -> None:
-    """Capture ``exc`` if enabled, without ever raising to the caller."""
+    """Capture ``exc`` if enabled; ordinary diagnostic errors are contained."""
 
     if not isinstance(exc, Exception) or DEBUG_ACTION_ACTIVE_ENV in os.environ:
         return
@@ -87,7 +87,7 @@ def capture_exception(
             _send_to_action(payload)
         else:
             _write_local(payload, event["sentinel"], target, config)
-    except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
         return
 
 
@@ -224,7 +224,7 @@ def _formatted_traceback(
         value = "".join(
             traceback_module.format_exception(type(exc), exc, exc.__traceback__)
         )
-    except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
         value = f"{_qualified_type(exc)}: {_safe_text(exc, _MAX_TEXT, truncation)}"
     return _bounded(value, _MAX_TRACEBACK, truncation)
 
@@ -241,7 +241,7 @@ def _safe_text(
 ) -> str:
     try:
         rendered = str(value)
-    except BaseException as failure:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    except Exception as failure:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
         rendered = f"<unprintable {_qualified_type(value)}: {_qualified_type(failure)}>"
     return _bounded(rendered, limit, truncation)
 
@@ -253,7 +253,7 @@ def _safe_repr(
 ) -> str:
     try:
         rendered = repr(value)
-    except BaseException as failure:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    except Exception as failure:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
         rendered = (
             f"<unrepresentable {_qualified_type(value)}: {_qualified_type(failure)}>"
         )
@@ -275,7 +275,7 @@ def _bounded(
 def _safe_cwd(truncation: _TruncationState) -> str:
     try:
         return _bounded(os.getcwd(), _MAX_TEXT, truncation)
-    except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
         return f"<unavailable: {_qualified_type(exc)}>"
 
 
@@ -341,7 +341,7 @@ def _write_local(
                         include_claimed=True,
                     )
                 )
-            except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
                 duplicate = False
             if not duplicate:
                 queue.write(payload)

@@ -381,11 +381,7 @@ class TuiSession:
             if isinstance(item, Message) and not self._current_generation(generation):
                 raise WatcherRejected
             if isinstance(item, Message):
-                self._append_message(generation, item)
-            if not self._accept_delivery(generation, item):
-                if isinstance(item, Message):
-                    self._remove_message(generation, item)
-                raise WatcherRejected
+                self._accept_chat_delivery(generation, item)
 
         filters = [snapshot.target]
         if (
@@ -402,6 +398,20 @@ class TuiSession:
         owned = (watcher, thread)
         self._watcher = owned
         self._monitor_watcher_exit(generation, owned)
+
+    def _accept_chat_delivery(self, generation: int, item: Message) -> None:
+        from taut import WatcherRejected
+
+        self._append_message(generation, item)
+        try:
+            accepted = self._accept_delivery(generation, item)
+        except Exception:
+            if not self._current_generation(generation):
+                raise WatcherRejected from None
+            raise
+        if not accepted:
+            self._remove_message(generation, item)
+            raise WatcherRejected
 
     def _monitor_watcher_exit(
         self,
@@ -435,9 +445,16 @@ class TuiSession:
         if self._watcher != exited or not self._current_generation(generation):
             return
         watcher, _thread = exited
-        watcher.stop(join=False)
-        self._watcher = None
-        self._report_watcher_degraded(generation, "watcher exited unexpectedly")
+        failure = watcher.failure_cause
+        # The joined drive already ran its finalizer. Keep ownership until the
+        # next conversation switch or session close, where stop can retry a
+        # failed cleanup without hiding this report in an ignored Future.
+        detail = (
+            f"watcher failed: {type(failure).__name__}: {failure}"
+            if failure is not None
+            else "watcher exited unexpectedly"
+        )
+        self._report_watcher_degraded(generation, detail)
 
     def _append_message(self, generation: int, item: Message) -> None:
         with self._state_lock:

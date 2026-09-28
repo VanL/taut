@@ -519,8 +519,7 @@ queues already get. Core never routes chat to `sys.*`; only the owning
 extension reads or writes them.
 
 Core-owned unregistered system queues use the reserved `taut.*` namespace.
-Search owns `taut.search_index`, `taut.search_index.claimed`, and
-`taut.search_index.failed` under [SRCH-8]. They are invisible to every chat
+Search owns `taut.search_index` under [SRCH-8]. It is invisible to every chat
 route and listing surface; only the owning core subsystem consumes them.
 Debug failure capture owns `taut.debug` under [TAUT-13]. It is an unregistered
 operational queue, never a channel, sub-thread, direct message, notification
@@ -1068,6 +1067,7 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-24-identity-claim-boundary-plan.md` — narrows the
   step-4 anchor match so a parent agent cannot capture a child agent, specifies
   PATH-independent host-id derivation and its explicit fallback, and routes the

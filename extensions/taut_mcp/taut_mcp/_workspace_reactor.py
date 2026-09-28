@@ -540,7 +540,6 @@ def _validate_candidate(
             persistent=True,
             inherit_environment_identity=False,
         )
-        token = ""
         reactor = _WorkspaceReactor(
             inbound,
             strategy,
@@ -564,7 +563,6 @@ def _validate_candidate(
         return None
 
     finally:
-        token = ""
         if reactor is None and client is not None:
             with suppress(Exception):
                 client.close()
@@ -580,7 +578,6 @@ def run_workspace_reactor(
     """Resolve/admit once, then drive the shared reactor on this same thread."""
     generation = -1
     reactor: _WorkspaceReactor | None = None
-    token = ""
 
     def emit(event: WorkspaceEvent) -> None:
         outbound.put_nowait(event)
@@ -592,7 +589,6 @@ def run_workspace_reactor(
             return
         generation = bootstrap.generation
         token = bootstrap.token
-        bootstrap.token = ""
         resolved = _resolve_candidate(bootstrap, emit)
         if resolved is None:
             return
@@ -617,7 +613,6 @@ def run_workspace_reactor(
             config=config,
             emit=emit,
         )
-        token = ""
         if reactor is None:
             return
         reactor.run()
@@ -627,6 +622,5 @@ def run_workspace_reactor(
                 reactor._capture_crash(exc, operation="workspace.run")
             emit(WorkspaceCrashed(generation))
     finally:
-        token = ""
         if generation >= 0:
             emit(WorkspaceStopped(generation))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -17,6 +18,10 @@ def main() -> int:
     # contract instead of inheriting the child process's locale-dependent text
     # encoding (notably a Windows ANSI code page).
     payload = sys.stdin.buffer.read().decode("utf-8")
+    if sys.argv[2:] == ["interrupt_parent"]:
+        os.kill(os.getppid(), signal.SIGINT)
+        time.sleep(0.2)
+        return 0
     output.write_text(payload, encoding="utf-8")
     output.with_suffix(".marker").write_text(
         os.environ.get("TAUT_DEBUG_ACTION_ACTIVE", ""),

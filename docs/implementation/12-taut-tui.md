@@ -38,7 +38,8 @@ active conversation and explicit reply surface. The synchronous watcher
 callback commits a message to the UI model before returning. If shutdown or a
 newer selection rejects the commit, it raises public `WatcherRejected`; core
 translates that at the broker boundary so the rejected message does not
-advance the cursor or accumulate poison retries.
+advance the cursor. An ordinary active presentation failure ends the watcher
+and the degraded report names its original type and message.
 
 The same intent token crosses search-context and deletion-refresh work, so a
 late worker cannot commit after a newer target selection. Sends use independent
@@ -52,12 +53,15 @@ the deleted row from the active transcript and session snapshot after storage
 confirms the operation.
 
 A current-generation delivery rejected by the UI is handed back to the
-serialized session owner. That owner stops and clears the rejected watcher,
-then reports a generation-scoped degraded event for the UI status line. It does
-not acknowledge the rejected message or start a replacement watcher. Session
-shutdown attempts client cleanup even when watcher teardown fails, preserving
-the watcher failure as primary; queued UI completions are discarded once the
-base screen detaches.
+serialized session owner. The watcher drive finalizes before the exit monitor
+reports a generation-scoped degraded event for the UI status line. The monitor
+does not retry cleanup before reporting: it retains the stopped watcher for
+the next conversation switch or session close, where cleanup can be retried
+without hiding the original delivery cause from the human. It does not
+acknowledge the rejected message or start a replacement watcher.
+Session shutdown attempts client cleanup even when watcher teardown fails,
+preserving the watcher failure as primary; queued UI completions are discarded
+once the base screen detaches.
 
 Notifications differ on purpose. Every public watcher already claims the
 member notification queue, so the TUI stores those pointers in a bounded
@@ -253,6 +257,16 @@ a subprocess, or forwards CLI output. Explicit command targets are never
 replaced by the current visual selection. The screen owns text and parse
 feedback, while `TautApp` owns applicability, confirmation, worker submission,
 and result rendering.
+
+The form field tuple sets presentation order; fields do not store a second
+focus index. A form declares only its variable submit label; the screen owns
+the fixed control IDs and Cancel label. Forms and command bindings do not
+mirror action confirmation text, target declarations or action IDs that
+dispatch never reads. The action registry supplies confirmation wording.
+Command and direct leave/delete paths
+share their final domain submission; native forms retain their local validation
+and stale-selection handling. This keeps one domain operation without forcing
+different input surfaces into one parser.
 
 Search results remain public hydrated `SearchHit` values. `SearchScreen`
 receives an immutable snapshot of the actor-scoped navigation labels, so DM

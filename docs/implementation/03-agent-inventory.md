@@ -123,6 +123,14 @@ For plan review and final review:
 
 ## Refresh Guidance
 
+2026-09-28: Claude CLI 2.1.282 passed fresh liveness and write-containment
+probes for the simplification plan using `--safe-mode`, plan permissions,
+matched Read/Grep/Glob tools, strict MCP configuration, no session persistence,
+JSON output and closed stdin (120-second bounds). The probes returned
+`PROBE-OK` and `WRITE-UNAVAILABLE`, exit 0, success/end_turn, completed,
+`is_error=false`; no probe file appeared. The default model resolved to
+`claude-opus-5-5`. Review outcome belongs in the simplification plan.
+
 Update this file when:
 
 - the available tool surface changes

@@ -10,12 +10,12 @@ from typing import Any, cast
 
 import pytest
 from simplebroker import Queue, dump_lines, open_broker, resolve_broker_target
-from simplebroker.ext import IntegrityError, SidecarSession
+from simplebroker.ext import DatabaseError, SidecarSession
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
-    SummonSchemaVersionError,
+    SUMMON_SCHEMA_VERSION,
     ensure_summon_schema,
-    get_claim,
+    get_session,
     get_summon_schema_version,
 )
 
@@ -43,7 +43,7 @@ from taut.client import (
 )
 from taut.debug import capture_exception
 from taut.envelope import encode_envelope
-from taut.search._jobs import FAILED_QUEUE_NAME
+from taut.search._jobs import PENDING_QUEUE_NAME
 from taut.state import SqlDialect, dialect_for_taut_target
 from tests.conftest import build_cli_env, run_cli
 from tests.helpers.eventually import eventually
@@ -99,17 +99,17 @@ def test_system_doctor_is_passive_and_portable_across_sql_backends(
     finally:
         meta_queue.close()
 
-    failed = Queue(FAILED_QUEUE_NAME, db_path=target, config=config)
+    pending = Queue(PENDING_QUEUE_NAME, db_path=target, config=config)
     try:
-        failed.write("sanitized failed-work fixture")
+        pending.write("pending-work fixture")
     finally:
-        failed.close()
+        pending.close()
 
     finding = TautClient.doctor()
     search = next(check for check in finding.checks if check.name == "search_work")
-    assert finding.healthy is False
-    assert search.status == "fail"
-    assert search.data["failed"] == 1
+    assert finding.healthy is True
+    assert search.status == "pass"
+    assert search.data == {"pending": 1}
 
 
 def test_debug_capture_setting_and_queue_are_portable_across_sql_backends(
@@ -881,7 +881,7 @@ def test_project_automatic_name_skips_alias_owned_route_contract(
     assert automatic.whoami().name == "Codette"
 
 
-def test_project_summon_v2_claim_migration_and_route_index_contract(
+def test_project_summon_v2_upgrade_preserves_sessions_and_drops_claims(
     taut_project: Path,
 ) -> None:
     TautClient.init()
@@ -891,87 +891,22 @@ def test_project_summon_v2_claim_migration_and_route_index_contract(
         _install_summon_schema_v2(queue)
         with queue.sidecar(transaction=True) as session:
             session.run(
-                """
-                INSERT INTO taut_summon_claims (
-                    name, provider, driver_pid, driver_start_time, claimed_ts
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO taut_summon_claims (name, provider, driver_pid, driver_start_time, claimed_ts) VALUES (?, ?, ?, ?, ?)",
                 ("Reviewer", "scripted", 123, "legacy-start", 1),
+            )
+            session.run(
+                "INSERT INTO taut_summon_sessions (member_id, token, provider, updated_ts) VALUES (?, ?, ?, ?)",
+                ("m_legacy", "legacy-token", "scripted", 2),
             )
 
         ensure_summon_schema(queue)
 
-        assert get_summon_schema_version(queue) == 3
-        migrated = get_claim(queue, name="REVIEWER", provider="scripted")
-        assert migrated is not None
-        assert migrated["name"] == "reviewer"
-        with queue.sidecar(transaction=True) as session:
-            session.run(
-                """
-                INSERT INTO taut_summon_claims (
-                    name, provider, driver_pid, driver_start_time, claimed_ts
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                ("Legacy", "scripted", 789, "late-v2-start", 2),
-            )
-        assert get_claim(queue, name="legacy", provider="scripted") is not None
-        with pytest.raises(IntegrityError):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
-            with queue.sidecar(transaction=True) as session:
-                session.run(
-                    """
-                    INSERT INTO taut_summon_claims (
-                        name, provider, driver_pid, driver_start_time, claimed_ts
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    ("LEGACY", "scripted", 456, "duplicate-v2-start", 3),
-                )
-    finally:
-        queue.close()
-        client.close()
-
-
-def test_project_summon_v2_case_variant_migration_fails_before_mutation_contract(
-    taut_project: Path,
-) -> None:
-    TautClient.init()
-    client = TautClient()
-    queue = client.queue(LEDGER_QUEUE_NAME)
-    try:
-        _install_summon_schema_v2(queue)
-        with queue.sidecar(transaction=True) as session:
-            for name, pid in (("Reviewer", 123), ("reviewer", 456)):
-                session.run(
-                    """
-                    INSERT INTO taut_summon_claims (
-                        name, provider, driver_pid, driver_start_time, claimed_ts
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (name, "scripted", pid, f"legacy-{pid}", pid),
-                )
-
-        def migration_source_snapshot() -> tuple[
-            int | None, tuple[tuple[object, ...], ...]
-        ]:
-            with queue.sidecar() as session:
-                claims = tuple(
-                    tuple(row)
-                    for row in session.run(
-                        """
-                        SELECT name, provider, driver_pid,
-                               driver_start_time, claimed_ts
-                        FROM taut_summon_claims
-                        ORDER BY provider, name
-                        """,
-                        fetch=True,
-                    )
-                )
-            return get_summon_schema_version(queue), claims
-
-        before = migration_source_snapshot()
-        with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
-            ensure_summon_schema(queue)
-        assert before[0] == 2
-        assert migration_source_snapshot() == before
+        assert get_summon_schema_version(queue) == SUMMON_SCHEMA_VERSION
+        row = get_session(queue, "m_legacy")
+        assert row is not None
+        assert row["token"] == "legacy-token"
+        with queue.sidecar() as session, pytest.raises(DatabaseError):
+            list(session.run("SELECT * FROM taut_summon_claims", fetch=True))
     finally:
         queue.close()
         client.close()

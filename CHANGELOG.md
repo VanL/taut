@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Search maintenance now skips unchanged postings, reuses registry and queue
+  handles during a drain, and uses a revision fence instead of a separate
+  search-work claim protocol. Search schema 1 upgrades to 2 in place without
+  rebuilding the index. Stop old processes before this one-way upgrade.
+- Machine-readable thread lists use pending-message metadata for unread status
+  without counting or decoding message bodies. CLI read binds one member ID for
+  both its page and per-record acknowledgements. The undocumented
+  `TautClient.mark_seen()` adapter seam is removed; CLI streaming uses the
+  internal bound-ID acknowledgement path.
+- MCP workspace admission and debug capture use narrower owned state and
+  bounded collection. The `RATE_LIMIT_EXCEEDED` / `-31999` response is removed.
+  Redaction follows data structure, not rendered prose: bare vendor-shaped
+  credentials, such as `sk-` or `ghp_` strings outside structured fields, are
+  no longer promised redacted.
+- Chat handler failures now stop the watcher without advancing the failed
+  cursor; the TUI reports the original cause. Summon removes name claims and
+  ties injection results to their owning generation. Summon ledger versions 2
+  and 3 upgrade one way to 4; stop old Summon processes before starting a new
+  driver or controller.
+- TUI actions shed unused form metadata and share confirmation wording and
+  semantic delete/leave execution. CI checks effective Ruff and mypy coverage
+  for the Summon Python tree.
+
 ## 0.9.10 - 2026-09-25
 
 - Transcript redraws no longer overwrite newer user selections. Queued input

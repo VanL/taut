@@ -41,8 +41,8 @@ run a CLI and share a filesystem; what they lack is a way to talk.
 It should feel like:
 
 - **installable with pipx, deletable with rm** — no server, no
-  daemon, no dotfiles, no accounts; `taut init` creates one file and
-  that file is the entire installation,
+  daemon, no dotfiles, no accounts; `taut init` creates one primary
+  durable data file, with storage-owned sidecars possible,
 - **honest plumbing** — `.taut.db` is a standard SimpleBroker
   database; `broker -f .taut.db list` works; nothing is hidden,
 - **loud about its weak trust model** — saying it loudly is part of
@@ -53,7 +53,7 @@ It should feel like:
   with three shell commands and zero setup.
 
 "Simple" for Taut means **a small use surface and operational model**
-— no server, no required daemon, no config, one file — not a small
+— no server, no required daemon, no config, one primary durable data file — not a small
 source count. Cohesive internal machinery is justified when it
 protects that external model. (Owner-ratified 2026-08-07, adopting
 SimpleBroker's revised account of the same word.)

@@ -5,23 +5,16 @@ All summon-owned SQL lives in this module, mirroring core's
 ``Queue.sidecar(transaction=True)``, qmark parameters only, and
 single-transaction read-modify-write for every mutation.
 
-The ledger is split by lifetime per [SUM-8]:
-
-- ``taut_summon_claims`` — transient. One row per in-flight bootstrap,
-  keyed ``(name, provider)`` with ``name`` normalized to the lowercase Taut
-  route key (the concurrent-summon serialization point, [SUM-4]). Rows are
-  deleted after session publication; a row whose
-  driver evidence is dead is reclaimable.
-- ``taut_summon_sessions`` — durable. One row per summoned member, keyed
+The ledger contains ``taut_summon_sessions``: one row per summoned member, keyed
   ``member_id`` (created only after the member exists). Names never key
   durable state ([SUM-8]): callers resolve the current name through core
   to a member_id first.
 
 Versioning rides the shared ``taut_meta`` table under the extension-owned
 ``summon_schema_version`` key, with core's fail-closed gate shape: a
-newer stored version refuses to run (upgrade taut-summon), version 2 migrates
-transient claim names to lowercase route keys, and older versions refuse
-(recreate the development database). Core's own
+newer stored version refuses to run (upgrade taut-summon), and versions 2 and 3
+upgrade forward by discarding obsolete transient claims. Older versions refuse.
+Core's own
 ``schema_version`` key is never read or written here.
 
 Composite dump/load projects only durable session continuity and clears driver
@@ -29,8 +22,7 @@ evidence on import per [PIO-5.3].
 
 Single-driver guard ([SUM-8]): driver evidence is pid + start-time,
 live-checked the same way presence does (``taut.identity`` — a blessed
-extension surface per [SUM-4]). Guard semantics, applied by both
-``claim_name`` and ``claim_driver``:
+extension surface per [SUM-4]). Guard semantics, applied by ``claim_driver``:
 
 - evidence provably live (pid exists, start-time matches) → refuse,
   always. ``--takeover`` replaces a dead or abandoned claim, never a
@@ -51,14 +43,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict
 
 from simplebroker import Queue
-from simplebroker.ext import DatabaseError, IntegrityError, SidecarSession
+from simplebroker.ext import DatabaseError, SidecarSession
 
-from taut.identity import capture_process, route_key
+from taut.identity import capture_process
 
-SUMMON_SCHEMA_VERSION = 3
+SUMMON_SCHEMA_VERSION = 4
 SUMMON_SCHEMA_VERSION_KEY = "summon_schema_version"
 LEDGER_QUEUE_NAME = "taut.summon_state"
 
@@ -70,16 +62,6 @@ CREATE TABLE IF NOT EXISTS taut_meta (
 """
 
 _TABLE_DDL: tuple[str, ...] = (
-    """
-    CREATE TABLE IF NOT EXISTS taut_summon_claims (
-        name              TEXT NOT NULL,
-        provider          TEXT NOT NULL,
-        driver_pid        BIGINT NOT NULL,
-        driver_start_time TEXT NOT NULL,
-        claimed_ts        BIGINT NOT NULL,
-        PRIMARY KEY (name, provider)
-    )
-    """,
     """
     CREATE TABLE IF NOT EXISTS taut_summon_sessions (
         member_id           TEXT PRIMARY KEY,
@@ -93,11 +75,7 @@ _TABLE_DDL: tuple[str, ...] = (
     )
     """,
 )
-_CLAIM_ROUTE_KEY_INDEX_DDL = """
-CREATE UNIQUE INDEX IF NOT EXISTS taut_summon_claim_route_key_uq
-ON taut_summon_claims (LOWER(name), provider)
-"""
-_DDL: tuple[str, ...] = (*_TABLE_DDL, _CLAIM_ROUTE_KEY_INDEX_DDL)
+_DDL = _TABLE_DDL
 
 
 _SELECT_SUMMON_SCHEMA_VERSION = """
@@ -108,34 +86,6 @@ INSERT INTO taut_meta (key, value) VALUES (?, ?)
 """
 _UPDATE_SUMMON_SCHEMA_VERSION = """
 UPDATE taut_meta SET value = ? WHERE key = ?
-"""
-_SELECT_CLAIM_ROUTE_KEYS = """
-SELECT name, provider FROM taut_summon_claims
-ORDER BY provider, name
-"""
-_UPDATE_CLAIM_ROUTE_KEY = """
-UPDATE taut_summon_claims SET name = ? WHERE name = ? AND provider = ?
-"""
-_SELECT_CLAIM_BY_NAME_PROVIDER = """
-SELECT name, provider, driver_pid, driver_start_time, claimed_ts
-FROM taut_summon_claims
-WHERE LOWER(name) = ? AND provider = ?
-"""
-_SELECT_CLAIM_EVIDENCE_BY_NAME_PROVIDER = """
-SELECT driver_pid, driver_start_time
-FROM taut_summon_claims
-WHERE LOWER(name) = ? AND provider = ?
-"""
-_DELETE_CLAIM_BY_EXACT_EVIDENCE = """
-DELETE FROM taut_summon_claims
-WHERE LOWER(name) = ? AND provider = ?
-  AND driver_pid = ? AND driver_start_time = ?
-"""
-_INSERT_CLAIM = """
-INSERT INTO taut_summon_claims (
-    name, provider, driver_pid, driver_start_time, claimed_ts
-)
-VALUES (?, ?, ?, ?, ?)
 """
 _SESSION_SELECT_BY_MEMBER = """
 SELECT member_id, token, provider, provider_session_id,
@@ -217,22 +167,8 @@ class SummonSchemaVersionError(SummonStateError):
     """The stored summon schema version is incompatible with this package."""
 
 
-class ClaimConflictError(SummonStateError):
-    """A live or unverifiable bootstrap claim already holds (name, provider)."""
-
-
 class DriverConflictError(SummonStateError):
     """A live or unverifiable driver already holds the session row."""
-
-
-class SummonClaimRow(TypedDict):
-    """One transient bootstrap claim."""
-
-    name: str
-    provider: str
-    driver_pid: int
-    driver_start_time: str
-    claimed_ts: int
 
 
 class SummonSessionRow(TypedDict):
@@ -246,49 +182,6 @@ class SummonSessionRow(TypedDict):
     driver_start_time: str | None
     wired: bool
     updated_ts: int
-
-
-def _migrate_summon_schema_v2_to_v3(session: SidecarSession) -> None:
-    rows = list(session.run(_SELECT_CLAIM_ROUTE_KEYS, fetch=True))
-    normalized: dict[tuple[str, str], str] = {}
-    for row in rows:
-        old_name = str(row[0])
-        provider = str(row[1])
-        key = (route_key(old_name), provider)
-        previous = normalized.get(key)
-        if previous is not None:
-            raise SummonSchemaVersionError(
-                "summon schema version 2 has case-variant claims "
-                f"'{previous}' and '{old_name}' for provider '{provider}'; "
-                "clear one transient claim and retry the upgrade"
-            )
-        normalized[key] = old_name
-
-    for (name_key, provider), old_name in normalized.items():
-        if name_key != old_name:
-            session.run(_UPDATE_CLAIM_ROUTE_KEY, (name_key, old_name, provider))
-    try:
-        session.run(_CLAIM_ROUTE_KEY_INDEX_DDL)
-    except (DatabaseError, IntegrityError) as exc:
-        raise SummonSchemaVersionError(
-            "summon schema version 2 gained colliding case-variant claims "
-            "during migration; clear one transient claim and retry the upgrade"
-        ) from exc
-
-    # CREATE INDEX serializes with concurrent writers on supported SQL backends.
-    # Re-read under that lock and normalize any non-conflicting v2 write that
-    # committed after the initial preflight but before index construction.
-    late_rows = list(session.run(_SELECT_CLAIM_ROUTE_KEYS, fetch=True))
-    for row in late_rows:
-        old_name = str(row[0])
-        provider = str(row[1])
-        name_key = route_key(old_name)
-        if name_key != old_name:
-            session.run(_UPDATE_CLAIM_ROUTE_KEY, (name_key, old_name, provider))
-    session.run(
-        _UPDATE_SUMMON_SCHEMA_VERSION,
-        (str(SUMMON_SCHEMA_VERSION), SUMMON_SCHEMA_VERSION_KEY),
-    )
 
 
 def ensure_summon_schema(queue: Queue) -> None:
@@ -308,10 +201,14 @@ def ensure_summon_schema(queue: Queue) -> None:
                     f"summon schema version {version} is newer than supported "
                     f"version {SUMMON_SCHEMA_VERSION}; upgrade taut-summon"
                 )
-            if version == 2 and SUMMON_SCHEMA_VERSION == 3:
+            if version in (2, 3):
                 for statement in _TABLE_DDL:
                     session.run(statement)
-                _migrate_summon_schema_v2_to_v3(session)
+                session.run("DROP TABLE IF EXISTS taut_summon_claims")
+                session.run(
+                    _UPDATE_SUMMON_SCHEMA_VERSION,
+                    (str(SUMMON_SCHEMA_VERSION), SUMMON_SCHEMA_VERSION_KEY),
+                )
                 return
             if version < SUMMON_SCHEMA_VERSION:
                 raise SummonSchemaVersionError(
@@ -343,24 +240,19 @@ def get_summon_schema_version(queue: Queue) -> int | None:
 
 
 def validate_summon_schema(queue: Queue) -> None:
-    """Passively prove the current Summon metadata and table projections."""
+    """Passively prove a supported Summon schema's durable projection."""
 
     try:
         version = get_summon_schema_version(queue)
     except (DatabaseError, TypeError, ValueError) as exc:
         raise SummonSchemaVersionError("summon schema metadata is unreadable") from exc
-    if version != SUMMON_SCHEMA_VERSION:
+    if version not in (2, 3, SUMMON_SCHEMA_VERSION):
         raise SummonSchemaVersionError(
             f"summon schema version {version!r} is incompatible with "
             f"version {SUMMON_SCHEMA_VERSION}"
         )
     try:
         with queue.sidecar() as session:
-            session.run(
-                """SELECT name, provider, driver_pid, driver_start_time, claimed_ts
-                   FROM taut_summon_claims WHERE 1 = 0""",
-                fetch=True,
-            )
             session.run(
                 """SELECT member_id, token, provider, provider_session_id,
                           driver_pid, driver_start_time, wired, updated_ts
@@ -386,140 +278,6 @@ def capture_driver_evidence(pid: int | None = None) -> tuple[int, str]:
     if proc is None or proc.start_time is None:
         raise SummonStateError(f"cannot capture start-time evidence for pid {target}")
     return target, proc.start_time
-
-
-# --- transient bootstrap claims ([SUM-4]) ------------------------------------
-
-
-def claim_name(
-    queue: Queue,
-    *,
-    name: str,
-    provider: str,
-    driver_pid: int,
-    driver_start_time: str,
-    claimed_ts: int,
-    takeover: bool = False,
-) -> SummonClaimRow:
-    """Transactionally claim (name, provider) for an in-flight bootstrap.
-
-    An existing claim is honored while its driver evidence is live,
-    reclaimed when it is dead, and held (unless ``takeover``) when it
-    cannot be verified. A concurrent loser surfaces as
-    ``ClaimConflictError`` for the caller's [SUM-4] collision rule.
-    """
-
-    name = route_key(name)
-    existing = get_claim(queue, name=name, provider=provider)
-    if existing is not None:
-        held_pid = existing["driver_pid"]
-        held_start = existing["driver_start_time"]
-        same_driver = held_pid == driver_pid and held_start == driver_start_time
-        if not same_driver:
-            liveness = _evidence_liveness(held_pid, held_start)
-            if liveness == "live":
-                raise ClaimConflictError(
-                    f"summon of '{name}' ({provider}) is already in "
-                    f"flight: driver pid {held_pid} is live"
-                )
-            if liveness == "indeterminate" and not takeover:
-                raise ClaimConflictError(
-                    f"cannot verify the driver (pid {held_pid}) holding "
-                    f"the claim on '{name}' ({provider}); rerun with "
-                    "--takeover to replace it"
-                )
-
-    with queue.sidecar(transaction=True) as session:
-        current = _claim_row(
-            _one(session, _SELECT_CLAIM_BY_NAME_PROVIDER, (name, provider))
-        )
-        if current is not None:
-            if existing is None or (
-                current["driver_pid"],
-                current["driver_start_time"],
-                current["claimed_ts"],
-            ) != (
-                existing["driver_pid"],
-                existing["driver_start_time"],
-                existing["claimed_ts"],
-            ):
-                raise ClaimConflictError(
-                    f"summon of '{name}' ({provider}) is already in flight"
-                )
-            session.run(
-                _DELETE_CLAIM_BY_EXACT_EVIDENCE,
-                (
-                    name,
-                    provider,
-                    current["driver_pid"],
-                    current["driver_start_time"],
-                ),
-            )
-        try:
-            session.run(
-                _INSERT_CLAIM,
-                (name, provider, driver_pid, driver_start_time, claimed_ts),
-            )
-        except IntegrityError as exc:
-            raise ClaimConflictError(
-                f"summon of '{name}' ({provider}) is already in flight"
-            ) from exc
-    claim = get_claim(queue, name=name, provider=provider)
-    if claim is None:
-        raise SummonStateError("inserted claim could not be read back")
-    return claim
-
-
-def get_claim(queue: Queue, *, name: str, provider: str) -> SummonClaimRow | None:
-    name = route_key(name)
-    with queue.sidecar() as session:
-        row = _one(
-            session,
-            _SELECT_CLAIM_BY_NAME_PROVIDER,
-            (name, provider),
-        )
-    return _claim_row(row)
-
-
-def release_claim(
-    queue: Queue,
-    *,
-    name: str,
-    provider: str,
-    driver_pid: int,
-    driver_start_time: str,
-) -> bool:
-    """Delete a bootstrap claim owned by this driver; return whether it did.
-
-    Ownership-checked like ``release_driver``: after another driver
-    reclaims or takes over the (name, provider) slot, the replaced
-    driver's cleanup is a no-op returning ``False``.
-    """
-
-    name = route_key(name)
-    with queue.sidecar(transaction=True) as session:
-        row = _one(
-            session,
-            _SELECT_CLAIM_EVIDENCE_BY_NAME_PROVIDER,
-            (name, provider),
-        )
-        if row is None or int(row[0]) != driver_pid or row[1] != driver_start_time:
-            return False
-        # Evidence predicates on the delete for read-committed backends
-        # (see release_driver).
-        session.run(
-            _DELETE_CLAIM_BY_EXACT_EVIDENCE,
-            (name, provider, driver_pid, driver_start_time),
-        )
-        confirm = _one(
-            session,
-            _SELECT_CLAIM_BY_NAME_PROVIDER,
-            (name, provider),
-        )
-    return confirm is None
-
-
-# --- durable sessions ---------------------------------------------------------
 
 
 def record_session(
@@ -626,14 +384,13 @@ def persistence_records(queue: Queue) -> list[dict[str, Any]]:
 
 
 def persistence_is_fresh(queue: Queue) -> bool:
-    """Return whether both durable and transient Summon tables are empty."""
+    """Return whether the durable Summon session table is empty."""
 
     with queue.sidecar() as session:
-        for table in ("taut_summon_claims", "taut_summon_sessions"):
-            rows = list(session.run(f"SELECT COUNT(*) FROM {table}", (), fetch=True))
-            if not rows or int(rows[0][0]) != 0:
-                return False
-    return True
+        rows = list(
+            session.run("SELECT COUNT(*) FROM taut_summon_sessions", (), fetch=True)
+        )
+    return bool(rows) and int(rows[0][0]) == 0
 
 
 def load_persistence_records(
@@ -910,21 +667,6 @@ def _one(
 ) -> tuple[Any, ...] | None:
     rows = list(session.run(sql, params, fetch=True))
     return rows[0] if rows else None
-
-
-def _claim_row(row: tuple[Any, ...] | None) -> SummonClaimRow | None:
-    if row is None:
-        return None
-    try:
-        return {
-            "name": cast(str, row[0]),
-            "provider": cast(str, row[1]),
-            "driver_pid": int(row[2]),
-            "driver_start_time": cast(str, row[3]),
-            "claimed_ts": int(row[4]),
-        }
-    except (IndexError, TypeError, ValueError) as exc:
-        raise DatabaseError("malformed summon claim row") from exc
 
 
 def _session_row(row: tuple[Any, ...] | None) -> SummonSessionRow | None:

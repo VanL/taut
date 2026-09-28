@@ -40,6 +40,9 @@ class _EntryPoint:
 
 
 class _CompleteProvider:
+    def schema_version(self) -> int:
+        return 2
+
     def ensure_schema(self) -> None: ...
 
     def replace_document(
@@ -234,3 +237,16 @@ def test_postgres_provider_discovery_rejects_untrusted_or_ambiguous_claims(
         _discovery.load_search_provider(
             backend_name="postgres", sidecar=cast(SidecarAccessor, object())
         )
+
+
+def test_provider_missing_schema_version_reports_invalid_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.search import _discovery
+
+    monkeypatch.setattr(_CompleteProvider, "schema_version", None)
+    with pytest.raises(
+        _discovery.SearchProviderUnavailableError,
+        match=r"taut-pg.*(install|upgrade)",
+    ):
+        _discovery._validate_provider(_CompleteProvider())

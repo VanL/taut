@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-09-28-simplification-and-hot-path-plan.md` | active | yes | Independently reviewed Class 5 plan. Implementation and macOS verification passed for pending-only search, forward upgrades, hot paths, MCP, Summon, fail-stop watch, and behavioral tests; native Windows qualification remains. |
 | `2026-09-24-windows-tui-determinism-root-cause-plan.md` | completed | no | Implementation and qualification pass at `3a0f30c`: five full Windows repetitions, 765 passes each, plus all four non-Windows lanes. S4: cause unresolved; accepted by owner on 2026-09-25, with scoped waiver and recurrence/new-evidence reopen condition. |
 | `2026-09-24-tui-text-selection-and-clipboard-plan.md` | completed | no | Class 5 hardened implementation: framework text selection in the transcript, `y` and 500 ms auto-copy through OSC 52, copied text pinned to the policy-filtered display form. Review and automated verification passed; owner accepted the two-terminal observation as a residual. |
 | `2026-09-24-cli-read-delivery-and-agent-recipes-plan.md` | active | no | Independently reviewed Class 5 hardened plan: delivery-aware reads, quiet-read rejection, silent repeated joins, exact reply ids, and markup-blind mention proof are implemented; truthful invalid-target discovery is blocked on a SimpleBroker strict-discovery seam recorded in the plan. |

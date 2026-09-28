@@ -7,7 +7,7 @@ extension (`extensions/taut_summon/`): how a summoned agent harness is hosted
 as an ordinary workspace member without a daemon, a bespoke agent protocol, or
 any change to frozen core state. It covers the ears/mouth split, the
    captive-process/free-agent posture, the driver's single foreground reactor, the
-   two-table session ledger, the `sys.*` control queues, and the
+   durable session ledger, the `sys.*` control queues, and the
    SimpleBroker-handle ownership boundary the extension holds to.
 
 It does not restate the contract — that lives in the spec
@@ -95,8 +95,8 @@ run through ConPTY rather than a vendor-specific stream path.
 
 Summon registers a lazy `taut-summon` persistence component for full-workspace
 dump/load. The component exports durable member continuity (`member_id`, token,
-provider, wired state, and update timestamp) while excluding bootstrap claims
-and driver pid/start evidence. Restored rows cannot falsely claim an old driver
+provider, wired state, and update timestamp) while excluding driver pid/start
+evidence. Restored rows cannot falsely claim an old driver
 is live.
 
 Core owns framing, file and guard lifecycle, and supplies the Queue and shared
@@ -236,16 +236,23 @@ injection worker receives an immutable handle, generation, and formatted text;
 it performs only native injection and publishes a completion. Until the owner
 accepts success, the chat cursor is retained and all non-control acquisition
 is gated, including claim-based notifications. Failure and cancellation do not
-advance the cursor or spend malformed-content poison strikes. A checked join
+advance the cursor. Ordinary preparation failure instead stops the watcher
+once and leaves the record unread. A checked join
 establishes real worker retirement before source retirement or provider replacement.
+The reactor discards that generation's result queue only after the join and
+clears its pending gate without advancing the cursor. There is no second
+current-generation callback fence. The driver latches any failed retirement
+in one helper and refuses successor activation.
 
 The continuous PTY event pump owns native output draining. It publishes frozen
-generation-tagged activity, exit, and retirement records; it never constructs a
-Taut client. The foreground rejects stale generations and performs liveness
-writes. Spawn, settle, attach, orientation, and close likewise use bounded
+activity, exit, and retirement records into its generation's private result
+queue; it never constructs a Taut client. Only that generation's owner
+consumes those records and performs liveness writes. Spawn, settle, attach,
+orientation, and close likewise use bounded
 native workers. Successful native results remain pending until the owner's
 broker acceptance succeeds. If acceptance fails, terminal cleanup still owns
-that result and cannot strand a newly spawned provider handle. Ownership is published before pump startup.
+that result and cannot strand a newly spawned provider handle. Ownership is
+published before pump startup.
 
 Native workers notify the same retained arbiter after publication. The POSIX
 adapter's select/quiet-child observation and Windows cancellation/ConPTY waits
@@ -614,83 +621,34 @@ the provider does not redraw after detach.
 `TAUT_HOST_TUI=1` is the fallback marker for an uncooperative nested shell-out.
 A cooperative in-process host supplies its own interaction instead.
 
-### The session ledger: split by lifetime ([SUM-8])
+### The session ledger and core name arbitration ([SUM-4], [SUM-8])
 
-`extensions/taut_summon/taut_summon/_state.py` owns two extension sidecar
-tables, versioned under their own `taut_meta` key `summon_schema_version` so
-core's schema gate is untouched (verified: the core suite passes against a db
-bearing summon tables — the oblivious-core invariant):
+`extensions/taut_summon/taut_summon/_state.py` owns one durable extension
+sidecar table, `taut_summon_sessions`, versioned under the independent
+`taut_meta.summon_schema_version` key. Its member-id primary key stores the
+continuity token, provider, driver evidence, `wired` flag, and update time.
+Names remain core-owned mutable routes. Core's atomic `join(..., new=True)`
+under the final name is the sole first-summon exclusion point. Chosen-name
+collisions refuse at every timing. Implied names use the existing bounded
+`choose_name` fallback. Successful creation is followed by remaining thread
+joins and then session-row publication; a failure after member creation can
+leave a visible residual member. The initiating terminal receives its token
+and non-destructive rename/retry instructions.
 
-- `taut_summon_claims` — **transient**. One row per in-flight bootstrap,
-  `(name, provider)` primary key. Version-3 writers store the lowercase Taut
-  route key; `LOWER(name)` lookup plus a unique expression index on
-  `(LOWER(name), provider)` makes `Claude` and `claude` one slot even while an
-  already-running version-2 writer drains. This is the concurrent-summon
-  serialization point ([SUM-4]): a losing racer takes the constraint
-  error and applies the collision rule. Deleted after session publication; a row
-  whose driver evidence is dead is reclaimable. Because it is transient, a
-  name renamed away from is claimable again — the name key never permanently
-  occupies anything.
-- `taut_summon_sessions` — **durable**. One row per summoned member,
-  `member_id` primary key (created only after the member exists, so never
-  NULL on any backend). Holds the member's continuity token (captured once at
-  creation, [SUM-6]), provider, driver liveness evidence, and the PTY `wired`
-  flag. The historical nullable provider-session column remains physical and
-  is always written as NULL.
+Schema version 4 drops the obsolete transient `taut_summon_claims` table.
+Supported version 2 and 3 databases upgrade directly to 4 in one sidecar
+transaction, preserving session rows and discarding claims. There is no
+claim-name normalization, mixed-version protocol, or alternate index rebuild.
+The historical v2 fixture remains a release-derived source for cross-backend
+upgrade tests. Passive validation accepts upgradeable versions 2 and 3 as well
+as current version 4, checking their common durable session projection without
+running the upgrade.
 
-Names never key durable state ([IAN-4.4]: names are mutable). Every
-post-creation lookup — `stop`, `status`, re-summon — resolves the *current*
-name through core (`who()`) to a `member_id` and reads the sessions row by
-that key. This is why a mid-run `taut set name` does not strand the control
-plane, and why re-summoning a renamed-away name creates a fresh member rather
-than adopting the old one.
-
-Summon state helpers are a thin sidecar layer over SimpleBroker. SQL is fixed
-module-level template text with qmark parameters and one canonical session
-projection; there is no `SELECT *`, no runtime-assembled projection, and no
-taut retry wrapper around sidecar calls. Row-shape failures are Taut contract
-failures and surface immediately. Claim and driver ownership helpers keep
-SQLite write transactions short: they read evidence, release the operation,
-run process-liveness checks outside the write transaction, then perform a short
-predicate-guarded write that rechecks enough ownership to preserve race safety.
-Schema version 3 migrates version-2 transient claim names to lowercase route
-keys and constructs the unique route expression index in the same sidecar
-transaction as the version update. Index construction serializes against claim
-inserts on SQLite and PostgreSQL; a second read under that lock normalizes a
-non-conflicting late version-2 write. Case-variant collisions fail with version
-2 and every claim row untouched, so operators resolve one transient owner and
-retry without a partial migration. Normalized lookup keeps any version-2 write
-that begins after commit visible until it is released or reclaimed.
-
-Migration proof installs version 2 from the fixed JSON fixture in
-`extensions/taut_summon/tests/fixtures/summon-schema-v2.json`. Its four
-portable parameterized steps are copied from `_state.py` at the released
-`taut_summon/v0.5.3` source commit recorded in the fixture: metadata-table DDL,
-the two extension-table DDL statements, and the v2 version-row insert. Root
-shared-contract and extension tests each load that fixed path locally and run
-the steps through their real SQLite or PostgreSQL sidecar. The fixture is not
-made by running the current installer and rewriting its version marker, because
-that would test the target's idea of history rather than the historical
-producer's state. It is deliberately not a generic migration-fixture format or
-SQL parser.
-
-The bootstrap order ([SUM-4]) resolves three constraints at once:
-the token/env cycle (the token must exist before the child is spawned with
-it), the concurrent-summon race, and the never-touch-a-foreign-member rule.
-An implied provider request runs through core's `choose_name` before its first
-claim, so `taut summon scripted` creates `Scripted`; an explicit
-`taut summon reviewer --provider scripted` preserves `reviewer`. Later
-automatic fallbacks use the same cased candidate path for either request form.
-Each bounded candidate attempt claims the proposed final name, then calls core
-`join(new=True)` directly under that name. Core's fail-not-adopt rule makes an
-occupied route a clean collision: Summon releases only that attempt's transient
-claim and tries the documented fallback. It never creates a visible temporary
-member and never deletes a member as rollback. A later failure after successful
-creation can leave a final-named ordinary member. The initiating terminal gets
-its continuity token and the non-destructive recovery command: rename that
-residual member aside with `TAUT_TOKEN=... taut set name ...`, then summon
-again. It cannot be resumed as a summoned session because no session row was
-published.
+The live single-driver guard remains on each durable session row. It uses
+pid/start-time evidence with a predicated sidecar update, refuses a live
+driver, and permits explicit takeover only for unverifiable abandoned
+evidence. Its process-liveness check runs outside the write transaction.
+Dump/load projects durable sessions without driver evidence.
 
 ### Control plane: unregistered `sys.*` queues, weft-congruent verbs ([SUM-9])
 
@@ -757,9 +715,9 @@ POSIX attach reads shutdown in its existing bounded native `select` pass; the
 Event-to-pipe forwarder and its polling thread are gone. Windows console cleanup
 retries only actual interruption (`KeyboardInterrupt`, `SystemExit`, or
 `InterruptedError`); deterministic failures preserve the primary error and end
-cleanup instead of spinning. Generation state holds only the fencing token and
-exit result. Run-owned latches replace generation aliases; no lock serializes
-owner-only generation updates.
+cleanup instead of spinning. Generation state holds its private pump-result
+queue and exit result. Run-owned latches replace generation aliases; no lock
+serializes owner-only generation updates.
 
 POSIX PTY and Windows ConPTY mechanics remain separate because their resources
 and cancellation primitives differ. STATUS reserved keys remain separate from
@@ -920,7 +878,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/interaction.py` | Textual-free public acknowledgement/terminal-lease protocol and lazily core-dependent shell adapter ([SUM-7.4]/[SUM-13]) |
 | `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, exit-code mapping, and standalone unexpected-exception capture boundary |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, nonblocking terminal-close request, foreground finalization; `format_injection` ([SUM-5.2]) |
-| `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
+| `extensions/taut_summon/taut_summon/_state.py` | The durable session ledger, forward upgrade and single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Same-owner `ControlPolicy`, bounded `_ReplyReactor`, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_process_domain_posix.py` | POSIX atomic spawn boundary, capability-minimal process I/O view, non-reaping group owner, and one leader reap ([SUM-7.1]) |

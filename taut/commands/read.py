@@ -35,7 +35,9 @@ class ReadCommand:
             )
             return 1
         client = context.client()
-        messages = client.read_unread(args.thread, advance=False)
+        member_id, messages = client._read_unread_with_member_id(
+            args.thread, advance=False
+        )
         try:
             emit_messages(
                 messages,
@@ -45,8 +47,8 @@ class ReadCommand:
                 stdout=context.stdout,
                 stderr=context.stderr,
                 thread_labels=client.last_thread_display_names,
-                on_delivered=lambda message: client.mark_seen(
-                    message.thread, message.ts
+                on_delivered=lambda message: client._mark_seen_for_member(
+                    member_id, message.thread, message.ts
                 ),
             )
         except BrokenPipeError:

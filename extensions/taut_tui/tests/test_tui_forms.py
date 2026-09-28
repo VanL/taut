@@ -8,17 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from taut_tui.actions import ActionId, ConfirmationPolicy, action_spec
+from taut_tui.actions import ActionId, action_spec
 from taut_tui.forms import (
     ACTION_INPUT_SPECS,
     FORM_SPECS,
     ActionApplicability,
     ActionApplicabilityFacts,
     ActionInputKind,
-    ConfirmationTarget,
     ContextRequirement,
     FieldKind,
-    VisualValidationCode,
     evaluate_action_applicability,
     form_spec,
     input_spec,
@@ -182,7 +180,7 @@ def test_every_non_summon_action_has_one_closed_input_classification() -> None:
     )
 
 
-def test_every_form_has_exact_typed_fields_labels_and_focus_order() -> None:
+def test_every_form_has_exact_typed_fields_and_labels() -> None:
     for action_id, expected_fields in EXPECTED_FORM_FIELDS.items():
         form = form_spec(action_id)
         assert (
@@ -199,16 +197,7 @@ def test_every_form_has_exact_typed_fields_labels_and_focus_order() -> None:
             )
             == expected_fields
         )
-        assert tuple(field.focus_order for field in form.fields) == tuple(
-            range(len(expected_fields))
-        )
-        assert form.submit.label == EXPECTED_SUBMIT_LABELS[action_id]
-        assert form.cancel.label == "Cancel"
-        assert form.focus_order == (
-            *(field.field_id for field in form.fields),
-            form.submit.control_id,
-            form.cancel.control_id,
-        )
+        assert form.submit_label == EXPECTED_SUBMIT_LABELS[action_id]
 
 
 def test_continuity_token_is_masked_and_cleared_when_form_closes() -> None:
@@ -279,25 +268,6 @@ def test_registered_summon_action_has_no_core_context_requirement() -> None:
     ) == ActionApplicability(enabled=True)
 
 
-def test_confirmation_metadata_is_the_actions_registry_contract() -> None:
-    for action_id, spec in ACTION_INPUT_SPECS.items():
-        action = action_spec(action_id)
-        assert spec.confirmation is action.confirmation
-        assert spec.confirmation_prompt == action.confirmation_prompt
-
-    expected_targets = {
-        ActionId.CHANNEL_LEAVE: (ConfirmationTarget.CONTEXT, None),
-        ActionId.CHANNEL_RENAME: (ConfirmationTarget.CONTEXT, None),
-        ActionId.MESSAGE_DELETE: (ConfirmationTarget.CONTEXT, None),
-        ActionId.SYSTEM_DUMP: (ConfirmationTarget.FIELD, "output_path"),
-    }
-    assert {
-        action_id: (spec.confirmation_target, spec.confirmation_field)
-        for action_id, spec in ACTION_INPUT_SPECS.items()
-        if spec.confirmation is not ConfirmationPolicy.NEVER
-    } == expected_targets
-
-
 def test_visual_validation_only_marks_required_or_nonblank_fields() -> None:
     join = form_spec(ActionId.CHANNEL_JOIN)
 
@@ -305,11 +275,11 @@ def test_visual_validation_only_marks_required_or_nonblank_fields() -> None:
     blank = validate_visual_input(join, {"channel": "   "})
     domain_invalid = validate_visual_input(join, {"channel": "bad.name"})
 
-    assert [(error.field_id, error.code) for error in missing] == [
-        ("channel", VisualValidationCode.REQUIRED)
+    assert [(error.field_id, error.message) for error in missing] == [
+        ("channel", "Channel is required.")
     ]
-    assert [(error.field_id, error.code) for error in blank] == [
-        ("channel", VisualValidationCode.NONBLANK)
+    assert [(error.field_id, error.message) for error in blank] == [
+        ("channel", "Channel must not be blank.")
     ]
     assert domain_invalid == ()
 

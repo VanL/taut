@@ -149,9 +149,13 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
         if all_threads and direct_messages:
             raise ValueError("all and dms are mutually exclusive")
         if direct_messages:
-            records = tuple(client.list_direct_messages())
+            records = tuple(client.list_direct_messages(include_unread_counts=False))
         else:
-            records = tuple(client.list_threads(all_threads=all_threads))
+            records = tuple(
+                client.list_threads(
+                    all_threads=all_threads, include_unread_counts=False
+                )
+            )
     elif name == "channel_show":
         records = (client.get_channel(cast(str, arguments["channel"])),)
     elif name == "channel_topic":
