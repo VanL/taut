@@ -6,7 +6,7 @@ workflow verification gate; neither change alters shipped product behavior.
 Plan type: spec-authoring clarification plus test correction.
 Hardening: N/A — no risky trigger. No public behavior, persistence, rollout,
 or runtime lifecycle changes.
-Lifecycle status: `docs/plans/README.md` is authoritative.
+Lifecycle status: completed at `02bbe55`; `docs/plans/README.md` is authoritative.
 
 ## Goal
 
