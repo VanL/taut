@@ -101,6 +101,7 @@ def _checked_python_files(
     assert root_job.get("continue-on-error", False) is False, (
         "lint job cannot use continue-on-error for static checks"
     )
+    assert "if" not in root_job, "lint job cannot be conditional for static checks"
     covered: set[str] = set()
     explicit: set[str] = set()
     for step in _named_steps(root_job).values():
@@ -117,6 +118,7 @@ def _checked_python_files(
             assert step.get("continue-on-error", False) is False, (
                 f"{tool} step cannot use continue-on-error"
             )
+            assert "if" not in step, f"{tool} step cannot be conditional"
             assert (
                 re.search(r"(?:\|\||;)\s*(?:true|:|exit\s+0)(?=$|[\s;#])", line) is None
             ), f"{tool} command masks failure: {line}"
@@ -215,18 +217,27 @@ def test_root_static_coverage_rejects_dropped_summon_tree(tool: str) -> None:
 
 @pytest.mark.parametrize("owner", ["job", "step"])
 @pytest.mark.parametrize("tool", ["ruff", "mypy"])
-def test_root_static_coverage_rejects_continue_on_error(tool: str, owner: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "diagnostic"),
+    [
+        ("continue-on-error", True, "continue-on-error"),
+        ("if", "${{ false }}", "conditional"),
+    ],
+)
+def test_root_static_coverage_rejects_disabled_checks(
+    tool: str, owner: str, field: str, value: object, diagnostic: str
+) -> None:
     workflow = deepcopy(_workflow_data("test.yml"))
     root_job = workflow["jobs"]["lint"]
     if owner == "job":
-        root_job["continue-on-error"] = True
+        root_job[field] = value
     else:
         step_name = (
             "Check formatting with ruff" if tool == "ruff" else "Type check with mypy"
         )
-        _named_steps(root_job)[step_name]["continue-on-error"] = True
+        _named_steps(root_job)[step_name][field] = value
 
-    with pytest.raises(AssertionError, match="continue-on-error"):
+    with pytest.raises(AssertionError, match=diagnostic):
         _assert_root_static_coverage(workflow)
 
 

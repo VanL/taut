@@ -58,7 +58,7 @@ source of project or identity truth. Process restart may empty it without
 invalidating a later self-contained tool call.
 
 A process reactor on the MCP server's master thread owns the bounded
-workspace registry, rate state, subscription adapters, stop state, aggregate
+workspace registry, subscription adapters, stop state, aggregate
 resource text, edge trackers, and parent admission slots. Each resident
 workspace reactor owns its Taut client, immutable member binding, command
 inbox, notification queue, and latest completed snapshot in one synchronous
@@ -86,7 +86,7 @@ protocol version for tool semantics.
 
 Application-owned tool-input validation uses Draft 2020-12 validators compiled
 once from the same fixed schemas returned by `tools/list`. Validation completes
-before rate charging or semantic work. Network `$ref` resolution is disabled
+before semantic work. Network `$ref` resolution is disabled
 and the fixed schemas contain no external references.
 
 Repository publication follows [TAUT-12.5]. `taut-mcp` is the `mcp` release
@@ -1765,7 +1765,7 @@ from era-neutral lifespan startup, and no synchronous AnyIO worker owns a
 protocol handler or reactor bridge. Changing a declared major ceiling requires
 a new compatibility review.
 
-All process-local registry, rate, aggregate, and subscription-adapter state
+All process-local registry, aggregate, and subscription-adapter state
 resets when the stdio process ends. That reset is never a correctness change:
 a later identity-using call reconstructs its project/member binding from
 workspace plus token, and a modern client reopens any desired long-lived
@@ -1780,8 +1780,8 @@ Required proof includes:
   both `workspace` and `token`, `detach_workspace` requires only exact
   canonical `workspace`, and `list_workspaces` remains empty-input;
 - malformed, extra, wrong-type, pattern, range, and cross-field-invalid tool
-  input is rejected by the one application validator before rate charge,
-  registry inspection, filesystem work, or child dispatch in both eras; each
+  input is rejected by the one application validator before registry
+  inspection, filesystem work, or child dispatch in both eras; each
   known-tool failure is the exact single-text `isError` result, while unknown
   tools and malformed protocol input remain protocol errors;
 - omitted SDK `arguments` is normalized from `None` to `{}` before
@@ -2148,7 +2148,7 @@ Required proof includes:
   initialization or discovery update
 - cancellation leaves the process usable after the started operation
   settles; snapshot-install then slot-free then response-discard ordering;
-  cancel-then-detach busy behavior; charged-token non-refund; canceled
+  cancel-then-detach busy behavior; canceled
   pre/post-publication attach and started detach recover via
   `list_workspaces`; a canceled attach waits at most the separate resolution
   and validation bounds before listing; a stalled-reservation warning requires
@@ -2251,6 +2251,8 @@ wheel to register its `mcp` manifest.
 
 ## Related Plans
 
+- `docs/plans/2026-09-28-mcp-rate-prose-and-static-proof-plan.md` — removes
+  stale rate-state and charge claims after the process bucket's removal.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — simplifies
   resident token equality and removes process-wide request quotas while
   retaining per-workspace admission and the resident cap.

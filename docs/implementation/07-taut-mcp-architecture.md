@@ -79,7 +79,7 @@ keeps those fields out of legacy envelopes.
 MCP stdio supplies the process lifetime. Taut state remains in each selected
 database, so `taut-mcp` adds no daemon and no durable MCP session registry.
 The asyncio master thread owns the bounded resident registry, hidden
-candidate seats, parent command slots, rate state, response futures,
+candidate seats, parent command slots, response futures,
 aggregate resource text, legacy edge tracking, modern bus publication, and
 teardown.
 
@@ -418,7 +418,7 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/taut_mcp/_version.py` | lightweight installed server identity shared by help/version and runtime paths |
 | `extensions/taut_mcp/taut_mcp/cli.py` | shared launch arguments, process runner, transport-failure mapping, and standalone adapter |
 | `extensions/taut_mcp/taut_mcp/server.py` | SDK v2 dual-era handlers, lifespan, instructions, cache hints, protocol adapters, and result serialization |
-| `extensions/taut_mcp/taut_mcp/_process_reactor.py` | resident registry, shared ensure, alias arbitration, admission, rate state, aggregate text, edge fanout, and teardown |
+| `extensions/taut_mcp/taut_mcp/_process_reactor.py` | resident registry, shared ensure, alias arbitration, admission, aggregate text, edge fanout, and teardown |
 | `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, token-copy cleanup, and observational notification service |
 | `extensions/taut_mcp/taut_mcp/_tools.py` | exact manifest, input validators, descriptions, and annotations |
 | `extensions/taut_mcp/taut_mcp/_results.py` | shared record-type map, domain-tool set, message-id pattern, and [MCP-6] result builder |
@@ -426,7 +426,7 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
 | `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
 | `extensions/taut_mcp/tests/test_process_reactor.py` | shared ensure, alias, lifecycle, cancellation, and process-reactor invariants |
-| `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
+| `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, resource-read burst, cancellation, and installed-wheel stdio behavior |
 | `extensions/taut_mcp/tests/test_tools.py` | shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
 | `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL stable-DM and search adapter conformance |
 | `bin/check-core-summon-wheel-matrix.py`, `tests/test_core_summon_wheel_matrix.py` | current MCP/current-core metadata, checkout isolation, and installed stdio attach/list/detach lifecycle gate |
@@ -436,8 +436,8 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer, top-level `taut-mcp` Trusted Publisher, and immutable-release gate |
 
 Verify changes at the owner boundary. Use real Taut clients, broker queues,
-child threads, and stdio for behavior. Fake only a notification sink or clock
-when isolating delivery or rate policy. PostgreSQL behavior requires
+child threads, and stdio for behavior. Fake only a notification sink when
+isolating delivery. PostgreSQL behavior requires
 `SIMPLEBROKER_PG_TEST_DSN`; `bin/pytest-pg` recognizes explicit MCP test paths
 and installs both extension overlays. The release helper therefore runs an
 explicit MCP PG conformance selection immediately after its ordinary PG gate;

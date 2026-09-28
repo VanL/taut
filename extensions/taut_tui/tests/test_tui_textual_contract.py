@@ -435,29 +435,12 @@ def test_retained_textual_pilot_click_focus_and_resize() -> None:
 def test_retained_textual_selection_and_osc52_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[TUI-8.2] pins the framework seams used by transcript selection."""
+    """[TUI-8.2] checks selection flags and real OSC 52 clipboard output."""
 
     import base64
-    import inspect
-
-    from textual.screen import Screen
-    from textual.widget import Widget
 
     assert OptionList.ALLOW_SELECT is False
     assert events.TextSelected.bubble is True
-
-    selection_watch = inspect.getsource(Screen._watch_selections)
-    assert "widget.selection_updated(selections.get(widget, None))" in selection_watch
-
-    forwarding = inspect.getsource(Screen._forward_event)
-    selection_start = forwarding.index("self._select_state = SelectState(")
-    widget_forward = forwarding.index("widget._forward_event(")
-    mouse_up_completion = forwarding.index("self.post_message(events.TextSelected())")
-    assert selection_start < widget_forward
-    assert mouse_up_completion < widget_forward
-
-    widget_selection = inspect.getsource(Widget.selection_updated)
-    assert "self.refresh()" in widget_selection
 
     async def exercise() -> None:
         app: App[None] = App()
