@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.11 - 2026-09-28
+
 - Search maintenance now skips unchanged postings, reuses registry and queue
   handles during a drain, and uses a revision fence instead of a separate
   search-work claim protocol. Search schema 1 upgrades to 2 in place without
