@@ -21,6 +21,11 @@ stance, disposition loop) is owned by
 - Do NOT use for delegation (write-enabled work): this skill's
   invocations are read-only by design. Delegates go through the
   harness's native subagents or agent-mcp where attached.
+- Do NOT substitute a native harness subagent for a Tier-1 cross-family
+  review here unless two bounded, logged Tier-1 attempts have failed
+  (see `docs/agent-context/runbooks/review-loops-and-agent-bootstrap.md` §2):
+  native subagents inherit the authoring model family and share its framing
+  bias.
 
 ## Governing Spec References
 
@@ -49,19 +54,22 @@ stance, disposition loop) is owned by
 From the agent inventory: a **review-eligible** family ≠ the author's
 (review-eligible = liveness plus write-attempt containment verified,
 per step 6 — stronger than merely present or usable). If none is
-available, fall back per review-loops §2 (same-family separate role,
-then disclosed fresh-eyes) — do not silently self-review.
+available after two bounded, logged Tier-1 attempts, fall back per
+review-loops §2 (Tier-2 same-family separate role via native subagent,
+then Tier-3 disclosed fresh-eyes) — do not silently self-review or skip
+directly to a native subagent.
 
 ### 2. Build the brief
 
 Per review-loops §3–§4: embed the plan/delta content verbatim in the
 prompt (do not assume the reviewer can find files), list the files it
 should read, include the review stance (errors, bad ideas, latent
-ambiguities, performative overengineering), and demand explicit
-[P1]/[P2] markers plus a PASS/BLOCKED verdict when gating (for plan
-reviews, derived from the two gate questions in review-loops §4;
-scoped-change reviews use `no blocker`/`blocker: F<ids>`). Prepend a
-boundary line: "You are reviewing; do not implement
+ambiguities, performative overengineering, plus verifying the plan's
+causal premise in code and confirming proposed tests are falsifiable),
+and demand explicit [P1]/[P2] markers plus a PASS/BLOCKED verdict when
+gating (for plan reviews, derived from the two gate questions in
+review-loops §4; scoped-change reviews use `no blocker`/`blocker: F<ids>`).
+Prepend a boundary line: "You are reviewing; do not implement
 or modify anything. Stay within this repository's files."
 
 **The brief is a required-shape artifact — a reviewer is only as good
@@ -76,13 +84,14 @@ decision and never arrive as blockers (severity is the reviewer's
 claim; blocking is a disposition-time decision); (5) **prefer removing
 unnecessary work**; (6) an **observations outlet** — a separate,
 non-actionable section for out-of-scope concerns, so broad looking is
-encouraged while narrow acting is enforced; (7) **rejected alternatives in
-force** — quote every `docs/program-theory.md` [THEORY-5] A-record whose area
-the unit touches, or state that none applies. A reviewer who believes a
-record's reconsider-when condition has fired writes a separately labeled
-`RECONSIDERATION REQUESTED` note naming the record, condition, and evidence
-for the human owner. It is neither a finding nor an observation, and it is
-never dropped or dispositioned by the author. A brief missing an element
+encouraged while narrow acting is enforced; (7) **standing constraints and
+rejected alternatives in force** — quote every `docs/program-theory.md`
+[THEORY-5] A-record (`[ALT-*]`) or standing invariants/suppression registry
+entry whose area the unit touches, or state that none applies. A reviewer who
+believes a record's reconsider-when condition has fired writes a separately
+labeled `RECONSIDERATION REQUESTED` note naming the record, condition, and
+evidence for the human owner. It is neither a finding nor an observation, and
+it is never dropped or dispositioned by the author. A brief missing an element
 is malformed: fix the brief, not the reviewer's output. The
 fill-every-bracket template (and its round-2 variant) is
 `docs/agent-context/runbooks/review-loops-and-agent-bootstrap.md` §4a —
@@ -92,8 +101,9 @@ anti-patterns: **severity-as-mandate** (requesting "blocking findings"
 pre-decides disposition) and **resolution-polling** (asking whether an
 undispositioned or declined finding is "resolved" re-opens it — round-2
 briefs enumerate accepted finding IDs only). Lineage: the propagation
-scope fence (four 2026-07-14 landings) and mm's 2026-07-17
-review-broadening incident, independently.
+scope fence (four 2026-07-14 landings), mm's 2026-07-17
+review-broadening incident, and the standing-boundary escalation rule
+(`mm@9d86d038e`, `taut@cfd8799`, `weft@ff91368e`).
 
 Write long prompts to a temp file and pass `"$(cat "$F")"` — never
 fight shell quoting inline.

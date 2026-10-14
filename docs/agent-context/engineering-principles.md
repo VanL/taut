@@ -17,14 +17,23 @@ code should operate on the canonical form.
 When a contract changes, update forward. Avoid permanent fallback readers that
 silently accept incompatible shapes unless compatibility is explicitly required.
 
+Thread resolved configuration and context explicitly through every internal
+adapter, helper, and subprocess boundary — never let an inner validation or
+execution helper silently reload defaults. Every configuration-sensitive seam
+requires at least one test that exercises a **non-default resolved
+configuration** at the shared inner runner, because default-configuration tests
+pass even when the inner path drops the caller's resolved config.
+
 ## 3. Read Spec, Code, Test, and Plan Before Inference
 
 Do not infer behavior from file names or mental models alone. Read:
 
-1. the relevant spec
-2. the current implementation
-3. the closest existing test
-4. the active plan or implementation note
+1. the program theory when product scope, concepts, or ownership are at
+   issue
+2. the relevant spec
+3. the current implementation and its rationale
+4. the closest existing test
+5. the active plan or implementation note
 
 Then decide what to change.
 
@@ -36,6 +45,15 @@ nondeterministic.
 
 If a bug lives in the interaction between components, a test that replaces that
 interaction with mocks is usually proving the wrong thing.
+
+Contention, lock-order, or concurrency failures are **theory-possession stop
+conditions**: reaching for reduced concurrency (`-n 0`, fewer workers), sleep
+or timeout padding, or extra retry loops to make a failing test pass is not a
+fix — it masks the broken invariant. Lower-concurrency runs are diagnostic-only
+and never satisfy a completion gate. When simulated clocks or platform hooks are
+needed in tests, patch module-owned callables (`_monotonic`, `_sleep`,
+`_getpid`) rather than shared standard-library modules (`time.monotonic`,
+`os.getpid`, `sys.platform`) that leak across threads and parallel workers.
 
 ## 5. Keep Traceability Bidirectional
 
@@ -72,10 +90,35 @@ demands them.
 For non-trivial plans and implementations, run an independent review pass with
 the governing specs, plan, implementation note, and touched files in view.
 
-Prefer a different agent family or model from the original author when
-available. The review is not complete until the authoring agent has considered
-each point and either updated the work or documented why the existing path
-remains correct.
+Select a **different agent family** from `docs/implementation/03-agent-inventory.md`
+and invoke it via `skills/call-agent/SKILL.md` (Tier-1 cross-family CLI
+review). Native harness subagents inherit the authoring model family and its
+priors: when a plan is framed around a plausible-sounding premise or a sleek
+refactoring narrative, a same-family subagent can validate the narrative rather
+than falsifying the premise — a risk motivating the different-family default.
+Use a native subagent for review only as a Tier-2 fallback after two bounded,
+logged Tier-1 attempts fail (recorded as `same-family fallback (degraded)`).
+
+An independent review must verify three empirical things in addition to surface
+consistency:
+
+1. **Causal premise in code** — trace the named functions and call paths to
+   confirm the bug or bottleneck actually works the way the plan claims;
+   generative plan authoring does not self-falsify against earlier same-session
+   tool output.
+2. **Falsifiable proof** — confirm the proposed test would actually fail before
+   the fix (or under a one-line mutation of the production guard) rather than
+   testing a tautology or a mocked projection.
+3. **Empirical identifiers by command** — check SHAs, line numbers, config
+   keys, rule codes, and version facts via command against the tree rather than
+   accepting them from model memory.
+
+The review is not complete until the authoring agent has considered each point,
+updated the work or documented why the existing path remains correct, and
+verified that every `fixed in plan` disposition is reflected in the plan's task
+list and code snippets. When a review finding conflicts with a standing
+invariant or refused alternative (`[ALT-*]`), escalate to the owner as
+`RECONSIDERATION REQUESTED` rather than silently accommodating or dismissing it.
 
 Review findings are claims, not facts: reproduce a finding before acting on
 it, and reproduce your own "done/passing" assertions before making them. The
@@ -108,7 +151,11 @@ well enough to fix it.
 
 If something is hard to test, that is information about the design, not
 permission to skip the test. Generate fixtures through production code paths, not
-synthesis.
+synthesis; for schema or storage migrations, generate fixtures from prior
+release lineage rather than hand-editing version metadata on current-schema
+state. Expected labels, wire literals, and handshake peers in tests must be
+written as independent literals — never imported or projected from the system
+under test, which turns a round-trip test into a tautology (`f(x) == f(x)`).
 
 This complements principle 4 ("Prefer Real Behavior Over Mock-Heavy Proof"): that
 principle is about *what* to test; this one is about *when and why*.
@@ -133,12 +180,20 @@ producer and consumer in the same change.
 A partial rename passes isolated checks and fails at runtime; the synchronized
 update is the fix.
 
+Before declaring any symbol, helper, config key, or file `"unused"` or `"dead"`,
+search the entire repository — including `examples/`, standalone scripts,
+templates, and vendored or bootstrap consumers that may not run in the default
+unit-test slice.
+
 ## 12. Enumerable Contracts Get Executable Gates
 
 Any list a document asserts — issue codes, exit codes, edge cases, config
 keys, CLI flags — must be mirrored by a machine check that enumerates it:
 a firing test per element, a no-op prevention test per behavior-affecting
-key.
+key. Numeric counts and completeness claims (`all`, `every`, `full`, `zero`)
+in specs, plans, and registries must be verified by command rather than
+inspection; when an audit finds an unverified branch in a `"full"` contract,
+make `"full"` true by closing the gap rather than weakening the contract text.
 
 Prose binds only what gets checked. Given identical written guidance, agents
 comply uniformly with automated gates and unevenly with everything else — so
@@ -205,6 +260,18 @@ cursor-aware fetch, and stop semantics are a named unit
 extraction is justified to create the testable boundary, not to shrink the
 file.
 
+Static complexity scores (`C901`, branch/statement counts) are **visibility
+signals, not refactoring mandates**. Do not fragment a cohesive state machine,
+phase-ordered lifecycle, or protocol dispatcher into single-caller private
+helpers merely to lower a linter score. When a cohesive function legitimately
+exceeds a static complexity threshold, record it in a governed suppression
+registry (`Group ID | Rules | Approved cardinality | Protected invariant | Real
+proof | Rejected alternatives | Owner approval`) reconciled by an executable
+gate. A governance or policy-checking tool may never suppress itself. When
+probing linter rule changes or unused suppressions (`RUF100`), mutate a copy of
+the real project configuration rather than running `--isolated`, which ignores
+project rule selections and settings.
+
 Cost to price in: a hot god file serializes parallel agent write-slices.
 Keep fan-out write scopes disjoint or sequence them.
 
@@ -244,6 +311,11 @@ Sessions usually go sideways when one of these happens:
 - a second path appears instead of extending the canonical one
 - a change relies on intuition rather than reading the relevant docs and code
 - a failing regression is replaced by a shallow happy-path test
+- concurrency or contention failures are quieted by reducing worker count
+  (`-n 0`), adding sleep/timeout padding, or wrapping a lock-order bug in
+  retries
+- a same-family native subagent is used in place of a cross-family review and
+  validates a flawed plan premise
 - the docs are treated as post-hoc cleanup rather than part of delivery
 - a later stage quietly changes the direction of the earlier plan
 - the plan says what to build but not what must stay true
@@ -251,6 +323,8 @@ Sessions usually go sideways when one of these happens:
   improvise
 - a regression is called "pre-existing" without running it on the base branch to
   prove it
+- a file split is proposed on size grounds alone, or a cohesive module is
+  broken up into single-caller helpers to appease a static complexity score
 
 ## The Meta-Principle: Compound Knowledge
 

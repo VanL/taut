@@ -207,6 +207,26 @@ Ask the owner to test possession:
 - Refuse one category error.
 - Name one surprise that would revise the theory.
 
+For a **product apex**, also walk the fuller owner's checklist — the nine
+understandings the founding dialogue named (origin: the hub's lore record
+of the 2026-07-29 backstitch README dialogue). The owner should be able to
+state, without reading the draft back:
+
+1. what concepts exist;
+2. what each concept means;
+3. which component owns each behavior;
+4. why the boundaries are where they are;
+5. which alternatives were rejected and why;
+6. what must remain invariant;
+7. what the system explicitly does not do;
+8. how a proposed change propagates through the rest of the model;
+9. what evidence would show the current understanding is wrong.
+
+Any item the owner cannot answer marks a section that is not yet theory:
+interview further there, or keep the account's Status at `Draft` and record
+the gap. Items 4 and 6 are the ones the spine reaches least directly — probe
+them explicitly rather than assuming Q3/Q8 covered them.
+
 Revise the draft until they confirm.
 
 ## Decision record templates

@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-10-14-agent-theory-delta-wave-plan.md` | completed | no | Class 5+P `agent-theory` @ `8f41a9d` delta wave: empirical review discipline, Tier-1/Tier-2 review hierarchy, migration/coalescing hardening, STE100 readability pass, and gate script upgrades (`bin/check-doc-paths`, `bin/check-dom15-fixtures`, `bin/coalesce-check`); Tier-1 `codex` adaptation review `APPROVE`. |
 | `2026-09-28-mcp-rate-prose-and-static-proof-plan.md` | completed | no | Completed at `02bbe55`: removed stale MCP rate claims, required unconditional root static checks, and retired private Textual source assertions while retaining real behavior proof. |
 | `2026-09-28-simplification-and-hot-path-plan.md` | active | yes | Independently reviewed Class 5 plan. Implementation and macOS verification passed for pending-only search, forward upgrades, hot paths, MCP, Summon, fail-stop watch, and behavioral tests; native Windows qualification remains. |
 | `2026-09-24-windows-tui-determinism-root-cause-plan.md` | completed | no | Implementation and qualification pass at `3a0f30c`: five full Windows repetitions, 765 passes each, plus all four non-Windows lanes. S4: cause unresolved; accepted by owner on 2026-09-25, with scoped waiver and recurrence/new-evidence reopen condition. |

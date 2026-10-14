@@ -34,7 +34,10 @@ invocation or environment problem. Read-only by construction.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +48,13 @@ EXTRA_SOURCES = [
     Path("docs/coalescing.md"),
     Path("docs/plans/README.md"),
 ]
+
+# Governed future-artifact allowlist. Adopters may list contractually named
+# artifacts that intentionally do not exist yet. Honesty is enforced both
+# ways in run():
+#   1. A listed path that now exists on disk fails as a stale suppression.
+#   2. A listed path that no scanned document claims fails as an unused entry.
+DECLARED_FUTURE_ARTIFACTS: set[str] = set()
 
 
 def _load_grammar():
@@ -62,40 +72,99 @@ def _load_grammar():
     return gate
 
 
-def sources(gate) -> list[Path]:
-    paths = list(gate._markdown_path_sources())
+def _root_sources(root: Path) -> list[Path]:
+    candidates = [
+        root / "README.md",
+        root / "AGENTS.md",
+        root / "CLAUDE.md",
+        root / "llms.txt",
+        root / "docs" / "README.md",
+        root / "docs" / "agent-kernel.md",
+        *sorted((root / "extensions").glob("*/README.md")),
+        *sorted((root / "docs" / "agent-context").glob("*.md")),
+        *sorted((root / "docs" / "agent-context" / "runbooks").glob("*.md")),
+        *sorted((root / "skills").glob("**/*.md")),
+        *sorted((root / "docs" / "implementation").glob("*.md")),
+        *sorted((root / "docs" / "specs").glob("*.md")),
+    ]
+    return [p for p in dict.fromkeys(candidates) if p.is_file()]
+
+
+def sources(gate, root: Path = REPO_ROOT) -> list[Path]:
+    paths = (
+        list(gate._markdown_path_sources())
+        if root == REPO_ROOT
+        else _root_sources(root)
+    )
     for extra in EXTRA_SOURCES:
-        candidate = REPO_ROOT / extra
+        candidate = root / extra
         if candidate.is_file() and candidate not in paths:
             paths.append(candidate)
     return paths
 
 
-def run(root: Path) -> int:
-    gate = _load_grammar()
-    scanned = sources(gate)
+def _stale_allowlist_failures(root: Path, declared_future: set[str]) -> list[str]:
+    return [
+        f"bin/check-doc-paths: `{declared}` exists but is still "
+        "listed in DECLARED_FUTURE_ARTIFACTS — remove the stale "
+        "suppression entry"
+        for declared in sorted(declared_future)
+        if (root / declared).exists() or (root / declared).is_symlink()
+    ]
+
+
+def _scan_source(
+    source: Path,
+    root: Path,
+    gate,
+    active_declared: set[str],
+    claimed_allowlisted: set[str],
+) -> tuple[int, list[str]]:
+    if not source.is_file():
+        return 0, []
+    relative = source.relative_to(root)
     failures: list[str] = []
     claim_count = 0
-    for source in scanned:
-        if not source.is_file():
-            continue
-        relative = source.relative_to(REPO_ROOT)
-        for lineno, line in gate._prose_lines(source):
-            claims = [
-                match.group(1)
-                for regex in (gate.LINK_PATH_RE, gate.BACKTICK_PATH_RE)
-                for match in regex.finditer(line)
-            ]
-            for claim in claims:
-                if claim in gate.ALLOWLIST:
-                    continue
-                claim_count += 1
-                if not (root / claim).exists():
-                    failures.append(f"{relative}:{lineno}: `{claim}` does not resolve")
+    for lineno, line in gate._prose_lines(source):
+        claims = [
+            match.group(1)
+            for regex in (gate.LINK_PATH_RE, gate.BACKTICK_PATH_RE)
+            for match in regex.finditer(line)
+        ]
+        for claim in claims:
+            if claim in active_declared or claim in gate.ALLOWLIST:
+                claimed_allowlisted.add(claim)
+                continue
+            claim_count += 1
+            target = root / claim
+            if not (target.exists() or target.is_symlink()):
+                failures.append(f"{relative}:{lineno}: `{claim}` does not resolve")
+    return claim_count, failures
 
-    extra_present = [
-        str(extra) for extra in EXTRA_SOURCES if (REPO_ROOT / extra).is_file()
-    ]
+
+def run(root: Path, *, declared_future: set[str] | None = None) -> int:
+    gate = _load_grammar()
+    active_declared = (
+        DECLARED_FUTURE_ARTIFACTS if declared_future is None else declared_future
+    )
+    scanned = sources(gate, root)
+    failures = _stale_allowlist_failures(root, active_declared)
+    claimed_allowlisted: set[str] = set()
+    claim_count = 0
+    for source in scanned:
+        count, src_failures = _scan_source(
+            source, root, gate, active_declared, claimed_allowlisted
+        )
+        claim_count += count
+        failures.extend(src_failures)
+    failures.extend(
+        f"bin/check-doc-paths: `{unused}` is allowlisted in "
+        "DECLARED_FUTURE_ARTIFACTS but no scanned surface claims it — "
+        "remove the unused suppression entry"
+        for unused in sorted(active_declared - claimed_allowlisted)
+    )
+
+    extra_present = [str(extra) for extra in EXTRA_SOURCES if (root / extra).is_file()]
     print(
         f"check-doc-paths: {len(scanned)} source(s), {claim_count} path claim(s); "
         f"beyond the pytest gate's list: {', '.join(extra_present) or 'none'}"
@@ -113,10 +182,131 @@ def run(root: Path) -> int:
     return 0
 
 
+def _build_probe_tree(
+    tmp: str,
+    *,
+    spec_text: str,
+    materialize: str | None = None,
+    symlink: tuple[str, str] | None = None,
+) -> Path:
+    root = Path(tmp)
+    (root / "docs" / "specs").mkdir(parents=True)
+    (root / "docs" / "specs" / "01-sample.md").write_text(spec_text, encoding="utf-8")
+    if materialize is not None:
+        target = root / materialize
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}", encoding="utf-8")
+    if symlink is not None:
+        (root / symlink[0]).symlink_to(symlink[1])
+    return root
+
+
+def self_test() -> int:
+    """Firing tests for claim scanning, fenced blocks, and allowlist honesty."""
+    future_path = "docs/specs/99-future-artifact.md"
+    probes = [
+        (
+            "unlisted missing claim was not flagged",
+            "`docs/specs/missing.md`\n",
+            set(),
+            None,
+            None,
+            1,
+        ),
+        (
+            "fenced code block sample path was wrongly flagged",
+            "```markdown\n`docs/specs/fenced-example-only.md`\n```\n",
+            set(),
+            None,
+            None,
+            0,
+        ),
+        (
+            "info-string fence line inside code block closed early and hid trailing prose",
+            "```\n``` markdown\n```\n`docs/specs/missing-after-fence.md`\n",
+            set(),
+            None,
+            None,
+            1,
+        ),
+        (
+            "4-space-indented fence line hid broken path claim",
+            "    ```\n`docs/specs/indented-missing.md`\n    ```\n",
+            set(),
+            None,
+            None,
+            1,
+        ),
+        (
+            "unclosed fence hid interior sample path",
+            "```markdown\n`docs/specs/unclosed-fence-example.md`\n",
+            set(),
+            None,
+            None,
+            0,
+        ),
+        (
+            "allowlisted missing claim was wrongly flagged",
+            f"`{future_path}`\n",
+            {future_path},
+            None,
+            None,
+            0,
+        ),
+        (
+            "stale allowlist entry over an existing file passed",
+            f"`{future_path}`\n",
+            {future_path},
+            future_path,
+            None,
+            1,
+        ),
+        (
+            "unused allowlist entry passed",
+            "`docs/specs/01-sample.md`\n",
+            {future_path},
+            None,
+            None,
+            1,
+        ),
+        (
+            "symlink claim target was not treated as present",
+            "`docs/specs/link.md`\n",
+            set(),
+            None,
+            ("docs/specs/link.md", "01-sample.md"),
+            0,
+        ),
+    ]
+    failures: list[str] = []
+    for name, spec_text, declared, materialize, symlink, expected in probes:
+        with tempfile.TemporaryDirectory() as td:
+            root = _build_probe_tree(
+                td, spec_text=spec_text, materialize=materialize, symlink=symlink
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = run(root, declared_future=declared)
+            if rc != expected:
+                failures.append(name)
+    if failures:
+        for f in failures:
+            print(f"check-doc-paths self-test FAIL: {f}")
+        return 1
+    print("check-doc-paths self-test: all claim, fence, and allowlist probes pass")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run firing self-tests for check-doc-paths",
+    )
     args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
     return run(args.root.resolve())
 
 

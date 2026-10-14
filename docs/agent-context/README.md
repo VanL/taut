@@ -19,7 +19,7 @@ guides link here rather than copying it.
 1. If it was not already loaded by the tool, read `../../AGENTS.md`.
 2. Read `../program-theory.md` — conceptual identity of **this
    product** (frames placement and refusal; load-bearing for
-   product-scope judgment — audits, reviews, feature-fit and design
+   product-scope *judgment* — audits, reviews, feature-fit and design
    opinions — not only for implementation). Theory does not override
    the winning product contract.
 3. Read `decision-hierarchy.md`.

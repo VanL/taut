@@ -106,6 +106,15 @@ Bad invariants:
 
 If an invariant matters enough to cause a regression, name it explicitly.
 
+Check the repository's standing invariants and refused-alternatives surface
+(`docs/program-theory.md` `[ALT-*]` records, governed suppression registries,
+or a dedicated standing invariants file where the repository adopts one) and
+cite any entry that bounds the touched area. When a plan proposes a
+`"simplification"`, `"consolidation"`, or `"extraction"` of existing code or
+spec text, include a **difference register** that audits every removed branch
+or paragraph clause-by-clause for distinct hazards, edge-case exceptions, and
+trigger conditions so load-bearing guards are not silently deleted.
+
 ## 2. Identify Hidden Couplings Before Decomposition
 
 Trace the end-to-end data flow and ask what assumes the state exists, where it
@@ -271,7 +280,8 @@ Any queue, async handoff, or deferred processing path introduces lifecycle
 questions:
 
 - where does the input live before processing?
-- what cleans it up?
+- what cleans it up, and which owning product contract or module theory defines
+  its cleanup authority and liveness preconditions?
 - what happens on restart?
 - can two workers process the same input?
 
@@ -320,7 +330,11 @@ families, driven by `bin/release.py` and gated by
   different stages: prechecks run before the tag exists; the
   publication gates run against the tagged SHA. Publishing before the
   tagged-SHA gates are green turns a correctable build defect into
-  repository-history repair.
+  repository-history repair. When a release driver runs a long verification
+  suite before publishing, the plan names how the publication step guards
+  against the verified remote state going stale during the test window and how
+  that guard's failure path is verified before publication — the mechanism
+  itself belongs to the release driver or product contract.
 - **Immutability attaches at publication, not at tag creation.** Once
   a version is published (PyPI, immutable GitHub Release), recovery
   reruns the failed mechanism for the same immutable identifier —

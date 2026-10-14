@@ -33,14 +33,11 @@ Agent-usable documentation should make these explicit whenever they matter:
 
 The repository documentation surface is split by role:
 
-- `docs/program-theory.md`: conceptual identity of **this product** —
-  the current externalized account of what kind of system Taut is,
-  why it has its shape, what it deliberately is not, and what would
-  falsify that account. Program theory frames interpretation and
-  placement; it is not a behavioral contract and does not override
-  the winning product contract. Status values include `Draft`
-  (provisional account under refinement) and `Active` (current
-  account in force); revisions gate on the human owner.
+- `docs/program-theory.md`: the conceptual identity of **this product** — the
+  written account of what kind of system Taut is, why it has its shape, what it
+  deliberately refuses to do, and what evidence would show that account is
+  wrong. Program theory **frames** interpretation and placement; it is not a
+  behavioral contract and never overrides winning specs or product contracts.
 - `docs/agent-context/`: canonical shared context and reusable runbooks
 - `docs/specs/`: intended behavior, invariants, and verification expectations
 - `docs/plans/`: dated execution documents for concrete work
@@ -49,14 +46,31 @@ The repository documentation surface is split by role:
 - `skills/`: reusable task-scoped workflow instructions
 - `docs/lessons.md`: canonical lessons ledger
 
-**Module theory** (conventional path `MODULE-THEORY.md` next to owning
-code) is a scoped extension of the product program theory for one
-subsystem. It is not a separate taxonomy tier and is not loaded at
-every session start — only on entry to that module. Keep the product
-theory short; extend with module theory when depth is local.
-
 The roles should remain distinct. A document may link to another role, but it
 should not collapse multiple roles into one file without a strong reason.
+Theory is not a second operating manual: keep operational procedures (the
+interview spine, `[ALT-*]`/`[REV-*]` field templates, and module-theory
+drafting checklists) in skills and runbooks, and keep exact behavioral rules in
+specs.
+
+In `docs/program-theory.md`, `Status` values include `Stub` (bootstrap
+placeholder), `Draft` (provisional account under refinement), and `Active`
+(current account in force); revisions gate on the human owner. Never treat a
+`Stub` as product authority.
+
+A product repository's `docs/program-theory.md` describes **that product** and
+is under no obligation to explain the general concept of program theory. The
+definitional primer explaining what a program theory is, how it differs from a
+spec, and why it matters lives in
+`docs/specs/07-agent-theory-and-program-theory.md` (read on demand when the
+term is unfamiliar or before crystallizing an account, not at every session
+start).
+
+**Module theory** (conventional path `MODULE-THEORY.md` next to owning code) is
+a scoped extension of the product program theory for one subsystem. It is not a
+separate taxonomy tier and is loaded only on entry to that module, not at every
+session start. Keep the product theory short; extend with module theory when
+depth is local.
 
 ## 3. Agent Startup Context [DOM-3]
 
@@ -140,19 +154,19 @@ For this operating model, treat a change as risky when any of these are true:
 - it introduces a one-way door, destructive edge, new persistence, temp-file,
   cleanup, or deferred-input lifecycle
 
-Git-backed coalescing is not a destructive edge for classification
-purposes when every removed item has a verified pre-fold source SHA
-reachable from a retained Git ref and the repository's traceability
-gate passes. An ordinary authorized sweep does not require a task
-plan merely because it soft-retires or physically removes plans,
-removes already-distilled or expired raw ledger entries, advances
-watermarks, or updates the run log. A plan is required when the
-sweep promotes or materially changes durable guidance (for example a
-golden rule, principle, runbook, skill, or cross-repository rule),
-or when some other [DOM-5] trigger independently fires. The routine
-sweep is Class 2: explicit authorization supplies intent, Git makes
-it reversible, and this paragraph excludes the coalescing removals
-themselves from [DOM-5]'s triggers.
+A routine, user-authorized coalescing sweep is a Class 2 task **when** every
+removed item has a verified pre-fold `source_sha` reachable from a **retained
+Git ref** and the repository's traceability gate passes. Under that condition,
+coalescing removals are reversible in Git and do not count as a `[DOM-5]`
+destructive edge, so an ordinary sweep does not require a task plan merely
+because it soft-retires or physically removes completed plans, removes
+already-distilled or expired raw ledger entries, advances watermarks, or updates
+the run log. However, a dated plan (Class 3+) is required whenever a sweep
+promotes or materially changes durable guidance—such as a golden rule,
+principle, runbook, skill, or cross-repository rule—or when another `[DOM-5]`
+trigger fires independently. The routine sweep is Class 2: explicit
+authorization supplies intent, Git makes it reversible, and this paragraph
+excludes the coalescing removals themselves from [DOM-5]'s triggers.
 
 The narrow routine-release exception in [DOM-15] overrides the non-trivial
 and risky trigger lists above only for execution of the established release
@@ -273,6 +287,12 @@ observation or rollback path when those materially affect operational safety.
 For risky changes, completion should also say whether the rollout or rollback
 assumptions still hold and whether post-deploy observation is pending or
 complete.
+
+Before declaring a slice or task complete, run verification over the exact
+full test and lint roots that CI checks, not only the targeted subset used
+during iteration. When RED (failing-test-first) execution is delegated to a
+subagent, the coordinator must verify the exact failure assertion and line in
+the subagent transcript before advancing to GREEN.
 
 Documentation path/citation checks, plan-status extraction, and DOM-15 fixture
 extraction share `bin/markdown_fences.py` for excluding fenced examples. The
@@ -615,9 +635,17 @@ Requirements:
   could implement the plan confidently and correctly
 - the authoring agent considers each review point explicitly
 - the authoring agent either updates the work or records why the current path
-  remains the best choice
-- prefer a different agent family or model than the original author when one is
-  available
+  remains the best choice, and verifies that every `fixed in plan` disposition
+  is reflected in the plan's task list and code snippets before closing the
+  review loop
+- select a different agent family from `docs/implementation/03-agent-inventory.md`
+  and invoke it via `skills/call-agent/SKILL.md` (Tier-1 cross-family CLI
+  review); native harness subagents inherit the authoring model family and
+  may only be used for review as a Tier-2 fallback after two bounded, logged
+  Tier-1 attempts fail, recorded in the plan's review log as
+  `same-family fallback (degraded)`; if no second agent is available at all
+  (Tier 3), perform a strict fresh-eyes review and record the limitation
+  (`Review: unavailable — <reason>` on Class ≥3 plans)
 - the review brief quotes every `docs/program-theory.md` [THEORY-5] adopted
   alternative whose area the unit touches under `Rejected alternatives in
   force`; a rejected path is not re-argued as a finding
@@ -687,7 +715,8 @@ Requirements:
   unfolded) material; the fold unit and its matching progress model are
   declared in the repository's `docs/coalescing.md` (per-section
   watermarks for domain-grouped ledgers; a fold-records index, not a date
-  cursor, for ledgers folded by theme-cluster across dates, since a date
+  cursor, for ledgers folded by theme-cluster across dates or when older
+  entries are reclassified into a date-watermarked section, since a date
   cursor falsely claims older unfolded material behind it was folded)
 - the session-start trigger check is read-only: a tripped threshold is
   reported to the user, never acted on mid-task. All coalescing writes —
@@ -698,10 +727,13 @@ Requirements:
 - an authorized coalescing sweep is both memory compaction and bounded
   maintenance. Before distillation or retirement, inspect the coalescing
   surfaces for defects that make memory inaccurate, non-derivable,
-  unreachable, or unverifiable. Repair an observed defect in the same wave
-  when the repair is inside the declared coalescing boundary, reversible, and
-  supported by current-tree or source-SHA evidence. Merely logging such a
-  repairable defect is not a valid completed sweep
+  unreachable, or unverifiable (including verifying and repairing existing
+  `docs/coalescing.md` SHAs, watermarks, and derivation-recipe commands
+  against the live ledger format before deriving counts or advancing state).
+  Repair an observed defect in the same wave when the repair is inside the
+  declared coalescing boundary, reversible, and supported by current-tree or
+  source-SHA evidence. Merely logging such a repairable defect is not a valid
+  completed sweep
 - bounded maintenance is not general cleanup. It covers the lesson ledger,
   plan status index and retirement ledger, fold cues and watermarks,
   traceability needed to retrieve folded material, promotion ownership, and
@@ -743,14 +775,24 @@ Requirements:
   reconsideration condition — so an unchanged count does not re-nag every
   session, and a changed count does
 - coalescing is two-phase and additive-first: distill, verify links and
-  cues, then retire; every fold leaves a retrieval cue — the date range
-  plus a `source_sha`, a pre-fold commit that verifiably contains the raw
-  material — in the surviving summary or ledger line. The fold commit may
-  be recorded in the run log after it exists, but it is never the cue
+  cues, then retire; every fold is checked at three tiers before raw
+  material is removed — **text fidelity** (every distinct trigger,
+  exception, and required action survives without lossy compression),
+  **symbol liveness** (every named file path, section anchor, and code
+  symbol resolves in the current tree), and **behavioral parity**
+  (present-tense code or runtime claims are verified against current
+  tests or code; doc-only folds with no runtime claim satisfy the floor
+  via text fidelity and path/anchor liveness). Every fold leaves a
+  retrieval cue — the date range plus a `source_sha`, a pre-fold commit
+  that verifiably contains the raw material — in the surviving summary or
+  ledger line. The fold commit may be recorded in the run log after it
+  exists, but it is never the cue
 - recent or still-cited raw material stays verbatim; golden rules and
   safety invariants carry an importance floor — exempt from automated
   decay, changed only by explicit revision, supersession, or deprecation
-  with a `(revised YYYY-MM-DD; was: <gist>)` marker
+  with a `(revised YYYY-MM-DD; was: <gist>)` marker placed after the
+  leading `- YYYY-MM-DD:` date prefix on dated bullets so derivation
+  regexes stay intact
 - active plans keep instructions mutable and logs append-only, and become
   immutable at closure; retirement is two-step — the sweep soft-retires
   (status `retired-pending`, backlinks converted, ledger line written)
@@ -920,6 +962,8 @@ edit; escalate loudly the moment a trigger fires.
 
 ## Related Plans
 
+- `docs/plans/2026-10-14-agent-theory-delta-wave-plan.md`: propagates the
+  2026-10-14 `agent-theory` hub delta (`0423923..8f41a9d`).
 - `docs/plans/2026-09-24-review-inputs-and-doc-gates-plan.md`: makes review
   inputs and documentation-gate evidence structurally enforceable.
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: narrows duplicate Ruff snapshots and shares fenced-example exclusion.

@@ -75,6 +75,9 @@ FOREIGN_MARKERS = (
     "engram",
     "simplebroker",
 )
+FOREIGN_MARKER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(m) for m in FOREIGN_MARKERS) + r")\b"
+)
 
 # Opt-in local convenience, unset by default. A sibling working copy is an
 # environment fact, not a portability claim: anything found this way is
@@ -152,8 +155,8 @@ def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
 def attributed_repo(text: str, pos: int) -> str | None:
     """Does the citation name the repository it came from? Reporting only."""
     ctx = text[max(0, pos - 80) : pos].lower()
-    hits = [m for m in FOREIGN_MARKERS if m in ctx]
-    return max(hits, key=len) if hits else None
+    hits = list(FOREIGN_MARKER_RE.finditer(ctx))
+    return hits[-1].group(1) if hits else None
 
 
 def resolves_locally(sha: str) -> bool:
@@ -176,6 +179,19 @@ def in_local_checkout(sha: str) -> str | None:
     return None
 
 
+def resolve_remote_ref() -> str | None:
+    """Resolve the default remote branch via origin/HEAD, falling back to origin/main."""
+    sym = git("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+    if sym.returncode == 0 and sym.stdout.strip():
+        cand = sym.stdout.strip()
+        if git("rev-parse", "--verify", cand).returncode == 0:
+            return cand
+    for fallback in ("origin/main", "origin/HEAD"):
+        if git("rev-parse", "--verify", fallback).returncode == 0:
+            return fallback
+    return None
+
+
 def lessons_counts() -> tuple[int, int | None, str | None]:
     """Return (total dated entries, entries past the lessons watermark, watermark)."""
     if not LESSONS.is_file():
@@ -194,6 +210,7 @@ def classify_claims(
     text: str,
     *,
     remote_ok: bool,
+    remote_ref: str | None = "origin/main",
 ) -> ClaimClassification:
     """Classify claims and broken cues without owning report or exit policy."""
 
@@ -203,6 +220,7 @@ def classify_claims(
     local_only: list[str] = []
     foreign: list[str] = []
     seen: set[str] = set()
+    target_ref = remote_ref or "origin/main"
     for sha, pos in sha_hits:
         if sha in seen:
             continue
@@ -210,8 +228,7 @@ def classify_claims(
         if resolves_locally(sha):
             if (
                 remote_ok
-                and git("merge-base", "--is-ancestor", sha, "origin/main").returncode
-                != 0
+                and git("merge-base", "--is-ancestor", sha, target_ref).returncode != 0
             ):
                 local_only.append(sha)
             continue
@@ -273,22 +290,13 @@ def main() -> int:
         )
         return 0
 
-    # Known limitation (hub lessons 2026-08-07): the ancestry check
-
-    # hardcodes origin/main; a consumer with a different default branch
-
-    # gets false local-only-pin reports. Fix candidate: resolve the
-
-    # default via origin/HEAD, falling back to origin/main.
-
-    remote_ok = (
-        git("rev-parse", "--verify", "origin/HEAD").returncode == 0
-        or git("rev-parse", "--verify", "origin/main").returncode == 0
-    )
+    remote_ref = resolve_remote_ref()
+    remote_ok = remote_ref is not None
 
     classification = classify_claims(
         text,
         remote_ok=remote_ok,
+        remote_ref=remote_ref,
     )
     retired_broken = retired_structure_problems + retired_plan_problems(retired_claims)
 
@@ -317,7 +325,7 @@ def main() -> int:
         print(
             f"  local-only pin ({len(classification.local_only)}): "
             + ", ".join(classification.local_only)
-            + "  [not in origin/main — published history cannot verify these]"
+            + f"  [not in {remote_ref or 'origin/main'} — published history cannot verify these]"
         )
     broken = [*classification.broken, *retired_broken]
     if broken:

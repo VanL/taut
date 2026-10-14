@@ -47,17 +47,40 @@ natural piece); a configuration how-to is deliberately not written
 thinnest explanation in the corpus. Each is a candidate for its own plan
 when a reader asks for it, not a promise.
 
-## Structure
+## Directory Structure
 
-- `agent-context/`: shared context loaded by agents at session start
-- `specs/`: intended behavior, invariants, boundaries, and verification rules
-- `plans/`: dated execution documents for concrete changes
-- `implementation/`: current rationale, ownership, repository maps, and
-  architecture notes
-- `../skills/`: reusable task-scoped instructions for recurring workflows
-- `lessons.md`: durable corrections and reusable mistakes-to-avoid
+Each directory or top-level file answers one specific question:
 
-## Use By Task
+- `program-theory.md`: what kind of system **this repository** is, who owns its
+  core concepts, what it refuses to build, and what evidence would show that
+  model is wrong
+- `agent-context/`: shared rules, principles, and runbooks loaded by agents at
+  session start
+- `specs/`: behavioral contracts (intended behavior, invariants, and
+  verification) plus reference definitions such as
+  `specs/07-agent-theory-and-program-theory.md`
+- `plans/`: dated execution plans for non-trivial changes, tracked in
+  `plans/README.md`
+- `implementation/`: design rationale, ownership boundaries, repository maps,
+  and agent availability
+- `../skills/`: step-by-step instructions for recurring workflows
+- `lessons.md`: golden rules and dated corrections from past mistakes
+- `coalescing.md`: thresholds, watermarks, and run log for periodic
+  distillation of completed plans and lessons
+
+## What to Read by Task
+
+### Understanding Agent Theory and Program Theory
+
+Read these on demand when onboarding or before drafting a theory file (not at
+every session start):
+
+- `specs/07-agent-theory-and-program-theory.md` — short primer defining the
+  terms and how the documents fit together
+- `program-theory.md` — the working theory of **this repository** (Taut's
+  identity account)
+- `../skills/crystallize-program-theory/SKILL.md` — one-question-at-a-time
+  interview for writing a product or module theory
 
 ### Starting a Session
 
@@ -65,65 +88,54 @@ Follow the single canonical sequence in `agent-context/README.md`. For
 newcomer orientation after that sequence, use `implementation/00-implementation-index.md`
 and `implementation/02-repository-map.md`.
 
-### Planning a Change
+### Planning a Non-Trivial Change (Classes 3–5)
 
 Read:
 
 - `agent-context/runbooks/writing-plans.md`
-- `agent-context/runbooks/hardening-plans.md`
+- `agent-context/runbooks/hardening-plans.md` (required for risky or
+  boundary-crossing changes)
 - `agent-context/runbooks/review-loops-and-agent-bootstrap.md`
 - `agent-context/runbooks/maintaining-traceability.md`
 
-Write the plan in `plans/` with a date-prefixed filename.
-For risky or boundary-crossing work, treat `hardening-plans.md` as required
-input rather than optional follow-up reading.
+Write a dated plan in `plans/YYYY-MM-DD-<slug>.md` and add a row to the status
+index in `plans/README.md`.
 
 ### Writing or Updating a Spec
 
-Read:
+Read `agent-context/runbooks/writing-specs.md`. Put intended behavior,
+invariants, and stable reference codes in `specs/`, and link the related plans
+at the bottom of the spec.
 
-- `agent-context/runbooks/writing-specs.md`
+### Explaining Why the Code Is Shaped This Way
 
-Keep intended behavior and invariants in `specs/`, then backlink related plans.
+Read `agent-context/runbooks/writing-implementation-docs.md`. Use
+`implementation/` to explain design tradeoffs, ownership boundaries, and key
+edit points rather than narrating the code line by line.
 
-### Explaining Current Design
+### Creating or Updating a Skill
 
-Read:
-
-- `agent-context/runbooks/writing-implementation-docs.md`
-
-Use `implementation/` to capture rationale, boundaries, ownership, and change
-guidance. Prefer why over how.
-
-### Managing Reusable Workflows
-
-Read:
-
-- `agent-context/runbooks/skills-lifecycle.md`
-
-Use `../skills/` when a repeated workflow deserves a reusable instruction set
-instead of more ad hoc lessons.
+Read `agent-context/runbooks/skills-lifecycle.md`. Promote a workflow into
+`../skills/` once it has recurred across multiple tasks and needs a repeatable
+checklist.
 
 ### Testing or Debugging
 
-Read:
+Read `agent-context/runbooks/testing-patterns.md` (and `../skills/debugging/SKILL.md`
+when diagnosing a bug). Prefer tests that exercise real code paths over heavy
+mocking.
 
-- `agent-context/runbooks/testing-patterns.md`
+## Core Documentation Standards
 
-Prefer the narrowest proof that exercises real behavior.
-
-## Documentation Standards
-
-- Specs are the source of truth for intended behavior.
-- Plans are executable documents for zero-context implementers.
-- Strong plans are explicit about what must not change, not only what to add.
-- Risky plans are not review-ready until they name hidden couplings,
-  anti-mocking posture, rollback or rollout sequencing, one-way doors, and
-  post-deploy success signals when those matter.
-- Non-trivial plans and final changes should receive independent review.
-- Implementation docs explain why the current design exists and what must not
-  drift.
-- Skills capture recurring workflows that have become stable and reusable.
-- Lessons are short, dated, and reusable.
-- Documentation maintenance is part of the execution gate for every material
-  change.
+- **Specs own intended behavior.** Update the spec before or alongside any
+  material behavior change.
+- **Plans are written for zero-context engineers.** State what must *not*
+  change, not only what to add.
+- **Risky plans require explicit hardening.** Name hidden couplings, what must
+  not be mocked, rollback or rollout order, one-way doors, and post-deploy
+  checks before implementation starts.
+- **Non-trivial plans and completed changes get an independent review** from a
+  different model family when available.
+- **Implementation docs explain *why*, not just *how*.**
+- **Documentation updates are part of the completion gate**, never optional
+  follow-up cleanup.

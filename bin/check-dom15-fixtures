@@ -33,16 +33,24 @@ prose_lines = importlib.import_module("bin.markdown_fences").prose_lines
 DEFAULT_SPEC = "docs/specs/01-development-documentation-operating-model.md"
 
 CLASS_CELL_RE = re.compile(r"^(?:[0-5]\b|Class\s+[0-5]\+P\b|Escalate to [0-5]\b)")
+# Adopters: this pattern tuple is repo-adapted by design. When your
+# fixtures use local phrasing (name-based triggers, different negation
+# wording), EXTEND this tuple — do not reword your fixtures back to
+# canonical brackets. (Adaptation guidance lives in the agent-theory
+# repository's propagate-guidance skill, which is hub-only by design.)
 NEGATIVE_FACT_PATTERNS = (
     re.compile(
-        r"\bno(?: other)? \[DOM-5\][^.;—]*\btriggers?\s+fires?\b", re.IGNORECASE
+        r"\bno(?: other)? \[DOM-5\][^.;,—\[]*?\btriggers?\s+fires?\b", re.IGNORECASE
     ),
     re.compile(r"\bno (?:observable )?behavior change\b", re.IGNORECASE),
     re.compile(r"\bnot \[DOM-6\]-material\b", re.IGNORECASE),
     re.compile(r"\bnothing changes\b", re.IGNORECASE),
 )
 TRIGGER_FIRE_RE = re.compile(
-    r"\[DOM-[56]\][^.;—]*\btriggers?\s+fires?\b", re.IGNORECASE
+    r"\[DOM-[56]\][^.;,—\[]*?\btriggers?\s+fires?\b", re.IGNORECASE
+)
+CLAUSE_SPLIT_RE = re.compile(
+    r"[,;.—]|\b(?:but|yet|and|while|though|although|however)\b", re.IGNORECASE
 )
 ROUTINE_RELEASE_FIXTURE_MARKER = "routine release through unchanged `bin/release.py`"
 
@@ -81,12 +89,22 @@ def fixture_rows(section: str) -> list[tuple[str, str]]:
 
 
 def states_firing_trigger(fact: str) -> bool:
-    """True when a trigger-fire clause is not directly negated."""
-    for match in TRIGGER_FIRE_RE.finditer(fact):
-        prefix = fact[max(0, match.start() - 16) : match.start()]
-        if not re.search(r"\bno(?: other)?\s+$", prefix, re.IGNORECASE):
-            return True
+    """True when any trigger-fire clause in `fact` is not directly negated."""
+    for clause in CLAUSE_SPLIT_RE.split(fact):
+        for match in TRIGGER_FIRE_RE.finditer(clause):
+            prefix = clause[: match.start()]
+            if not re.search(r"\bno(?: other)?\s+$", prefix, re.IGNORECASE):
+                return True
     return False
+
+
+def has_negative_fact(fact: str) -> bool:
+    """True when at least one clause states a valid negative-trigger fact."""
+    return any(
+        p.search(clause)
+        for clause in CLAUSE_SPLIT_RE.split(fact)
+        for p in NEGATIVE_FACT_PATTERNS
+    )
 
 
 def check(section: str) -> list[str]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-003] exception
@@ -109,9 +127,7 @@ def check(section: str) -> list[str]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-
             seen_classes.add(cls[0])
         if cls[0] in ("1", "2") and not cls.startswith("Escalate"):
             routine_release = ROUTINE_RELEASE_FIXTURE_MARKER in fact
-            if not routine_release and not any(
-                pattern.search(fact) for pattern in NEGATIVE_FACT_PATTERNS
-            ):
+            if not routine_release and not has_negative_fact(fact):
                 problems.append(
                     f"class-{cls[0]} fixture missing negative-trigger facts: "
                     f"{fact[:60]}..."
@@ -218,6 +234,29 @@ def self_test() -> int:
         "firing trigger hidden behind negative marker": GOOD_SAMPLE.replace(
             "typo — no behavior change",
             "typo — no behavior change; a [DOM-5] risky trigger fires",
+        ),
+        "firing trigger after negated trigger in same sentence": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires",
+            "no [DOM-5] non-trivial trigger fires, but a [DOM-5] risky trigger fires",
+        ),
+        "firing trigger after conjunction without comma": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires",
+            "no [DOM-5] non-trivial changes but a [DOM-5] risky trigger fires",
+        ),
+        "firing trigger after though without comma": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires",
+            "no [DOM-5] non-trivial changes though a [DOM-5] risky trigger fires",
+        ),
+        "firing trigger after although without comma": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires",
+            "no [DOM-5] non-trivial changes although a [DOM-5] risky trigger fires",
+        ),
+        "firing trigger after however without comma": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires",
+            "no [DOM-5] non-trivial changes however a [DOM-5] risky trigger fires",
+        ),
+        "intent evidence alone without negative trigger fact": GOOD_SAMPLE.replace(
+            "no [DOM-5] trigger fires", "reversible"
         ),
         "missing routine release fixture": GOOD_SAMPLE.replace(
             "| requested routine release through unchanged `bin/release.py`; intent evidence; exception owns triggers | 2 |\n",

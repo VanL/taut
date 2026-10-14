@@ -83,6 +83,18 @@ Plans are executable documents, not rough notes.
   the delta table"), never as descriptions of the current tree. Transient
   state belongs in the conversation, the commit message, the handoff
   report, or a status-index qualifier that is expected to clear.
+- **Counted and completeness claims are verified mechanically.** Every
+  numeric count (`N files`, `M tests`, `K callers`) and completeness
+  adjective (`all`, `every`, `full`, `zero`) in a plan or spec delta must
+  be backed by a command run against the current tree rather than estimated
+  from memory. When an audit finds an unverified branch in a `"full"`
+  contract, close the gap rather than weakening the contract wording unless
+  the owner explicitly approves a scope reduction.
+- **Returning mid-task with falsified premises is a first-class planning
+  outcome.** Treat plan-writing as an experiment that may falsify its own
+  task brief when code or test inspection contradicts the brief's
+  assumptions. Do not force-fit a plan onto a falsified premise; stop and
+  return the concrete counter-evidence and a proposed re-scope to the owner.
 
 If a first draft is structurally complete but still feels easy to implement
 wrong, or if the change is risky, use the companion runbook:
@@ -264,7 +276,12 @@ Rules:
 
 - inline exact sections when the delta is small; link
   `docs/plans/YYYY-MM-DD-<name>-spec-draft.md` when it is large
-- every touched requirement must cite stable `[REF-*]` codes
+- every touched requirement must cite stable `[REF-*]` codes and name the
+  exact paragraph or clause scope being replaced, inserted, or deleted
+- when extracting, consolidating, or simplifying existing spec or code
+  sections, audit every removed paragraph or branch clause-by-clause for
+  distinct hazards, edge-case exceptions, and trigger conditions before
+  deleting it
 - name the **promotion strategy** (§4d) — not merely "add to spec"
 - clarification-only deltas (behavior already matches code) still belong
   here so reviewers see the exact wording
@@ -485,13 +502,23 @@ before coding.
 
 ### 8. Independent Review Loop
 
-Every non-trivial plan should say how independent review will happen.
+Every non-trivial plan must specify and execute an independent review per
+`docs/agent-context/runbooks/review-loops-and-agent-bootstrap.md` §2 and
+`skills/call-agent/SKILL.md`. Writing a review protocol section is not a
+completed review, and generative plan authoring does not self-falsify against
+earlier same-session tool output.
 
 At minimum, include:
 
-- which other agent or agent family should review the plan
+- **Author family** and **Reviewer family** (selected from
+  `docs/implementation/03-agent-inventory.md`, preferring a different model
+  family than the author)
+- **Review invocation** (`skills/call-agent/SKILL.md` Tier-1 command, or the
+  two logged Tier-1 attempt records when falling back to a Tier-2 native
+  harness subagent)
 - which files and docs the reviewer should read — including
-  **`## Proposed Spec Delta`** when the plan changes intended behavior
+  **`## Proposed Spec Delta`** when the plan changes intended behavior and any
+  standing invariants or refused alternatives (`[ALT-*]`) in force
 - the review prompt or review stance
 - how feedback will be handed back to the plan author
 
@@ -503,15 +530,19 @@ Recommended prompt:
 > latent ambiguities, and performative overengineering — process,
 > abstraction, or ceremony that does not address a real risk or improve
 > correctness; recommending removal is as valuable as recommending
-> additions. Don't do any implementation, but answer carefully: Could
-> you implement this confidently and correctly against the delta as promoted,
-> if asked?
+> additions. Verify the plan's causal premise in the code and confirm that
+> its proposed tests are falsifiable. Don't do any implementation, but answer
+> carefully: Could you implement this confidently and correctly against the
+> delta as promoted, if asked?
 
 The authoring agent must then consider each review point explicitly and either:
 
-- update the plan
+- update the plan (and verify that every `fixed in plan` disposition is
+  reflected in the plan's task list and code snippets)
 - explain why the current path is still the best choice
-- or mark the point out of scope with reasoning
+- mark the point out of scope with reasoning
+- or escalate to the human owner as `RECONSIDERATION REQUESTED` when the
+  finding collides with a standing invariant or refused alternative (`[ALT-*]`)
 
 If the reviewer says they could not implement the plan confidently and
 correctly, treat that as a blocker until the ambiguity is resolved or the
@@ -607,8 +638,13 @@ The closed index statuses are `draft`, `active`, `status-review`, `completed`,
 `superseded`, and `retired-pending`. The separate exemplar field is exactly
 `yes` or `no`. `status-review` is a conservative maintenance quarantine when
 current evidence cannot determine the lifecycle state; it is never a
-completion claim or retirement candidate. Every plan file appears exactly once
-in the index. Verify the contract with:
+completion claim or retirement candidate. Do not encode deployment or
+verification qualifiers as status-column sub-states (such as
+`completed — post-deploy verification pending`): stripping ` — <qualifier>`
+causes `bin/coalesce-check` to miscount unverified plans as harvest-ready and
+invites free-prose status drift. Plans awaiting post-deploy verification stay
+`active` (or `status-review`) with deployment notes recorded in the plan body.
+Every plan file appears exactly once in the index. Verify the contract with:
 
 ```bash
 bin/check-plan-status-index
@@ -629,12 +665,16 @@ completion from age, filename, or free-form prose.
   changes invariants, ownership, authority, or blast radius re-enters
   classification and review — the reviewer's unit is the delta from the
   reviewed text plus the stated reason for it, never the revised text
-  standalone. (Evidence: mm's July 2026 lifecycle incident propagated
-  entirely through in-place revisions of an approved plan; mm's revision
-  re-gate, reviewed-baseline pin, and Revision Log are the fold-up
-  candidates, recorded in the guidance repo's coalescing state and in
-  mm's plan "2026-07-17-process-hardening-after-lifecycle-rollback" —
-  both foreign to this repository.)
+  standalone. Record a `Reviewed baseline:` commit SHA (or worktree diff
+  base) and a `## Revision Log` table (`Date | Baseline SHA | Sections
+  changed | Reason | Re-review status`) whenever an approved plan is
+  materially revised so scoped re-review (`review-loops-and-agent-bootstrap.md`
+  §4a) can inspect the exact delta. (Evidence: mm's July 2026 lifecycle
+  incident propagated entirely through in-place revisions of an approved plan;
+  mm's revision re-gate, reviewed-baseline pin, and Revision Log are the
+  fold-up candidates, recorded in the guidance repo's coalescing state and in
+  mm's plan "2026-07-17-process-hardening-after-lifecycle-rollback" — both
+  foreign to this repository.)
 - **Class ≥3 completion is not claimed until the Status Index row exists
   and is `completed` or `superseded`.** Update `docs/plans/README.md` in
   the same change as the completion claim. Do not require a binary
