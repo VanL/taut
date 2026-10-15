@@ -135,6 +135,10 @@ surfaces exist, verify:
 3. **Empirical identifiers by command** — verify commit SHAs, line numbers,
    rule codes, and version facts via command against the tree rather than model
    memory.
+4. **Whole-plan craft and CS/algorithmic principle** — analyze the plan as a
+   whole, including all amendments, with two lenses: (1) is this what an expert
+   developer would do and think well-crafted or elegant? (2) is there a known
+   algorithm or computer science principle that should be applied here?
 
 When the reviewer is a sandboxed CLI agent (for example `codex exec`):
 
@@ -166,6 +170,12 @@ Use this or a close variant:
 > Watch out for performative overengineering — tests or processes that
 > add ceremony without meaningfully addressing a real-world risk
 > identified in the code.
+>
+> Analyze the plan as a whole, including all amendments, with two lenses:
+> 1. Is this what an expert developer would do and think well-crafted or
+>    elegant?
+> 2. Is there a known algorithm or computer science principle that should be
+>    applied here?
 >
 > **Rejected alternatives in force:** [quote each applicable
 > `docs/program-theory.md` [THEORY-5] A-record (`[ALT-*]`), including its

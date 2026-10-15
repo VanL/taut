@@ -113,6 +113,14 @@ consistency:
    keys, rule codes, and version facts via command against the tree rather than
    accepting them from model memory.
 
+When reviewing a plan, analyze the plan as a whole, including all amendments,
+with two lenses:
+
+1. **Expert-developer craft** — is this what an expert developer would do and
+   think well-crafted or elegant?
+2. **Known algorithm or CS principle** — is there a known algorithm or computer
+   science principle that should be applied here?
+
 The review is not complete until the authoring agent has considered each point,
 updated the work or documented why the existing path remains correct, and
 verified that every `fixed in plan` disposition is reflected in the plan's task
@@ -267,10 +275,12 @@ helpers merely to lower a linter score. When a cohesive function legitimately
 exceeds a static complexity threshold, record it in a governed suppression
 registry (`Group ID | Rules | Approved cardinality | Protected invariant | Real
 proof | Rejected alternatives | Owner approval`) reconciled by an executable
-gate. A governance or policy-checking tool may never suppress itself. When
-probing linter rule changes or unused suppressions (`RUF100`), mutate a copy of
-the real project configuration rather than running `--isolated`, which ignores
-project rule selections and settings.
+gate. A governance or policy-checking tool may never exempt or suppress its own
+policy check on itself (registered lint exceptions in the governed suppression
+registry remain verified by the suppression-index gate). When probing linter
+rule changes or unused suppressions (`RUF100`), mutate a copy of the real
+project configuration rather than running `--isolated`, which ignores project
+rule selections and settings.
 
 Cost to price in: a hot god file serializes parallel agent write-slices.
 Keep fan-out write scopes disjoint or sequence them.

@@ -220,10 +220,12 @@ For each tripped or requested fold:
    the deleted entries. The fold commit may be added to the run log after
    it exists, as metadata.
 5. **Archive phase.** Only after the distillation is written, its links
-   resolve, and `source_sha` is verified **reachable from a retained
-   ref**, delete the folded raw entries and advance the lessons
-   watermark — Git-backed removals with verified cues are archive
-   maintenance, not a destructive edge, and need no separate landing
+   resolve, and `source_sha` is verified **as a commit object
+   (`git cat-file -e <source_sha>^{commit}`) and reachable from a retained ref
+   (`git merge-base --is-ancestor <source_sha> HEAD`, with remote ancestry
+   reported by `bin/coalesce-check`)**, delete the folded raw entries and
+   advance the lessons watermark — Git-backed removals with verified cues are
+   archive maintenance, not a destructive edge, and need no separate landing
    authorization ([DOM-14]; hub owner decision 2026-08-07). An uncommitted
    session may still perform these removals when every removed item's source
    cue is verified and reachable from a retained ref; only material whose raw

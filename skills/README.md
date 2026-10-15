@@ -5,8 +5,10 @@ this repository.
 
 Skills are optional. Current skills: `coalescing/`, `debugging/`,
 `brainstorming-to-plan/`, `call-agent/` (adopted 2026-07-14 from
-agent-guidance via the propagation plan), and `interface-review/`
-(adopted 2026-07-17 from agent-guidance via the propagation plan).
+agent-guidance via the propagation plan), `interface-review/`
+(adopted 2026-07-17 from agent-guidance via the propagation plan),
+`crystallize-program-theory/` (adopted 2026-08-07 from agent-theory), and
+`test-audit/` (adopted 2026-10-15 from agent-theory @ `296a7cd`).
 Create a new one only
 after a real workflow has repeated and stabilized. Do not invent a skill merely
 to populate this directory. Start from `skills/_template/SKILL.md` when a

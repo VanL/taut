@@ -177,6 +177,8 @@ Quick pointers to the key guidance documents in this repository.
 | `skills/debugging/SKILL.md` | Root-cause-first debugging discipline |
 | `skills/crystallize-program-theory/SKILL.md` | One-shot crystallization of the program theory from contract, specs, and owner dialogue |
 | `skills/interface-review/SKILL.md` | Agent-facing interface review lens |
+| `skills/test-audit/SKILL.md` | Authoring gate for new tests, rules for changing failing tests, sensitivity check, and audit workflow for low-value or implementation-coupled tests |
+| `skills/test-audit/SWEEP.md` | Whole-subsystem test-surface pruning workflow (`R`/`F`/`C`/`D` ledger, layer plan, cutover, preservation review) |
 
 ## Update Guidance
 

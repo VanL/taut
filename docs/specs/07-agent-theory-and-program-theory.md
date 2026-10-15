@@ -83,7 +83,7 @@ document** on disk. Agent Theory keeps that distinction explicit:
 | Concept | What it means in practice |
 |---------|---------------------------|
 | **Holding the theory (possession)** | A person's practical ability to place a new feature, explain why the code is shaped the way it is, reject ideas that do not fit the system, and diagnose surprising bugs. |
-| **The written account (`docs/program-theory.md`)** | A concise document in the repository that gives humans and zero-context agents the same vocabulary, boundaries, and non-goals at the start of a task. |
+| **The written account (`docs/program-theory.md`)** | A concise document in the repository that gives humans and zero-context agents the same vocabulary, desired feel (taste up front), boundaries, and non-goals at the start of a task. |
 
 Memorizing `docs/program-theory.md` is not holding the theory. The file gives
 humans and agents a shared starting point; day-to-day work with specs, code,
@@ -133,7 +133,7 @@ Each document surface in the repository answers a different question:
 
 | Document surface | Question it answers |
 |------------------|---------------------|
-| **Program theory** (`docs/program-theory.md`, `MODULE-THEORY.md`) | What kind of system or module is this? Why do these concepts, boundaries, and non-goals exist? |
+| **Program theory** (`docs/program-theory.md`, `MODULE-THEORY.md`) | What kind of system or module is this, what should it feel like to use, and why do these concepts, boundaries, and non-goals exist? |
 | **Process and operating model** (`[DOM-*]`, `docs/agent-context/`, `skills/`) | How do humans and agents classify tasks, write plans, run reviews, verify changes, and maintain docs? |
 | **Product contracts** (`docs/specs/`, authoritative README sections) | What exact behavior, flags, schemas, and invariants must hold **right now**? |
 | **Implementation docs** (`docs/implementation/`) | Why is the current code structured this way, and where are the key edit points? |
@@ -166,6 +166,15 @@ concept → owner dialogue → draft theory → spec → implementation
 - **Crystallize before committing product behavior.** Before committing
   product-scope behavior or architecture, interview the owner and write at
   least a `Draft` theory.
+- **Communicate program feel ("taste up front") without big design up front.**
+  Because coding agents cannot infer unstated aesthetic or ergonomic intent from
+  thin air, `docs/program-theory.md` states the product's desired feel, posture,
+  and non-goals up front — what using the program should feel like, what makes a
+  surface feel native vs. bolted on, and which temptations to refuse. That is
+  **taste up front**, not big design up front (BDUF): it gives agents the human
+  owner's judgment compass before code is written, while leaving internal
+  decomposition, schemas, and feature specs to evolve slice by slice through
+  implementation and evidence (`[REV-AT-005]`).
 - **Revise when reality pushes back.** Product-scope Class 5 work requires at
   least a current `Draft` account, and that account should be updated whenever
   implementation or debugging reveals a new constraint.
@@ -188,8 +197,8 @@ concept → owner dialogue → draft theory → spec → implementation
 ## Related Plans
 
 - `docs/plans/2026-10-14-agent-theory-delta-wave-plan.md` — propagates the
-  STE100 readability rewrite of `[AT-REF-1]`–`[AT-REF-5]` from the
-  `agent-theory` hub @ `8f41a9d`
+  STE100 readability rewrite and taste-up-front boundary (`[REV-AT-005]`) of
+  `[AT-REF-1]`–`[AT-REF-5]` from the `agent-theory` hub @ `296a7cd`
 - retired: 2026-08-07-agent-theory-delta-wave-plan — adopted here by that plan
   (this repo; source `4e3f12f`; see the ledger in `docs/plans/README.md`) from
   the agent-theory hub @ `0423923`; the hub's authoring plan

@@ -1,6 +1,7 @@
 # Agent-Theory Delta Wave Plan (2026-10-14)
 
 Status: completed — landed after Tier-1 codex scoped adaptation review (APPROVE)
+Reviewed baseline: `8d0708d`
 Class: 5+P — normative spec text lands ([DOM-2], [DOM-5], [DOM-10], [DOM-11],
 [DOM-14], [AT-REF-1]–[AT-REF-5]), and shared agent context, runbooks, skills,
 and gate scripts are materially changed. Effective requirements: Class 5 plus
@@ -12,9 +13,10 @@ scripts only; gate-script enhancements are additive and verified via
 
 ## Goal
 
-Propagate the `agent-theory` delta wave from hub pin `8f41a9d` into Taut
-(previous hub pin `0423923`, landed at `4e3f12f` on 2026-08-07). The delta
-spans two hub clusters:
+Propagate the `agent-theory` delta wave from hub pin `296a7cd` into Taut
+(previous hub pin `0423923`, landed at `4e3f12f` on 2026-08-07; initial
+2026-10-14 wave landed at `8d0708d` from `8f41a9d`). The delta spans three hub
+clusters:
 
 1. **Empirical review discipline, migration/coalescing hardening, and gate
    upgrades (`0423923..93ef65c`):**
@@ -59,6 +61,21 @@ spans two hub clusters:
      `docs/README.md` and `docs/specs/07-agent-theory-and-program-theory.md`
      while preserving every `[AT-REF-*]` heading code, Taut's layered product
      ownership sections, and Taut's Active `docs/program-theory.md` routing.
+3. **Whole-plan review lenses, `test-audit` skill promotion, and taste-up-front
+   boundary (`8f41a9d..296a7cd`):**
+   - Whole-plan review lenses (expert-developer craft + CS/algorithmic
+     principle) in `[DOM-11]`, `engineering-principles.md` §8,
+     `review-loops-and-agent-bootstrap.md` §3 & §4, `writing-plans.md` §8 &
+     §10, and `skills/call-agent/SKILL.md` §2.
+   - Promoted `skills/test-audit/SKILL.md` and `skills/test-audit/SWEEP.md`,
+     registered in `skills/README.md`, `docs/README.md`,
+     `docs/implementation/02-repository-map.md`, and
+     `docs/agent-context/runbooks/external-skill-suites.md`.
+   - Communicating program feel ("taste up front") vs. BDUF (`[REV-AT-005]`) in
+     `docs/specs/07-agent-theory-and-program-theory.md` (`[AT-REF-2]`,
+     `[AT-REF-3]`, `[AT-REF-4]`) and `skills/crystallize-program-theory/SKILL.md`
+     (spine Q2, Q5, and §4), plus `engineering-principles.md` §14 and
+     `skills/coalescing/SKILL.md` step 3.5 clarifications.
 
 ## Source Documents
 
@@ -66,8 +83,8 @@ spans two hub clusters:
   ([DOM-2], [DOM-5], [DOM-10], [DOM-11], [DOM-14], [DOM-15])
 - `docs/specs/07-agent-theory-and-program-theory.md`
   ([AT-REF-1]–[AT-REF-5])
-- Hub source, pinned: `agent-theory` @ `8f41a9d` — extracted from committed
-  hub history via `git -C /Users/van/Developer/agent-theory show 8f41a9d:<path>`.
+- Hub source, pinned: `agent-theory` @ `296a7cd` — extracted from committed
+  hub history via `git -C /Users/van/Developer/agent-theory show 296a7cd:<path>`.
 
 ## Invariants and Adaptations
 
@@ -133,6 +150,10 @@ spans two hub clusters:
    `bin/check-plan-status-index`, `bin/coalesce-check`, targeted pytest
    modules, Ruff check/format, and `git diff --check`).
 6. Run scoped cross-family adaptation review and close the plan upon landing.
+7. Propagate the follow-on `8f41a9d..296a7cd` hub delta (whole-plan review
+   lenses, `skills/test-audit/{SKILL.md,SWEEP.md}`, `[REV-AT-005]`
+   taste-up-front boundary, and `b6f2141` adaptation back-ports) and re-verify
+   all Taut gates.
 
 ## Out of Scope
 
@@ -145,6 +166,15 @@ spans two hub clusters:
 |------|-------|-------------------|--------------------------|
 | 2026-10-14 | Scoped adaptation review | `codex` (Tier-1 CLI) / `APPROVE` | 1. (Non-blocking, line 89) Replace nonexistent `taut/ruff_suppression_inventory.toml` reference with `[DOM-10.2.1]` — fixed. 2. (Non-blocking, line 151) Update `"22-file"` count to `"24-file"` (23 tracked files + new plan) — fixed. |
 
+## Revision Log
+
+- 2026-10-15 (baseline `8d0708d`): Extended wave from hub pin `8f41a9d` to
+  `296a7cd` (whole-plan review lenses, promoted `skills/test-audit/` skill and
+  `SWEEP.md`, `[REV-AT-005]` taste-up-front boundary in
+  `docs/specs/07-agent-theory-and-program-theory.md` and
+  `skills/crystallize-program-theory/SKILL.md`, and `b6f2141` adaptation
+  back-ports).
+
 ## Execution Log
 
 (append-only)
@@ -155,3 +185,5 @@ spans two hub clusters:
   coalescing, Ruff, and pytest gates.
 - 2026-10-14: Tier-1 `codex` scoped adaptation review returned `APPROVE`;
   applied both non-blocking plan notes and closed the plan as `completed`.
+- 2026-10-15: Applied the `8f41a9d..296a7cd` hub delta (Task 7) and re-verified
+  all Taut doc, fixture, plan-status, coalescing, Ruff, and pytest gates.

@@ -121,9 +121,11 @@ checklist.
 
 ### Testing or Debugging
 
-Read `agent-context/runbooks/testing-patterns.md` (and `../skills/debugging/SKILL.md`
-when diagnosing a bug). Prefer tests that exercise real code paths over heavy
-mocking.
+Read `agent-context/runbooks/testing-patterns.md` (plus
+`../skills/test-audit/SKILL.md` when authoring, changing, reviewing, or
+auditing tests; `../skills/test-audit/SWEEP.md` when pruning a whole
+subsystem's test surface; and `../skills/debugging/SKILL.md` when diagnosing a
+bug). Prefer tests that exercise real code paths over heavy mocking.
 
 ## Core Documentation Standards
 

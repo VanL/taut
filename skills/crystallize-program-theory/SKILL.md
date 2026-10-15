@@ -1,8 +1,9 @@
 # Crystallize Program Theory
 
 Status: Active — adopted from agent-theory @ `0423923` via
-"2026-08-07-agent-theory-delta-wave-plan" (this repo). This
-repository's product theory is already crystallized and Active; use
+"2026-08-07-agent-theory-delta-wave-plan" (this repo) and updated from
+agent-theory @ `296a7cd` via `docs/plans/2026-10-14-agent-theory-delta-wave-plan.md`.
+This repository's product theory is already crystallized and Active; use
 this skill for revisions and future module theory.
 
 ## Purpose
@@ -108,13 +109,17 @@ before finalizing non-goals.
 
 1. **Problem world** — What affairs of the world does this program handle?
    For whom? What fails if it does not exist?
-2. **Desired feel** — What should using it feel like in one paragraph?
+2. **Desired feel ("taste up front")** — What should using it feel like in one
+   paragraph? What makes a change feel native to this program vs. bolted on?
+   (Agents cannot infer unstated ergonomic or aesthetic judgment; stating taste
+   up front gives them the owner's compass without prescribing big design up
+   front.)
 3. **Whole-program metaphor** — In three to seven bullets, what is the
    mental model (not the file tree)?
 4. **Core concepts** — Name each concept, its meaning, and its **owner**
    (this product / a module / the user / another system).
 5. **Matching surface** — How do CLI, API, UI, or docs express the same
-   model without inventing a second product?
+   model and feel without inventing a second product?
 6. **Non-goals** — What will competent people propose that you will refuse?
    Why? When would you reconsider?
 7. **Generative rule** — Is there one question that organizes a large part
@@ -153,7 +158,9 @@ theory required,” and promotion path for any product-scope ALT parked there.
 
 - Status / Owner / Boundary / Verification / Required action
 - What program theory means (short; link Naur)
-- Purpose and desired feel; whole-program mental model
+- Purpose and desired feel (taste up front — what makes surfaces feel native vs.
+  bolted on, without prescribing internal decomposition up front); whole-program
+  mental model
 - Core concepts and ownership; principles; non-goals; falsifiers
 - How the model is extended (pointer to module theory convention)
 - Revisions/ALT if decided; related contracts

@@ -632,7 +632,11 @@ Requirements:
 - the review focuses on errors, bad ideas, latent ambiguities, performative
   overengineering — process, abstraction, or ceremony that does not address
   a real risk or improve correctness — and whether a different engineer
-  could implement the plan confidently and correctly
+  could implement the plan confidently and correctly; when reviewing a plan,
+  analyze the plan as a whole, including all amendments, with two lenses:
+  (1) is this what an expert developer would do and think well-crafted or
+  elegant? (2) is there a known algorithm or computer science principle that
+  should be applied here?
 - the authoring agent considers each review point explicitly
 - the authoring agent either updates the work or records why the current path
   remains the best choice, and verifies that every `fixed in plan` disposition
