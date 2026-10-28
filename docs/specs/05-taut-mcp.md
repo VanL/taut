@@ -76,9 +76,9 @@ neither surface invokes the other. The `mcp` command declares raw stdio
 protocol ownership under [TAUT-8.6], so successful dispatch performs no
 ambient project terminal-policy preflight and the MCP SDK retains direct
 ownership of process stdin/stdout. It declares the direct ranges
-`mcp>=2.0.0,<3` and `jsonschema>=4.26.0,<5`; their lower bounds are the versions
-selected in the current retained MCP lock, and the major ceilings record known
-compatibility boundaries. The SDK provides native support for legacy
+`mcp>=2.0.0` and `jsonschema>=4.26.0`, without upper bounds. Future major
+versions have not been qualified by the current compatibility evidence. The
+SDK provides native support for legacy
 `2025-11-25` and modern `2026-07-28` clients from one handler set. It owns
 legacy initialization, modern discovery, protocol negotiation, stdio framing,
 and era-specific wire envelopes. Taut application code does not branch on
@@ -1762,8 +1762,7 @@ The MCP SDK selected by the retained MCP lock must demonstrate both legacy
 `2025-11-25` and modern `2026-07-28` stdio clients against the same
 async application handlers. The process reactor captures the running loop
 from era-neutral lifespan startup, and no synchronous AnyIO worker owns a
-protocol handler or reactor bridge. Changing a declared major ceiling requires
-a new compatibility review.
+protocol handler or reactor bridge.
 
 All process-local registry, aggregate, and subscription-adapter state
 resets when the stdio process ends. That reset is never a correctness change:

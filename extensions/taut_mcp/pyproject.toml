@@ -14,8 +14,8 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "jsonschema>=4.26.0,<5",
-    "mcp>=2.0.0,<3",
+    "jsonschema>=4.26.0",
+    "mcp>=2.0.0",
     "simplebroker>=8.4.0",
     "taut-chat==0.9.11",
 ]
