@@ -147,7 +147,7 @@ extend-select = [
     "B",
     "C901",
     "C4",
-    "DTZ006",
+    "DTZ",
     "UP",
 ]
 ignore = [

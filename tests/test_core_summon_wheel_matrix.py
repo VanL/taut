@@ -629,10 +629,7 @@ def test_installed_duplicate_official_claims_do_not_run_legacy_fallback(
     wheel = _write_command_provider_wheel(
         tmp_path / "taut_summon-0.0.0-py3-none-any.whl",
         name="taut-summon",
-        entry_points=(
-            ("summon", "duplicate_manifest:summon"),
-            ("summon", "duplicate_manifest:second"),
-        ),
+        entry_points=(("summon", "duplicate_manifest:summon"),),
         modules={
             "duplicate_manifest.py": _VALID_SUMMON_MANIFEST + "\nsecond = summon\n",
             "synthetic_command.py": _VALID_SUMMON_COMMAND,
@@ -644,6 +641,16 @@ def test_installed_duplicate_official_claims_do_not_run_legacy_fallback(
         tmp_path / "duplicate-official"
     )
     _assert_wheels_installed(environment, wheel)
+    # Install valid metadata first: modern installers reject duplicate entries.
+    # Corrupt only the disposable installed metadata to exercise registry refusal.
+    metadata_update = environment.run_python(
+        "from importlib.metadata import distribution; "
+        "p = distribution('taut-summon').locate_file("
+        "'taut_summon-0.0.0.dist-info/entry_points.txt'); "
+        "p.write_text(p.read_text(encoding='utf-8') + "
+        "'summon = duplicate_manifest:second\\n', encoding='utf-8')"
+    )
+    assert metadata_update.returncode == 0, metadata_update.stderr
 
     result = environment.run_console("summon", "reviewer")
 

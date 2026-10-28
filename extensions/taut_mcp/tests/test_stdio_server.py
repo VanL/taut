@@ -12,7 +12,7 @@ import time
 import tomllib
 from contextlib import ExitStack
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import Any, cast
 
 import pytest
 from _result_schemas import result_schema, result_schema_for_tool
@@ -84,9 +84,9 @@ class _RawStdioProcess:
         assert stdin is not None
         assert stdout is not None
         assert stderr is not None
-        self.stdin = cast(IO[str], stdin)
-        self.stdout = cast(IO[str], stdout)
-        self.stderr = cast(IO[str], stderr)
+        self.stdin = stdin
+        self.stdout = stdout
+        self.stderr = stderr
         self.received: queue.Queue[Any] = queue.Queue()
         self.eof = object()
         self.frames: list[dict[str, object]] = []

@@ -25,7 +25,7 @@ EXTENSIONLESS_PYTHON = {
     "bin/pytest-pg",
     "bin/render-tui-screens",
 }
-REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
+REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "DTZ", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 
 
