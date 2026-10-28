@@ -328,7 +328,7 @@ continue to own the reviewed stable-default rule inventory and suppression
 policy.
 `pyproject.toml` and `extensions/taut_mcp/pyproject.toml` own their respective
 Ruff configuration; both enable Ruff's stable defaults and extend them with
-`E`, `W`, `F`, `I`, `B`, `C901`, `C4`, and `UP`, use
+`E`, `W`, `F`, `I`, `B`, `C901`, `C4`, `DTZ`, and `UP`, use
 `mccabe.max-complexity = 10`, ignore only `E501` and `B008`, and keep preview
 rules opt-in. The two configurations must resolve the exact reviewed rule
 inventory recorded in `tests/fixtures/ruff-enabled-rules.txt`. A Ruff selection

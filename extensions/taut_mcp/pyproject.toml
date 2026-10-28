@@ -14,8 +14,8 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "jsonschema>=4.26.0,<5",
-    "mcp>=2.0.0,<3",
+    "jsonschema>=4.26.0",
+    "mcp>=2.0.0",
     "simplebroker>=8.4.0",
     "taut-chat==0.9.11",
 ]
@@ -81,7 +81,7 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-extend-select = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
+extend-select = ["E", "W", "F", "I", "B", "C901", "C4", "DTZ", "UP"]
 ignore = ["E501", "B008"]
 
 [tool.ruff.lint.isort]
