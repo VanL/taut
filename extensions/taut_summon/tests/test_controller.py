@@ -964,10 +964,12 @@ def test_controller_refuses_error_stop_ack_before_release_confirmation(
     db = tmp_path / ".taut.db"
     member = _create_live_member(db)
     responder_errors: list[BaseException] = []
+    responder_ready = threading.Event()
 
     def respond() -> None:
         request_queue = Queue(control_in_queue_name(member.member_id), db_path=str(db))
         try:
+            responder_ready.set()
             deadline = time.monotonic() + 2.0
             body: str | None = None
             while body is None and time.monotonic() < deadline:
@@ -1000,6 +1002,7 @@ def test_controller_refuses_error_stop_ack_before_release_confirmation(
     responder = threading.Thread(target=respond)
     responder.start()
     try:
+        assert responder_ready.wait(timeout=3.0)
         with pytest.raises(
             SummonOperationError, match="driver slot release could not be confirmed"
         ) as caught:

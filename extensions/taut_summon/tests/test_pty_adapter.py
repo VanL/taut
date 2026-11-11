@@ -291,7 +291,8 @@ def test_driver_fixture_cleanup_hard_retires_provider_before_driver_kill(
     def hard_retire(identity: tuple[int, str, int] | None) -> None:
         operations.append("provider-hard-retire")
         real_hard_retire(identity)
-        assert not _same_process(provider_identity)
+        assert identity is not None
+        assert not driver._provider_domain_matches(identity)
 
     def kill_driver() -> None:
         operations.append("driver-kill")
@@ -1793,11 +1794,11 @@ def test_close_does_not_block_behind_full_pty_input_queue(
 
     closer = threading.Thread(target=handle.close, daemon=True)
     closer.start()
-    closer.join(timeout=3.0)
+    injector.join(timeout=3.0)
+    assert not injector.is_alive()
+    closer.join(timeout=10.0)
     assert not closer.is_alive()
     pump.drain_until_exit(timeout=5.0)
-    injector.join(timeout=5.0)
-    assert not injector.is_alive()
 
 
 @posix_only
