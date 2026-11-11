@@ -464,7 +464,7 @@ def test_scripted_root_cli_detach_control_plane_and_fresh_attach(
         shell.wait_for_prompt(after=before_dismiss)
         assert shell.termios_snapshot() == shell_cooked
         stty_mark = shell.mark()
-        shell.run("stty -a; printf '\\nSTTY-DONE\\n'")
+        shell.run("stty -a; printf '\\nSTTY-%s\\n' DONE")
         stty = shell.wait_for_text("STTY-DONE", after=stty_mark)
         shell.wait_for_prompt(after=stty_mark)
         stty_tokens = set(stty.replace(";", " ").split())
