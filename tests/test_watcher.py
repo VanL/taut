@@ -3229,6 +3229,7 @@ def test_chat_handler_failure_keeps_primary_when_cleanup_fails(
 
 def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[TAUT-8.4] Terminal sink failure stops even on a late-added queue."""
 
@@ -3239,12 +3240,14 @@ def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
     bob.join("home")
     _drain_unread(van, "home")
     attempted: list[Message] = []
+    attempted_event = threading.Event()
 
     def closed_sink(item: Message | Notification) -> None:
         if not isinstance(item, Message) or item.thread != "late":
             return
         if item.text == "terminal sink probe":
             attempted.append(item)
+            attempted_event.set()
             raise WatcherRejected
 
     watcher = _white_box_watcher(
@@ -3252,39 +3255,28 @@ def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
         closed_sink,
         membership_refresh_interval=0.05,
     )
+    ready = threading.Event()
+    late_added = threading.Event()
+    real_refresh = watcher._refresh_memberships
+
+    def refresh_spy() -> None:
+        real_refresh()
+        if "late" in watcher.list_queues():
+            late_added.set()
+
+    monkeypatch.setattr(watcher, "_refresh_memberships", refresh_spy)
+    watcher.notify_ready_after_initial_drain(ready)
     thread = watcher.start()
     try:
-        eventually(
-            thread.is_alive,
-            timeout=3.0,
-            interval=0.01,
-            description="late-membership watcher thread starts",
-        )
+        assert ready.wait(timeout=10.0)
         van.join("late")
         bob.join("late")
-        eventually(
-            lambda: "late" in watcher.list_queues(),
-            timeout=3.0,
-            interval=0.01,
-            description="watcher adds the late membership",
-            snapshot=lambda: {
-                "thread_alive": thread.is_alive(),
-                "stop_requested": watcher._stop_requested,
-                "queues": watcher.list_queues(),
-            },
-        )
+        assert late_added.wait(timeout=10.0)
+        assert "late" in watcher.list_queues()
         bob.say("late", "terminal sink probe")
-        eventually(
-            lambda: not thread.is_alive(),
-            timeout=3.0,
-            interval=0.01,
-            description="WatcherRejected from the late chat handler stops the watcher",
-            snapshot=lambda: {
-                "thread_alive": thread.is_alive(),
-                "attempted_count": len(attempted),
-                "stop_requested": watcher._stop_requested,
-            },
-        )
+        assert attempted_event.wait(timeout=10.0)
+        thread.join(timeout=3.0)
+        assert not thread.is_alive()
 
         assert len(attempted) == 1
         unread = van.read_unread("late")
