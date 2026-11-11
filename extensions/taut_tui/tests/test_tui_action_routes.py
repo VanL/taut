@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from _action_completion import focus_widget, palette_query
+from _app_completion import AppCompletions
 from _completion import CompletionKey, CompletionScope
 from _screen_completion import ScreenCompletions
 from textual.widgets import Input
@@ -278,12 +279,20 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         observations: list[ActionInvocation] = []
-        with CompletionScope() as scope, monkeypatch.context() as patch:
-            screens = ScreenCompletions(app, scope, patch)
+        with monkeypatch.context() as patch:
+            completions = AppCompletions(app, patch)
+            app._test_completions = completions
+            scope = completions.scope
+            screens = completions.screens
             try:
                 async with app.run_test(size=(130, 34)) as pilot:
                     # Framework startup has completed the real on_mount.
                     assert app._domain is not None
+                    # Let the real initial navigation apply before replacing it
+                    # with the one-item producer fixture below. Otherwise its
+                    # future may overwrite the fixture between highlight and
+                    # activation.
+                    await completions.navigation()
                     hit = alice.search("route-matrix-needle")[0]
                     app._target_labels["general"] = "#general"
                     app._target_kinds["general"] = "channel"
@@ -340,7 +349,7 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
                         for invocation in observations
                     ] == [(action_id, route)]
             finally:
-                screens.close()
+                completions.close()
 
     try:
         asyncio.run(exercise())
