@@ -336,6 +336,19 @@ def _new_driver(
     )
 
 
+def test_rejoin_reports_child_that_exited_before_identity_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SUM-11]: an immediate child exit belongs to restart policy."""
+
+    driver = object.__new__(SummonDriver)
+    handle = cast(Any, types.SimpleNamespace(pid=4171))
+    boot = cast(Any, types.SimpleNamespace(member_name="scripted"))
+    monkeypatch.setattr(driver_module, "capture_process", lambda _pid: None)
+
+    assert driver._rejoin(handle, boot) is False
+
+
 @pytest.mark.parametrize(
     ("attach", "detach", "availability", "expected"),
     [

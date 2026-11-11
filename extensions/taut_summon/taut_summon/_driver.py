@@ -59,6 +59,7 @@ from taut.addressing import classify_registered_queue
 from taut.client import Member, Message, Notification
 from taut.identity import (
     IdentityCapture,
+    ProcessInfo,
     capture_host_identity,
     capture_process,
     choose_name,
@@ -274,6 +275,14 @@ def _agent_capture(pid: int, rule: str) -> IdentityCapture:
     proc = capture_process(pid)
     if proc is None or proc.start_time is None:
         raise DriverError(f"cannot capture identity evidence for pid {pid}")
+    return _agent_capture_from_process(proc, rule)
+
+
+def _agent_capture_from_process(proc: ProcessInfo, rule: str) -> IdentityCapture:
+    """Build a capture from one already-validated live process snapshot."""
+
+    if proc.start_time is None:
+        raise DriverError(f"cannot capture identity evidence for pid {proc.pid}")
     try:
         login = getpass.getuser()
     except Exception:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
@@ -1097,7 +1106,9 @@ class SummonDriver:
             self._owner_running = _RunningGeneration(
                 running.started_at, handle, running.generation, pump
             )
-        self._rejoin(handle, self._owner_boot)
+        if not self._rejoin(handle, self._owner_boot):
+            self._harness_dead.set()
+            return
         self._ensure_generation_threads(self._owner_boot)
         if self._owner_attach.should_attach:
             self._start_phase_operation(
@@ -1532,11 +1543,14 @@ class SummonDriver:
 
     # --- helpers ------------------------------------------------------------
 
-    def _rejoin(self, handle: AdapterHandle, boot: _BootstrapResult) -> None:
+    def _rejoin(self, handle: AdapterHandle, boot: _BootstrapResult) -> bool:
         """Re-anchor presence at the harness child through token-only selection."""
 
-        capture = _agent_capture(
-            handle.pid, rule=f"summon harness child for {boot.member_name}"
+        proc = capture_process(handle.pid)
+        if proc is None:
+            return False
+        capture = _agent_capture_from_process(
+            proc, rule=f"summon harness child for {boot.member_name}"
         )
         anchor = capture.anchor
         assert anchor is not None
@@ -1559,6 +1573,7 @@ class SummonDriver:
             raise DriverError(f"cannot re-anchor member: {exc}") from exc
         finally:
             rejoin_client.close()
+        return True
 
     def _ensure_threads(self, client: TautClient, member_id: str) -> None:
         for thread in self._request.threads:

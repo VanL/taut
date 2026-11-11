@@ -464,9 +464,11 @@ class FakeWaiter:
     def __init__(self) -> None:
         self.wait_calls: list[float | None] = []
         self.close_calls = 0
+        self.wait_entered = threading.Event()
 
     def wait(self, timeout: float | None) -> bool:
         self.wait_calls.append(timeout)
+        self.wait_entered.set()
         return False
 
     def close(self) -> None:
@@ -964,11 +966,8 @@ def test_base_reactor_background_owner_closes_current_waiter(
     )
     thread = watcher.start()
     try:
-        eventually(
-            watcher._strategy.uses_native_activity,
-            timeout=3.0,
-            interval=0.01,
-            description="base reactor switches to native activity waiting",
+        assert fake_waiter.wait_entered.wait(3.0), (
+            "background owner did not enter the installed native waiter"
         )
     finally:
         watcher.stop()
