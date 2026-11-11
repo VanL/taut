@@ -9,7 +9,6 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Sequence
-from functools import partial
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -464,11 +463,9 @@ class FakeWaiter:
     def __init__(self) -> None:
         self.wait_calls: list[float | None] = []
         self.close_calls = 0
-        self.wait_entered = threading.Event()
 
     def wait(self, timeout: float | None) -> bool:
         self.wait_calls.append(timeout)
-        self.wait_entered.set()
         return False
 
     def close(self) -> None:
@@ -964,11 +961,11 @@ def test_base_reactor_background_owner_closes_current_waiter(
         queue_configs={"waiter.input": {"handler": lambda *_args: None}},
         db=tmp_path / ".taut.db",
     )
+    watcher._ensure_wait_strategy_started()
+    assert watcher._strategy.uses_native_activity()
     thread = watcher.start()
     try:
-        assert fake_waiter.wait_entered.wait(3.0), (
-            "background owner did not enter the installed native waiter"
-        )
+        assert watcher._running_event.wait(3.0)
     finally:
         watcher.stop()
         thread.join(timeout=3.0)
@@ -3633,63 +3630,48 @@ def test_taut_watcher_membership_churn_closes_removed_queues(
         _record_message_threads(seen),
         membership_refresh_interval=0.05,
     )
-    thread = watcher.start()
+    names = [f"churn{cycle}" for cycle in range(10)]
+    added = {name: threading.Event() for name in names}
+    removed = {name: threading.Event() for name in names}
+    closed = {name: threading.Event() for name in names}
+    real_refresh = watcher._refresh_memberships
+
+    def refresh_spy() -> None:
+        real_refresh()
+        configured = set(watcher.list_queues())
+        for name in names:
+            if name in configured:
+                added[name].set()
+            elif added[name].is_set():
+                removed[name].set()
+
+    monkeypatch.setattr(watcher, "_refresh_memberships", refresh_spy)
     closed_queues: list[tuple[str, threading.Thread]] = []
     real_close = Queue.close
 
     def close_spy(queue: Queue) -> None:
         closed_queues.append((queue.name, threading.current_thread()))
         real_close(queue)
+        if queue.name in closed:
+            closed[queue.name].set()
 
     monkeypatch.setattr(Queue, "close", close_spy)
-
-    def queue_listed(name: str) -> bool:
-        return name in watcher.list_queues()
-
-    def queue_absent(name: str) -> bool:
-        return name not in watcher.list_queues()
-
-    def queue_removed_and_closed(name: str) -> bool:
-        return queue_absent(name) and any(
-            queue_name == name for queue_name, _close_thread in closed_queues
-        )
+    ready = threading.Event()
+    watcher.notify_ready_after_initial_drain(ready)
+    thread = watcher.start()
 
     try:
-        eventually(
-            thread.is_alive,
-            timeout=3.0,
-            interval=0.01,
-            description="membership-churn watcher thread starts",
-        )
+        setup_timeout = 10.0 if sys.platform == "win32" else 3.0
+        assert ready.wait(timeout=setup_timeout)
 
-        for cycle in range(10):
-            name = f"churn{cycle}"
+        for name in names:
             van.join(name)
-            eventually(
-                partial(queue_listed, name),
-                timeout=3.0,
-                interval=0.01,
-                description=f"watcher adds {name} during membership churn",
-                snapshot=lambda: {
-                    "thread_alive": thread.is_alive(),
-                    "stop_requested": watcher._stop_requested,
-                    "queues": watcher.list_queues(),
-                },
-            )
+            assert added[name].wait(timeout=setup_timeout)
+            assert name in watcher.list_queues()
             van.leave(name)
-            eventually(
-                partial(queue_removed_and_closed, name),
-                timeout=3.0,
-                interval=0.01,
-                description=f"watcher removes and closes {name} during membership churn",
-                snapshot=lambda: {
-                    "thread_alive": thread.is_alive(),
-                    "queues": watcher.list_queues(),
-                    "closed_queue_names": [
-                        queue_name for queue_name, _close_thread in closed_queues
-                    ],
-                },
-            )
+            assert removed[name].wait(timeout=setup_timeout)
+            assert closed[name].wait(timeout=setup_timeout)
+            assert name not in watcher.list_queues()
             assert (name, thread) in closed_queues
 
         # Functional assertion — unconditional on every platform: the
