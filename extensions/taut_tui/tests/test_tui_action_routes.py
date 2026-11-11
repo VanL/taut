@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from _action_completion import focus_widget, palette_query
@@ -281,7 +281,7 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
         observations: list[ActionInvocation] = []
         with monkeypatch.context() as patch:
             completions = AppCompletions(app, patch)
-            app._test_completions = completions
+            cast(Any, app)._test_completions = completions
             scope = completions.scope
             screens = completions.screens
             try:
