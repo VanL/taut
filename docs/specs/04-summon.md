@@ -1009,8 +1009,10 @@ outside Summon's recovery guarantee.
   exact JSON integer input is normalized to an integer before the Summon
   sidecar write.
 - **Single-driver guard:** `run` refuses when the ledger row shows a
-  live driver (pid + start-time still alive, same evidence style as
-  presence). Two drivers injecting into two harness sessions as one
+  live driver (pid + start-time still alive on a running, non-zombie process,
+  using the same [IAN-3.2] `capture_process()` liveness rule as presence so an
+  exited or zombie OS process entry is classified `dead` and never blocks
+  re-summon). Two drivers injecting into two harness sessions as one
   member would double-speak (L2: a person is in one place). `--takeover`
   replaces dead or abandoned driver evidence.
   A claim succeeds only when a same-transaction readback carries the caller's
@@ -1661,6 +1663,10 @@ tail plus the `--attach` instruction.
   terminal-text policy.
 
 ## Related Plans
+
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`
+  — aligns [SUM-8] driver liveness with [IAN-3.2] zombie/exited-handle rejection
+  and re-pins the shared reactor base to Weft `0.9.124` (`62a4504b`).
 
 - `docs/plans/2026-09-24-summon-controlling-terminal-and-live-lane-plan.md`
   — gives the POSIX provider a controlling terminal through the shared spawn

@@ -5,9 +5,8 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypeAlias
 
-JSONPrimitive: TypeAlias = str | int | float | bool | None
+type JSONPrimitive = str | int | float | bool | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -104,8 +104,9 @@ MCP neither reaches through private identity helpers nor derives `notify.*`
 names.
 
 Cross-thread payloads use unbounded `queue.Queue` instances. The parent retains only the inert strategy's bound `notify_activity` callback;
-command publication precedes that notification. The inert strategy uses
-SimpleBroker constructor defaults. The previous workspace multiplexer used
+command publication precedes that notification. The inert `PollingStrategy` is
+imported exclusively through the public `simplebroker.ext` facade
+(`simplebroker>=8.8.1`) and uses SimpleBroker constructor defaults. The previous workspace multiplexer used
 hardcoded intervals, so no existing per-workspace polling override is lost.
 Do not reinitialize that published strategy while producers can notify it. `call_soon_threadsafe` requests
 a prompt master drain after the child publishes its event. Neither wake carries

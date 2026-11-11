@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, Final
@@ -34,14 +33,9 @@ TAUT_CONFIG_DEFAULTS.update(
 def load_config(overrides: Mapping[str, Any] | None = None) -> Config:
     """Resolve Taut's namespace into one SimpleBroker Config snapshot."""
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", UserWarning)
-        config = resolve_config(
-            "TAUT",
-            defaults=TAUT_CONFIG_DEFAULTS,
-            env=os.environ,
-            override=overrides,
-        )
-    for warning in caught:
-        warnings.warn(str(warning.message), warning.category, stacklevel=2)
-    return config
+    return resolve_config(
+        "TAUT",
+        defaults=TAUT_CONFIG_DEFAULTS,
+        env=os.environ,
+        override=overrides,
+    )

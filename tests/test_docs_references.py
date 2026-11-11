@@ -346,3 +346,142 @@ def test_maintained_markdown_sources_cover_current_routing_surfaces() -> None:
         not in relative
     )
     assert Path("CHANGELOG.md") not in relative
+
+
+def _run_check_doc_paths(root: Path) -> tuple[int, str]:
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "bin" / "check-doc-paths"),
+            "--root",
+            str(root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _write_plan_sync_fixture(
+    root: Path,
+    *,
+    spec_text: str,
+    plan_text: str,
+    status: str = "promoted",
+    note: str = "fixture",
+    include_index: bool = True,
+) -> None:
+    specs_dir = root / "docs" / "specs"
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    (specs_dir / "01-sample.md").write_text(spec_text, encoding="utf-8")
+    plans_dir = root / "docs" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    plan_name = "2026-11-10-sample-plan.md"
+    (plans_dir / plan_name).write_text(plan_text, encoding="utf-8")
+    if include_index:
+        (plans_dir / "README.md").write_text(
+            "# Plans\n\n## Plan Status Index\n\n"
+            "| Plan | Status | Exemplar | Note |\n"
+            "|------|--------|----------|------|\n"
+            f"| `{plan_name}` | {status} | no | {note} |\n",
+            encoding="utf-8",
+        )
+
+
+def test_check_doc_paths_promoted_plan_replacement_sync(tmp_path: Path) -> None:
+    matching = tmp_path / "matching"
+    _write_plan_sync_fixture(
+        matching,
+        spec_text="# Spec\n\nexact promoted clause\n",
+        plan_text=(
+            "# Sample\n\n- **Status:** promoted\n\n"
+            "Replacement (`docs/specs/01-sample.md`):\n"
+            "```markdown\nexact promoted clause\n```\n"
+        ),
+        status="promoted",
+    )
+    rc, out = _run_check_doc_paths(matching)
+    assert rc == 0, out
+
+    diverged = tmp_path / "diverged"
+    _write_plan_sync_fixture(
+        diverged,
+        spec_text="# Spec\n\ndifferent spec clause\n",
+        plan_text=(
+            "# Sample\n\n- **Status:** active\n"
+            "- **Promotion baseline:** `5b8e439`\n\n"
+            "Replacement (`docs/specs/01-sample.md`):\n"
+            "```markdown\nstale plan clause\n```\n"
+        ),
+        status="active",
+        note="Spec promoted; implementation in progress.",
+    )
+    rc, out = _run_check_doc_paths(diverged)
+    assert rc == 1, out
+    assert (
+        "Replacement block for `docs/specs/01-sample.md` does not match target file"
+        in out
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "note", "baseline"),
+    [
+        ("active", "slice E2 is promoted for implementation", "pending"),
+        ("draft", "spec promoted draft note", "5b8e439"),
+        ("completed", "Spec promoted and landed", "5b8e439"),
+        ("superseded", "Spec promoted earlier", "5b8e439"),
+        ("status-review", "quarantined", "5b8e439"),
+        ("retired-pending", "pending retirement", "5b8e439"),
+    ],
+)
+def test_check_doc_paths_skips_unpromoted_or_inactive_plans(
+    tmp_path: Path, status: str, note: str, baseline: str
+) -> None:
+    _write_plan_sync_fixture(
+        tmp_path,
+        spec_text="# Spec\n\ncurrent spec text\n",
+        plan_text=(
+            f"# Sample\n\n- **Status:** {status}\n"
+            f"- **Promotion baseline:** {baseline}\n\n"
+            "Replacement (`docs/specs/01-sample.md`):\n"
+            "```markdown\nunpromoted or historical text\n```\n"
+        ),
+        status=status,
+        note=note,
+    )
+    rc, out = _run_check_doc_paths(tmp_path)
+    assert rc == 0, out
+
+
+@pytest.mark.parametrize(
+    ("plan_body", "expected_substr"),
+    [
+        (
+            "# Sample\n\nReplacement (`../outside.md`):\n```markdown\nhi\n```\n",
+            "Replacement target `../outside.md` does not exist",
+        ),
+        (
+            "# Sample\n\nReplacement:\n```markdown\nhi\n```\n",
+            "Replacement block has no backticked target path",
+        ),
+    ],
+)
+def test_check_doc_paths_rejects_traversal_and_targetless_replacement(
+    tmp_path: Path, plan_body: str, expected_substr: str
+) -> None:
+    (tmp_path / "outside.md").write_text("hi\n", encoding="utf-8")
+    tree = tmp_path / "repo"
+    _write_plan_sync_fixture(
+        tree,
+        spec_text="# Spec\n",
+        plan_text=plan_body,
+        status="promoted",
+    )
+    rc, out = _run_check_doc_paths(tree)
+    assert rc == 1, out
+    assert expected_substr in out

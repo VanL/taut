@@ -2,7 +2,7 @@
 
   [![CI](https://github.com/VanL/taut/actions/workflows/test.yml/badge.svg)](https://github.com/VanL/taut/actions/workflows/test.yml)
   [![codecov](https://codecov.io/gh/VanL/taut/branch/main/graph/badge.svg)](https://codecov.io/gh/VanL/taut)
-  [![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/VanL/taut/blob/main/pyproject.toml)
+  [![Python versions](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14%20%7C%203.15-blue)](https://github.com/VanL/taut/blob/main/pyproject.toml)
 
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
@@ -189,8 +189,8 @@ uv add taut-chat taut-pg taut-summon taut-mcp taut-tui
 python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
-Requirements: Python 3.11+. Base runtime dependencies are
-`simplebroker>=8.4.0` (which itself has none) and `psutil` for cross-platform
+Requirements: Python 3.12+. Base runtime dependencies are
+`simplebroker>=8.8.1` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
 extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
@@ -587,7 +587,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut inbox` | Claim and show notification pointers for mentions, replies, new DMs, and reactions |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
-| `taut system dump --output FILE` | Write an owner-only live H-bounded logical dump of registered pending messages, core authority, and installed durable extension state |
+| `taut system dump --output FILE` | Write a live H-bounded logical dump of registered pending messages, core authority, and installed durable extension state |
 | `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
 | `taut system doctor` | Passively run seven fixed workspace checks, including debug-capture status; no repair, work claims, or provider loading |
 | `taut system debug enable\|disable` | Silently enable or disable workspace-scoped best-effort failure capture |
@@ -798,12 +798,14 @@ the design. The exact boundary is [TAUT-9] in the
   inspectable (`whoami --explain`, claims on record) — not impossible to spoof.
   Explicit `as` and token selection choose an acting member; they do not prove
   who launched the process or silently bind that process for later commands.
-- **The boundary is storage access.** `.taut.db` is created with your
-  umask's default mode, typically `0644`; taut does not narrow it. Want to
-  keep another local user out of the SQLite chat, or let one in? That's a
-  `chmod`/group decision you make, not one taut manages. (The one file taut
-  does create `0600` is a `taut system dump` output, because it is a
-  portable copy of everything.) With Postgres, the boundary is who can reach and
+- **The boundary is storage access.** `.taut.db` and `taut system dump`
+  outputs are created with your umask's default mode (`0666 & ~umask`,
+  typically `0644`); taut does not narrow or `chmod` them. Want to keep
+  another local user out of the SQLite chat or a portable dump, or let one
+  in? That's a directory-permission, `umask`, or `chmod`/group decision you
+  make, not one taut manages — export dumps into a restricted directory or
+  under a restrictive `umask`, because dumps carry continuity tokens and
+  unredacted history. With Postgres, the boundary is who can reach and
   write the configured database/schema. Wider, same shape: storage access *is*
   membership.
 - **Summon widens what storage write access can cause.** A writer can inject
@@ -953,7 +955,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=8.4.0` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=8.8.1` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The TUI ships as a separate `taut-tui` extension; the optional

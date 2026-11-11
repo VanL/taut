@@ -80,7 +80,10 @@ def test_declared_identity_and_custom_context_reach_client_unchanged(
 def test_invalid_setting_preserves_upstream_public_origin_metadata(
     clean_env: None,
 ) -> None:
-    with pytest.raises(InvalidConfigError) as raised:
+    with (
+        pytest.warns(UserWarning, match="TAUT_BUSY_TIMEOUT"),
+        pytest.raises(InvalidConfigError) as raised,
+    ):
         load_config({"TAUT_BUSY_TIMEOUT": "invalid"})
 
     assert raised.value.key == "TAUT_BUSY_TIMEOUT"
@@ -147,3 +150,41 @@ def test_taut_db_preserves_unowned_parent_directory_spelling(
 
     assert result.db == str(database)
     assert database.exists()
+
+
+def test_load_config_does_not_mutate_process_global_warning_state(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import warnings
+
+    import taut._config as config_module
+
+    filters_before_call: list[object] = []
+    showwarning_before_call: object = None
+    observed_during_resolve: list[tuple[bool, bool]] = []
+    real_resolve = config_module.resolve_config
+
+    def spy_resolve(*args: object, **kwargs: object) -> Config:
+        observed_during_resolve.append(
+            (
+                list(warnings.filters) == filters_before_call,
+                warnings.showwarning is showwarning_before_call,
+            )
+        )
+        warnings.warn("synthetic-taut-config-warning", UserWarning, stacklevel=2)
+        return real_resolve(*args, **kwargs)  # type: ignore[arg-type]
+
+    def capture_and_load() -> Config:
+        filters_before_call[:] = list(warnings.filters)
+        nonlocal showwarning_before_call
+        showwarning_before_call = warnings.showwarning
+        return load_config()
+
+    monkeypatch.setattr(config_module, "resolve_config", spy_resolve)
+
+    with pytest.warns(UserWarning, match="synthetic-taut-config-warning"):
+        resolved = capture_and_load()
+
+    assert isinstance(resolved, Config)
+    assert observed_during_resolve == [(True, True)]

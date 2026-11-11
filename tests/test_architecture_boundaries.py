@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import importlib
+import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 from taut_summon._control import _ReplyReactor
@@ -10,14 +13,24 @@ from taut_summon._reactor import SummonReactor
 from taut.watcher import (
     REACTOR_LIFECYCLE_METHODS,
     BaseReactor,
+    MultiQueueWatcher,
     TautWatcher,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MCP_EXTENSION_ROOT = PROJECT_ROOT / "extensions" / "taut_mcp"
+if str(MCP_EXTENSION_ROOT) not in sys.path:
+    sys.path.insert(0, str(MCP_EXTENSION_ROOT))
+_WorkspaceReactor = cast(
+    type[BaseReactor],
+    importlib.import_module("taut_mcp._workspace_reactor")._WorkspaceReactor,
+)
+
 PACKAGE_ROOTS = (
     PROJECT_ROOT / "taut",
     PROJECT_ROOT / "extensions" / "taut_pg" / "taut_pg",
     PROJECT_ROOT / "extensions" / "taut_summon" / "taut_summon",
+    PROJECT_ROOT / "extensions" / "taut_mcp" / "taut_mcp",
     PROJECT_ROOT / "extensions" / "taut_tui" / "taut_tui",
 )
 
@@ -41,14 +54,17 @@ class _SimpleBrokerPrivateVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name.startswith("simplebroker._"):
+            if (
+                alias.name.startswith("simplebroker._")
+                or alias.name == "simplebroker.watcher"
+            ):
                 self._record(node, f"private import {alias.name}")
             elif alias.name == "simplebroker":
                 self.module_aliases.add(alias.asname or "simplebroker")
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
-        if module.startswith("simplebroker._"):
+        if module.startswith("simplebroker._") or module == "simplebroker.watcher":
             self._record(node, f"private import {module}")
             return
         if module != "simplebroker":
@@ -305,10 +321,14 @@ def test_production_code_uses_public_simplebroker_surface_only() -> None:
     assert offenders == []
 
 
-@pytest.mark.parametrize("reactor_type", [TautWatcher, SummonReactor, _ReplyReactor])
+@pytest.mark.parametrize(
+    "reactor_type",
+    [TautWatcher, SummonReactor, _ReplyReactor, _WorkspaceReactor],
+)
 def test_first_party_reactors_inherit_guarded_lifecycle_templates(
     reactor_type: type[BaseReactor],
 ) -> None:
+    assert issubclass(reactor_type, MultiQueueWatcher)
     for method_name in REACTOR_LIFECYCLE_METHODS:
         assert getattr(reactor_type, method_name) is getattr(BaseReactor, method_name)
 

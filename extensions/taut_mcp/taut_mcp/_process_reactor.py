@@ -11,10 +11,10 @@ from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from simplebroker import format_message_id
-from simplebroker.watcher import PollingStrategy
+from simplebroker.ext import PollingStrategy
 
 from taut import Notification
 
@@ -93,17 +93,14 @@ class WorkspaceToolError(Exception):
     """A fixed, content-free MCP tool failure."""
 
 
-_FutureResult = TypeVar("_FutureResult")
-
-
-async def _await_owned_future(
-    future: asyncio.Future[_FutureResult],
-) -> _FutureResult:
+async def _await_owned_future[FutureResult](
+    future: asyncio.Future[FutureResult],
+) -> FutureResult:
     """Wait without transferring task cancellation to a reactor-owned future."""
 
-    waiter: asyncio.Future[_FutureResult] = asyncio.get_running_loop().create_future()
+    waiter: asyncio.Future[FutureResult] = asyncio.get_running_loop().create_future()
 
-    def settle(completed: asyncio.Future[_FutureResult]) -> None:
+    def settle(completed: asyncio.Future[FutureResult]) -> None:
         if waiter.cancelled():
             if not completed.cancelled():
                 completed.exception()

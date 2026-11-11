@@ -509,7 +509,7 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
     assert job["strategy"]["matrix"]["include"] == [
         {
             "os": "ubuntu-latest",
-            "python-version": "3.11",
+            "python-version": "3.12",
             "job-timeout-minutes": 20,
             "test-timeout-minutes": 12,
         },
@@ -522,6 +522,12 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
         {
             "os": "ubuntu-latest",
             "python-version": "3.14",
+            "job-timeout-minutes": 20,
+            "test-timeout-minutes": 12,
+        },
+        {
+            "os": "ubuntu-latest",
+            "python-version": "3.15",
             "job-timeout-minutes": 20,
             "test-timeout-minutes": 12,
         },
@@ -661,7 +667,7 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
         "((matrix.os == 'ubuntu-latest' && "
         "matrix.python-version != '3.13') || (matrix.os == 'macos-latest' && "
         "matrix.python-version == '3.13') || (matrix.os == 'windows-latest' && "
-        "matrix.python-version == '3.11'))" in root_job
+        "matrix.python-version == '3.12'))" in root_job
     )
     assert (
         "!cancelled() && steps.install.outcome == 'success' && "
@@ -708,10 +714,10 @@ def test_windows_source_matrix_uses_exact_factor_shards_and_version_smoke() -> N
     windows_rows = [row for row in rows if row["os"] == "windows-latest"]
 
     assert [(row["python-version"], row["source-shard"]) for row in windows_rows] == [
-        ("3.11", "0/4"),
-        ("3.12", "1/4"),
-        ("3.13", "2/4"),
-        ("3.14", "3/4"),
+        ("3.12", "0/4"),
+        ("3.13", "1/4"),
+        ("3.14", "2/4"),
+        ("3.15", "3/4"),
     ]
     assert all(
         row["source-shard"] == "full" for row in rows if row["os"] != "windows-latest"
@@ -755,7 +761,7 @@ def test_summon_process_matrix_covers_e2_platform_proofs() -> None:
                 "python-version": version,
                 "summon-platform-filter": "not windows_only",
             }
-            for version in ("3.11", "3.12", "3.13", "3.14")
+            for version in ("3.12", "3.13", "3.14", "3.15")
         ]
         + [
             {
@@ -763,12 +769,12 @@ def test_summon_process_matrix_covers_e2_platform_proofs() -> None:
                 "python-version": version,
                 "summon-platform-filter": "not windows_only",
             }
-            for version in ("3.11", "3.13", "3.14")
+            for version in ("3.12", "3.13", "3.14")
         ]
         + [
             {
                 "os": "windows-latest",
-                "python-version": "3.11",
+                "python-version": "3.12",
                 "summon-platform-filter": "not posix_only",
             }
         ]
@@ -1474,7 +1480,7 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     postflight = pypi.rindex(".github/scripts/release_publication.py verify-pypi")
     assert upload < clean_postflight < postflight
     assert (
-        "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33" in pypi
+        "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086" in pypi
     )
     assert "skip-existing: ${{ steps.publication.outputs.skip_existing }}" in pypi
     assert "if: ${{ steps.publication.outputs.publish == 'true' }}" in pypi
@@ -1559,3 +1565,105 @@ def test_release_finalizer_is_least_privilege_and_never_publishes_to_pypi() -> N
     assert "uv publish" not in lower_workflow
     assert "python -m build" not in workflow
     assert verification["timeout-minutes"] == 10
+
+
+def test_python_support_window_covers_312_through_315_without_311() -> None:
+    expected_versions = ["3.12", "3.13", "3.14", "3.15"]
+
+    root_doc = _workflow_data("test.yml")
+    ubuntu_root_versions = [
+        row["python-version"]
+        for row in root_doc["jobs"]["test"]["strategy"]["matrix"]["include"]
+        if row["os"] == "ubuntu-latest"
+    ]
+    assert ubuntu_root_versions == expected_versions
+    assert (
+        _named_steps(root_doc["jobs"]["packaging"])["Set up Python"]["with"][
+            "python-version"
+        ]
+        == "3.12"
+    )
+
+    mcp_doc = _workflow_data("test-mcp-extension.yml")
+    assert (
+        mcp_doc["jobs"]["test-mcp"]["strategy"]["matrix"]["python-version"]
+        == expected_versions
+    )
+
+    pg_doc = _workflow_data("test-pg-extension.yml")
+    assert (
+        pg_doc["jobs"]["test-pg"]["strategy"]["matrix"]["python-version"]
+        == expected_versions
+    )
+
+    tui_doc = _workflow_data("test-tui-extension.yml")
+    ubuntu_tui_versions = [
+        row["python-version"]
+        for row in tui_doc["jobs"]["tui-retained"]["strategy"]["matrix"]["include"]
+        if row["os"] == "ubuntu-latest"
+    ]
+    assert ubuntu_tui_versions == expected_versions
+
+    for workflow_path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        text = workflow_path.read_text(encoding="utf-8")
+        assert "3.11" not in text, workflow_path.name
+
+
+def test_windows_test_jobs_relocate_temp_to_runner_temp() -> None:
+    expected_jobs = (
+        ("test.yml", "test"),
+        ("test.yml", "summon-process"),
+        ("test-mcp-extension.yml", "test-mcp-sqlite-os"),
+        ("test-tui-extension.yml", "tui-retained"),
+    )
+    for workflow_name, job_name in expected_jobs:
+        job = _workflow_data(workflow_name)["jobs"][job_name]
+        steps = _named_steps(job)
+        step = steps["Move the Windows test temp root to the runner-local disk"]
+        assert step["shell"] == "pwsh", (workflow_name, job_name)
+        assert "windows" in str(step["if"]).lower(), (workflow_name, job_name)
+        run = str(step["run"])
+        assert "$env:RUNNER_TEMP" in run, (workflow_name, job_name)
+        assert "taut-test-temp" in run, (workflow_name, job_name)
+        assert '"TEMP=$testTemp" >> $env:GITHUB_ENV' in run, (workflow_name, job_name)
+        assert '"TMP=$testTemp" >> $env:GITHUB_ENV' in run, (workflow_name, job_name)
+
+
+def test_all_workflows_use_unified_sha_pinned_actions_and_uv_version() -> None:
+    expected_pins = {
+        "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/setup-python": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+        "astral-sh/setup-uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
+        "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+        "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+        "codecov/codecov-action": "303a32d7a59b442fa8d48b6a1cc6825c09c847a5",
+        "pypa/gh-action-pypi-publish": "7245906fb61fa33a13554f9d5fb856fe61758086",
+        "softprops/action-gh-release": "8a0cd651e5b2365bd640854a3fa5dfc70e4875f3",
+    }
+    workflow_files = sorted(WORKFLOW_DIR.glob("*.yml"))
+    assert len(workflow_files) == 11
+
+    for workflow_path in workflow_files:
+        doc = _workflow_data(workflow_path.name)
+        env = doc.get("env")
+        if isinstance(env, dict) and "UV_VERSION" in env:
+            assert env["UV_VERSION"] == "0.13.6", workflow_path.name
+        for job_name, job in doc["jobs"].items():
+            if not isinstance(job, dict):
+                continue
+            if "uses" in job:
+                assert str(job["uses"]).startswith("./.github/workflows/"), (
+                    workflow_path.name,
+                    job_name,
+                )
+            for step in job.get("steps", []):
+                if not isinstance(step, dict) or "uses" not in step:
+                    continue
+                action, _, ref = str(step["uses"]).partition("@")
+                assert action in expected_pins, (workflow_path.name, job_name, action)
+                assert ref == expected_pins[action], (
+                    workflow_path.name,
+                    job_name,
+                    action,
+                    ref,
+                )

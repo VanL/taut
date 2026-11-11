@@ -100,6 +100,66 @@ You hold the theory of a program when you can do four things:
 A quick self-test: when the system misbehaves, do you feel *betrayed by an
 invariant you know*, or *surprised by a system you do not really own*?
 
+### The four-way balance of a written program theory
+
+Writing a good `docs/program-theory.md` is a balancing act because the document
+must do four things at the same time:
+
+1. **Stay general enough that changing implementations remain measurable against
+   it.** If you replace an internal algorithm, storage layout, or helper module,
+   you should still be able to evaluate the new implementation against the same
+   program theory without rewriting the theory first. The concrete instrument for
+   that measurement is a **theory-versus-code (and theory-versus-spec) audit
+   table**—owned by the product owner, recorded in the crystallization or
+   Class-5 plan (or `docs/lessons.md`), run at `skills/crystallize-program-theory`
+   confirmation when code or specs already exist, and refreshed at each release
+   or Class-5 completion alongside the possession check (carrying forward
+   unchanged rows by reference while re-auditing touched claims and
+   boundaries)—mapping each theory claim and identity invariant against current
+   specs and code as aligned, drifted (to be morphed via a plan), or evidence
+   that the theory itself needs revision.
+2. **Be specific enough to be more than a list of aphorisms.** Generic advice
+   (*"keep it simple"*, *"prefer explicit over implicit"*) cannot tell an agent
+   or engineer whether a concrete feature proposal belongs in this program or
+   violates its shape.
+3. **Record invariants that are core to the identity of the product—the choices
+   that shape the entire program.** These **identity (theory-level) invariants**
+   are the commitments that make the system what it is across rewrites (for
+   example, who owns process lifecycles, where trust boundaries sit, or what
+   guarantee never bends for convenience): many parts of the codebase quietly
+   depend on them, an agent must not casually "simplify" them away, and if they
+   change, the program starts to become something else. They stay distinct from
+   the exact wire formats, flags, and state tables in `docs/specs/`.
+4. **Record negative knowledge in two parts:**
+   - *What the product is not* — category and boundary refusals that stop scope
+     creep and overlap with adjacent tools.
+   - *What paths were tried and discarded* — empirical dead ends (`[THEORY-5.A*]`),
+     so future humans and agents do not spend cycles re-discovering why a
+     plausible approach failed.
+
+A useful—though incomplete—analogy is the **Zen of Python** (`PEP 20`). The Zen
+of Python came along early enough in Python's development that it guided an
+entire generation of developers: it introduced the concept of being *"Pythonic"*
+with enough specificity that people could spot non-Pythonic code, while staying
+general enough to support a broad ecosystem. Whether a program theory is written
+early or after code already exists changes the first work it has to do: written
+early (like `PEP 20`), it guides new specs and code as they are built;
+crystallized after a codebase has already grown, its immediate job is to audit
+existing specs and code against the ideal and surface what needs to be morphed
+or cut.
+
+Even so, a product's `docs/program-theory.md` must be **more specific and
+fleshed-out than the Zen of Python** for two reasons:
+
+- **A product is narrower and more opinionated than an entire language
+   interpreter.** It solves a specific problem with specific boundaries,
+   composable operations, and whole-shape commitments.
+- **Coding agents have no cultural apprenticeship.** Human Python developers
+   learned how to weigh competing aphorisms through years of community review. A
+   coding agent starts each session cold; if the tie-breakers, identity
+   invariants, and discarded paths are not written down, the agent will use
+   generic aphorisms to rationalize whatever local patch it just generated.
+
 ### Product theory vs. hub theory
 
 Every repository has one `docs/program-theory.md`, and it always describes
@@ -107,7 +167,7 @@ Every repository has one `docs/program-theory.md`, and it always describes
 
 | Repository | What `docs/program-theory.md` describes |
 |------------|-----------------------------------------|
-| **A product or library repository** | That product's problem, concepts, ownership boundaries, non-goals, and falsifiers. |
+| **A product or library repository** | That product's problem, feel/idiom, composable operations, concepts, ownership boundaries, non-goals, and falsifiers. |
 | **The `agent-theory` hub repository** | The guidance system itself (how the process, documents, and gates work). |
 
 When you install the starter kit into a product repository, the installer
@@ -119,11 +179,14 @@ if it were the product's identity.
 ### Extending the model with module theory
 
 Keep your top-level `docs/program-theory.md` short so every session can read it
-in a few minutes. When a specific subsystem or package needs its own ownership
-table, design rule, or local non-goals, write a **module theory** file
-(typically `<module>/MODULE-THEORY.md`) right next to that code. Agents read a
-module theory only when their task enters that module, not at every session
-start.
+in a few minutes. Extending the project theory with a **module theory** file
+(typically `<module>/MODULE-THEORY.md` next to that code) is ultimately the
+human owner's decision: use one only when a specific module is weakly coupled to
+the rest of the program and has theory-level invariants that apply only to that
+module—never to excuse a subsystem that diverged from a single whole-program
+theory (and never for routine subsystem rules that belong in `docs/specs/` or
+`docs/implementation/`). Agents read a module theory only when their task enters
+that module, not at every session start.
 
 ---
 
@@ -133,17 +196,32 @@ Each document surface in the repository answers a different question:
 
 | Document surface | Question it answers |
 |------------------|---------------------|
-| **Program theory** (`docs/program-theory.md`, `MODULE-THEORY.md`) | What kind of system or module is this, what should it feel like to use, and why do these concepts, boundaries, and non-goals exist? |
+| **Program theory** (`docs/program-theory.md`, `MODULE-THEORY.md`) | What is the conceptual **ideal** of this system or module? What is its feel/idiom, core composable operations, and **identity invariants** (the choices that shape the entire program)? Why do these concepts, boundaries, non-goals, and discarded paths exist? |
 | **Process and operating model** (`[DOM-*]`, `docs/agent-context/`, `skills/`) | How do humans and agents classify tasks, write plans, run reviews, verify changes, and maintain docs? |
-| **Product contracts** (`docs/specs/`, authoritative README sections) | What exact behavior, flags, schemas, and invariants must hold **right now**? |
+| **Product contracts** (`docs/specs/`, authoritative README sections) | What exact behavior, flags, schemas, and **contract invariants** are in the code **right now**? |
 | **Implementation docs** (`docs/implementation/`) | Why is the current code structured this way, and where are the key edit points? |
 | **Code, tests, and gates** | How does the system run, and what automated checks prove it works? |
-| **Plans and decision records** (`docs/plans/`, `[ALT-*]` / `[REV-*]`) | How was a specific change executed, and which alternatives were rejected or revised? |
+| **Plans and decision records** (`docs/plans/`, `[THEORY-5.A*]` / `[REV-*]`) | How are we morphing the code and specs closer to the program theory, and which alternatives were rejected or revised? |
 
-Program theory **frames** how you interpret requests and where you place new
-code, but it never overrides a behavioral spec. Simultaneously, specs must not
-silently contradict the program theory. When a change reveals a conflict
-between the theory and a spec, pause and update one of them explicitly.
+Three directional rules govern how program theory, specs, and plans interact:
+
+- **The program theory is the ideal** — what the software is aiming to be.
+- **Specs describe what is currently in the code** — the concrete behavioral
+  contract for the current implementation (not an unbuilt wishlist; a spec leads
+  the code only across an active plan's spec-promotion slice or when a bug
+  violates the contract).
+- **Plans morph the code (and the specs) closer to the ideal.**
+
+Note:
+1. If the specification or code is pulling away from the theory, the presumption
+   is that the specs or code are not properly moored in the theory. If the code
+   and the spec disagree, then the presumption is that the code has a bug.
+2. Never mistake a current spec or plan for "what has been decided" and try to
+   justify it when it falls short of the theory. Everything—including the theory
+   itself (`[REV-*]`)—can be revised as implementation and experience teach us
+   more. When a spec clause itself is stale or when experience building and
+   operating the code suggests a better path, then use a plan to fix the spec
+   itself.
 
 This file lives in `docs/specs/` as a **reference primer** alongside the
 operating-model spec (`01-development-documentation-operating-model.md`). It is
@@ -196,6 +274,10 @@ concept → owner dialogue → draft theory → spec → implementation
 
 ## Related Plans
 
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`
+  — propagates the four-way balance of written program theory, theory-versus-code
+  audit table, human-decided module-theory boundary, and three directional rules
+  from `agent-theory` @ `e6ac579`
 - `docs/plans/2026-10-14-agent-theory-delta-wave-plan.md` — propagates the
   STE100 readability rewrite and taste-up-front boundary (`[REV-AT-005]`) of
   `[AT-REF-1]`–`[AT-REF-5]` from the `agent-theory` hub @ `296a7cd`

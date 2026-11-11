@@ -14,15 +14,14 @@ import sys
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import TypeAlias
 
 import pytest
 
 pytestmark = pytest.mark.sqlite_only
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CommandPath: TypeAlias = tuple[str, ...]
-ExemptionKey: TypeAlias = tuple[Path, CommandPath]
+type CommandPath = tuple[str, ...]
+type ExemptionKey = tuple[Path, CommandPath]
 
 # Intentionally unimplemented lifecycle examples in the active core spec.
 # Exact source/path keys prevent a broad allowance from hiding unrelated drift.

@@ -35,12 +35,17 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import io
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+_prose_text_lines = importlib.import_module("bin.markdown_fences").prose_lines
 
 # Surfaces the pytest gate's source list does not cover. Both are maintained
 # routing/state documents, not immutable historical records.
@@ -48,6 +53,33 @@ EXTRA_SOURCES = [
     Path("docs/coalescing.md"),
     Path("docs/plans/README.md"),
 ]
+
+# Plan Replacement-block sync checks for active promoted plans (adapted to
+# Taut's 4-column `## Plan Status Index` in `docs/plans/README.md`).
+PLAN_STATUS_RE = re.compile(
+    r"^(?:[-*]\s*)?(?:\*\*Status:\*\*|Status:)\s*([A-Za-z-]+)(.*)$", re.IGNORECASE
+)
+INDEX_ROW_RE = re.compile(
+    r"^\|\s*`([A-Za-z0-9._-]+\.md)`\s*\|\s*([A-Za-z-]+)([^|]*)\|\s*(?:yes|no)\s*\|\s*([^|]*)\|\s*$"
+)
+PROMOTION_BASELINE_RE = re.compile(
+    r"^(?:[-*]\s*)?(?:\*\*Promotion [Bb]aseline(?: [Ii]dentifier)?:\*\*|Promotion [Bb]aseline(?: [Ii]dentifier)?:)\s*(.+)$"
+)
+UNPROMOTED_VALUE_RE = re.compile(
+    r"^`?(?:pending|none|tbd|n/a|not yet promoted)\b", re.IGNORECASE
+)
+PROMOTED_NOTE_RE = re.compile(
+    r"\b(?:spec promoted|spec-promotion slice applied)\b", re.IGNORECASE
+)
+HEADING_PATH_RE = re.compile(r"^#{1,6}\s+.*`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
+REPLACEMENT_LABEL_RE = re.compile(r"^Replacement(?:\s*\(`([A-Za-z0-9_./-]+)`\))?:\s*$")
+SKIPPED_PLAN_STATUSES = {
+    "draft",
+    "completed",
+    "superseded",
+    "status-review",
+    "retired-pending",
+}
 
 # Governed future-artifact allowlist. Adopters may list contractually named
 # artifacts that intentionally do not exist yet. Honesty is enforced both
@@ -142,6 +174,216 @@ def _scan_source(
     return claim_count, failures
 
 
+def _fence_marker(line: str) -> tuple[str, int, str] | None:
+    leading_spaces = len(line) - len(line.lstrip(" "))
+    stripped = line[leading_spaces:]
+    if leading_spaces <= 3 and stripped.startswith(("```", "~~~")):
+        char = stripped[0]
+        length = len(stripped) - len(stripped.lstrip(char))
+        return (char, length, stripped[length:])
+    return None
+
+
+def _closes_fence(marker: tuple[str, int, str] | None, fence: tuple[str, int]) -> bool:
+    return (
+        marker is not None
+        and marker[0] == fence[0]
+        and marker[1] >= fence[1]
+        and not marker[2].strip()
+    )
+
+
+def _load_plan_index_statuses(
+    plans_dir: Path,
+) -> dict[str, tuple[str, str]] | None:
+    """Return {plan_filename: (status_word, tail_and_note)} from ## Plan Status Index."""
+    readme = plans_dir / "README.md"
+    if not readme.is_file():
+        return None
+    statuses: dict[str, tuple[str, str]] = {}
+    in_status_index = False
+    for _lineno, line in _prose_text_lines(readme.read_text(errors="replace")):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_status_index = stripped == "## Plan Status Index"
+            continue
+        if not in_status_index:
+            continue
+        match = INDEX_ROW_RE.match(stripped)
+        if match:
+            statuses[match.group(1)] = (
+                match.group(2).lower(),
+                f"{match.group(3)} {match.group(4)}",
+            )
+    return statuses
+
+
+def _is_plan_promoted(
+    raw_text: str,
+    status_word: str | None,
+    status_tail: str,
+) -> bool:
+    """Return True when an active plan has promoted its spec delta."""
+    if status_word == "promoted" or PROMOTED_NOTE_RE.search(status_tail):
+        return True
+    for _lineno, line in _prose_text_lines(raw_text):
+        m_prom = PROMOTION_BASELINE_RE.match(line.strip())
+        if m_prom:
+            val = m_prom.group(1).strip()
+            if val and not UNPROMOTED_VALUE_RE.match(val):
+                return True
+    return False
+
+
+def _plan_status(
+    root: Path,
+    plan: Path,
+    raw_text: str,
+    index_statuses: dict[str, tuple[str, str]] | None,
+    failures: list[str],
+) -> tuple[str | None, str] | None:
+    """Return (status_word, status_tail) for a plan, or None to skip it."""
+    if index_statuses is not None:
+        if plan.name in index_statuses:
+            return index_statuses[plan.name]
+        if any(
+            REPLACEMENT_LABEL_RE.match(line)
+            for _lineno, line in _prose_text_lines(raw_text)
+        ):
+            failures.append(
+                f"{plan.relative_to(root)}:1: plan with Replacement block is missing "
+                "from `docs/plans/README.md` `## Plan Status Index`"
+            )
+        return None
+    for line in raw_text.splitlines()[:25]:
+        m_status = PLAN_STATUS_RE.match(line.strip())
+        if m_status:
+            return m_status.group(1).lower(), m_status.group(2)
+    return None, ""
+
+
+def _replacement_block_failure(
+    root: Path,
+    plan: Path,
+    rep_line: int,
+    target_rel: str | None,
+    block_lines: list[str],
+) -> str | None:
+    """Return a failure line when a closed Replacement block is not in its target."""
+    if not target_rel:
+        return (
+            f"{plan.relative_to(root)}:{rep_line}: "
+            "Replacement block has no backticked target path"
+        )
+    target_path = (root / target_rel).resolve()
+    if not target_path.is_relative_to(root.resolve()) or not target_path.is_file():
+        return (
+            f"{plan.relative_to(root)}:{rep_line}: "
+            f"Replacement target `{target_rel}` does not exist"
+        )
+    snippet = "\n".join(block_lines)
+    target_text = target_path.read_text(errors="replace")
+    if not snippet or snippet not in target_text:
+        return (
+            f"{plan.relative_to(root)}:{rep_line}: "
+            f"Replacement block for `{target_rel}` does not match target file"
+        )
+    return None
+
+
+def _scan_prose_label_line(
+    root: Path,
+    plan: Path,
+    lineno: int,
+    line: str,
+    pending: tuple[int, str | None] | None,
+    heading_target: str | None,
+    failures: list[str],
+) -> tuple[tuple[int, str | None] | None, str | None]:
+    """Track heading targets and Replacement labels on one prose line."""
+    if pending is not None and line.strip():
+        failures.append(
+            f"{plan.relative_to(root)}:{pending[0]}: "
+            "Replacement label must be followed immediately by a fenced code block"
+        )
+        pending = None
+    m_heading = HEADING_PATH_RE.match(line)
+    if m_heading:
+        return pending, m_heading.group(1)
+    m_rep = REPLACEMENT_LABEL_RE.match(line)
+    if m_rep:
+        pending = (lineno, m_rep.group(1) or heading_target)
+    return pending, heading_target
+
+
+def _plan_replacement_block_failures(
+    root: Path, plan: Path, lines: list[str]
+) -> list[str]:
+    """Check every Replacement: fenced block in one promoted plan."""
+    failures: list[str] = []
+    fence: tuple[str, int] | None = None
+    heading_target: str | None = None
+    pending: tuple[int, str | None] | None = None
+    active_block: tuple[int, str | None, list[str]] | None = None
+
+    for lineno, line in enumerate(lines, start=1):
+        marker = _fence_marker(line)
+        if fence is None and marker is not None:
+            fence = (marker[0], marker[1])
+            if pending is not None:
+                active_block = (pending[0], pending[1], [])
+                pending = None
+            continue
+        if fence is not None:
+            if _closes_fence(marker, fence):
+                fence = None
+                if active_block is not None:
+                    failure = _replacement_block_failure(root, plan, *active_block)
+                    active_block = None
+                    if failure is not None:
+                        failures.append(failure)
+            elif active_block is not None:
+                active_block[2].append(line)
+            continue
+
+        pending, heading_target = _scan_prose_label_line(
+            root, plan, lineno, line, pending, heading_target, failures
+        )
+
+    unfinished = pending if pending is not None else active_block
+    if unfinished is not None:
+        failures.append(
+            f"{plan.relative_to(root)}:{unfinished[0]}: "
+            "Replacement label has no closed fenced code block"
+        )
+    return failures
+
+
+def _plan_replacement_sync_failures(root: Path) -> list[str]:
+    """Verify every Replacement: fenced block in an active promoted plan matches its target."""
+    plans_dir = root / "docs" / "plans"
+    if not plans_dir.is_dir():
+        return []
+    index_statuses = _load_plan_index_statuses(plans_dir)
+    failures: list[str] = []
+    for plan in sorted(plans_dir.glob("*.md")):
+        if plan.name == "README.md":
+            continue
+        raw_text = plan.read_text(errors="replace")
+        status = _plan_status(root, plan, raw_text, index_statuses, failures)
+        if status is None:
+            continue
+        status_word, status_tail = status
+        if status_word in SKIPPED_PLAN_STATUSES:
+            continue
+        if not _is_plan_promoted(raw_text, status_word, status_tail):
+            continue
+        failures.extend(
+            _plan_replacement_block_failures(root, plan, raw_text.splitlines())
+        )
+    return failures
+
+
 def run(root: Path, *, declared_future: set[str] | None = None) -> int:
     gate = _load_grammar()
     active_declared = (
@@ -163,6 +405,7 @@ def run(root: Path, *, declared_future: set[str] | None = None) -> int:
         "remove the unused suppression entry"
         for unused in sorted(active_declared - claimed_allowlisted)
     )
+    failures.extend(_plan_replacement_sync_failures(root))
 
     extra_present = [str(extra) for extra in EXTRA_SOURCES if (root / extra).is_file()]
     print(
@@ -170,7 +413,7 @@ def run(root: Path, *, declared_future: set[str] | None = None) -> int:
         f"beyond the pytest gate's list: {', '.join(extra_present) or 'none'}"
     )
     if failures:
-        print(f"  {len(failures)} dangling path claim(s):")
+        print(f"  {len(failures)} failure(s):")
         for failure in failures:
             print(f"    {failure}")
         print(
@@ -288,11 +531,77 @@ def self_test() -> int:
                 rc = run(root, declared_future=declared)
             if rc != expected:
                 failures.append(name)
+
+    plan_probes = [
+        (
+            "promoted plan Replacement block matching target was wrongly flagged",
+            "- **Status:** promoted\n\nReplacement (`docs/specs/01-sample.md`):\n```markdown\nexact spec line\n```\n",
+            "| `2026-11-10-sample-plan.md` | promoted | no | fixture |\n",
+            "header\nexact spec line\nfooter\n",
+            0,
+        ),
+        (
+            "promoted plan Replacement block diverging from target passed",
+            "- **Status:** promoted\n\nReplacement (`docs/specs/01-sample.md`):\n```markdown\nstale plan text\n```\n",
+            "| `2026-11-10-sample-plan.md` | promoted | no | fixture |\n",
+            "header\nupdated spec text\nfooter\n",
+            1,
+        ),
+        (
+            "active unpromoted plan with 'promoted for implementation' slice note was wrongly flagged",
+            "- **Status:** active\n- **Promotion baseline:** pending\n\nReplacement (`docs/specs/01-sample.md`):\n```markdown\nunpromoted text\n```\n",
+            "| `2026-11-10-sample-plan.md` | active | no | slice E2 is promoted for implementation |\n",
+            "baseline text\n",
+            0,
+        ),
+        (
+            "completed plan skipped historical Replacement block",
+            "- **Status:** promoted\n\nReplacement (`docs/specs/01-sample.md`):\n```markdown\nolder historical text\n```\n",
+            "| `2026-11-10-sample-plan.md` | completed | no | landed |\n",
+            "later evolved text\n",
+            0,
+        ),
+        (
+            "status-review plan skipped historical Replacement block",
+            "- **Status:** active\n\nReplacement (`docs/specs/01-sample.md`):\n```markdown\nolder text\n```\n",
+            "| `2026-11-10-sample-plan.md` | status-review | no | quarantine |\n",
+            "later text\n",
+            0,
+        ),
+        (
+            "path traversal Replacement target passed",
+            "- **Status:** promoted\n\nReplacement (`../outside.md`):\n```markdown\ntext\n```\n",
+            "| `2026-11-10-sample-plan.md` | promoted | no | fixture |\n",
+            "text\n",
+            1,
+        ),
+    ]
+    for name, plan_text, index_row, spec_text, expected in plan_probes:
+        with tempfile.TemporaryDirectory() as td:
+            root = _build_probe_tree(td, spec_text=spec_text)
+            plans_dir = root / "docs" / "plans"
+            plans_dir.mkdir(parents=True, exist_ok=True)
+            (plans_dir / "README.md").write_text(
+                "# Plans\n\n## Plan Status Index\n\n"
+                "| Plan | Status | Exemplar | Note |\n"
+                "|------|--------|----------|------|\n" + index_row,
+                encoding="utf-8",
+            )
+            (plans_dir / "2026-11-10-sample-plan.md").write_text(
+                plan_text, encoding="utf-8"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = run(root, declared_future=set())
+            if rc != expected:
+                failures.append(name)
+
     if failures:
         for f in failures:
             print(f"check-doc-paths self-test FAIL: {f}")
         return 1
-    print("check-doc-paths self-test: all claim, fence, and allowlist probes pass")
+    print(
+        "check-doc-paths self-test: all claim, fence, allowlist, and plan-replacement sync probes pass"
+    )
     return 0
 
 

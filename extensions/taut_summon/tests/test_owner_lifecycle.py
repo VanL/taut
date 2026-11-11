@@ -275,7 +275,7 @@ def test_signal_under_event_lock_only_publishes_pending_owner_intent(
 import signal, threading
 from taut_summon._driver import SummonDriver
 from taut.watcher import BaseReactor
-from simplebroker.watcher import PollingStrategy
+from simplebroker.ext import PollingStrategy
 r = object.__new__(BaseReactor)
 event = threading.Event()
 r._strategy = PollingStrategy(event)

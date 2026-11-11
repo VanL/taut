@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tokenize
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -29,6 +30,8 @@ BEGIN_MARKER = "<!-- BEGIN GENERATED RUFF SUPPRESSION INDEX -->"
 END_MARKER = "<!-- END GENERATED RUFF SUPPRESSION INDEX -->"
 DEFAULT_SPEC = "docs/specs/01-development-documentation-operating-model.md"
 GLOBAL_INVENTORY_PREFIX = "Global raw-`noqa` inventory:"
+ATOMIC_REPLACE_RETRY_ATTEMPTS = 10
+ATOMIC_REPLACE_RETRY_INTERVAL_SECONDS = 0.01
 
 _GROUP_PATTERN = r"RUFF-SUP-\d{3}"
 _SOURCE_MARKER = re.compile(
@@ -334,8 +337,10 @@ def parse_global_inventory(spec_text: str) -> Counter[str]:
 
 def _run_ruff(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
+        # The interpreter's own Ruff is the pinned one; a PATH lookup can find a
+        # stale global binary whose rule defaults disagree with the policy.
         return subprocess.run(
-            ["ruff", *args],
+            [sys.executable, "-m", "ruff", *args],
             cwd=repo_root,
             text=True,
             capture_output=True,
@@ -735,7 +740,14 @@ def _atomic_replace(path: Path, content: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         temporary.chmod(mode)
-        os.replace(temporary, path)
+        for attempt in range(ATOMIC_REPLACE_RETRY_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == ATOMIC_REPLACE_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(ATOMIC_REPLACE_RETRY_INTERVAL_SECONDS)
         temporary = None
     except OSError as exc:
         raise ToolFailure(f"could not replace {path}: {exc}") from exc

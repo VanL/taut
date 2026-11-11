@@ -15,9 +15,15 @@ behavior. The winning product contract owns exact behavior;
 `docs/specs/product-section-registry.md` names the owning contract for each
 registered concern, while the README remains authoritative only for its
 explicitly recorded README-owned promises.
-Verification: Owner and independent semantic review; consistency with
-the README and the exact owning product-spec sections named in
-[THEORY-3].
+Verification: (1) Owner endorsement (`Status: Active`), (2) cold-start
+transfer/comprehension probes (feature placement, category refusal, and
+falsifier prediction), (3) the `[THEORY-8]` revision and transfer log, and
+(4) the theory-versus-code and theory-versus-spec audit table refreshed at
+Class-5 and release boundaries (`docs/specs/07-agent-theory-and-program-theory.md`
+`[AT-REF-2]`); consistency with the README and the exact owning product-spec
+sections named in [THEORY-3].
+Governing process: `docs/specs/07-agent-theory-and-program-theory.md`
+`[AT-REF-1]`–`[AT-REF-5]`.
 Required action: Read before product-scope judgment (audits, reviews,
 feature-fit and design opinions) and before changing a core concept,
 durable principle, or non-goal; conform or propose a revision.
@@ -144,7 +150,7 @@ messages mean.
   processes, and Taut has no process when neither is active. A
   demand-started, self-managed process with explicit readiness,
   status, stop, and bounded idle-exit semantics could evolve (see
-  A4). Rejected today: a resident service required for typical use,
+  [THEORY-5.A4]). Rejected today: a resident service required for typical use,
   or a detached process without that lifecycle contract.
 - **No repair of dangling notification pointers** — the
   single-directory model accepts the loss.
@@ -169,6 +175,8 @@ neither filed as an ordinary review finding nor silently dropped.
 
 #### [THEORY-5.A1] Notification inboxes stay consumable pointers
 
+Kind: boundary refusal
+
 Rejected:
 treating claim-on-read as delivery loss and adding per-device state or
 cascade-repair. An external review filed it as a code defect; the
@@ -181,6 +189,8 @@ multi-session-per-member (MCP + CLI + summon concurrently) becomes
 the normal deployment shape rather than the exception.
 
 #### [THEORY-5.A2] Cross-backend search uses native analyzers, not hashed ASCII token carriers
+
+Kind: discarded path
 
 Rejected after adoption: exact cross-backend result
 parity via SHA-256 ASCII carriers (accepted from review finding F1,
@@ -195,6 +205,8 @@ output is treated as authoritative state rather than a retrieval aid.
 
 #### [THEORY-5.A3] No authentication layer; storage access is membership
 
+Kind: boundary refusal
+
 Rejected repeatedly: authorization layers, control-evidence-as-auth,
 and the continuity-token-as-secret classification (each re-defended
 rather than patched; the token-as-secret drift produced its own
@@ -206,6 +218,8 @@ that the database's own grants cannot express — at which point revise
 this account rather than bolting on signing.
 
 #### [THEORY-5.A4] No daemon *required* for typical use
+
+Kind: boundary refusal
 
 The durable invariant
 is out-of-the-box operation without a user-managed service lifecycle,
@@ -226,6 +240,8 @@ qualify. (Owner-refined 2026-08-07.)
 
 #### [THEORY-5.A5] Cursor advancement follows the committed message, last and best-effort
 
+Kind: sequencing invariant
+
 Rejected after adoption: treating cursor advancement
 as part of the authoritative-sidecar-first phase. The valid order
 remains authoritative registry/membership state → message insert →
@@ -240,6 +256,8 @@ atomic across both tables with no crash window — and even then, the
 probe discipline is re-derived, not assumed.
 
 #### [THEORY-5.A6] A destructive operation's precondition is its contract, not its adversary
+
+Kind: boundary refusal
 
 Rejected (2026-08-07, dump/load design): connection
 census, exclusive-lock quiescence probes, and child-process handle
@@ -385,3 +403,33 @@ Evidence:
   letter-digit record ids, the program theory is a registered citation
   family, and `[THEORY-5.A9]` is rejected as an unknown local code
 - the 2026-09-23 review artifact, Theory facet, findings 6 and 11
+
+### [REV-THEORY-004] Theory-versus-spec audit aligns dump file permissions with operator-owned boundary and classifies negative-knowledge kinds (2026-11-10)
+
+Current account: `Verification:` names the four-measure set from
+`docs/specs/07-agent-theory-and-program-theory.md` `[AT-REF-2]`, including the
+theory-versus-code and theory-versus-spec audit table; `[THEORY-5.A1]` through
+`[THEORY-5.A6]` carry explicit `Kind:` classifications (`boundary refusal`,
+`discarded path`, or `sequencing invariant`) distinguishing what the product is
+not from tried-and-discarded paths; `[THEORY-5]`'s remaining bare `(see A4)`
+cross-reference is repaired to `(see [THEORY-5.A4])`; and `[PIO-6.2]` /
+`[TAUT-9]` conform to [THEORY-2]'s identity commitment that the storage and
+file-permission boundary is chosen by the operator (`umask` and directory ACLs),
+never narrowed or managed by Taut.
+Supersedes: the two-clause `Verification:` header, unclassified `[THEORY-5.A*]`
+records, and the spec-level exception in `[PIO-6.2]` / `[TAUT-9]` that forced
+`0600` on `taut system dump` outputs.
+Pressure: Propagating `agent-theory` @ `e6ac579` (`docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`)
+introduced the structured theory-versus-code and theory-versus-spec audit table.
+Auditing `[PIO-6.2]` and `taut/persistence/_operations.py::dump_workspace()`
+against [THEORY-2] ("everyone who can write the storage is root of the chat, and
+the boundary — a `chmod`, a group, a database grant — is chosen by the operator,
+never managed by Taut") surfaced the same forced-`0600` drift that Weft resolved
+in `805e0dc1`: `tempfile.mkstemp` + `os.chmod(..., 0o600)` overrode operator
+`umask` and group-shared backup directory ACLs even though `.taut.db` itself
+used ordinary OS permissions.
+Evidence:
+- contemporaneous: `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`
+  (`## Theory-Versus-Code and Theory-Versus-Spec Audit Table`)
+- contemporaneous (foreign, cited by name): `agent-theory` @ `e6ac579` and
+  `weft` @ `805e0dc1` (`docs/plans/2026-10-15-operator-owned-permissions.md`)

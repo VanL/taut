@@ -1,6 +1,6 @@
 """Multi-queue scheduler copied from Weft, with Taut lifecycle and cursor policy.
 
-Provenance: Weft 9fc913c1, weft/core/tasks/multiqueue_watcher.py.
+Provenance: Weft 62a4504b, weft/core/tasks/multiqueue_watcher.py.
 The scheduler classes (QueueMode through MultiQueueWatcher) are exact upstream
 bodies except the reviewed yield_strategy validation and typed stop rejection
 at the three synchronous topology checks (see [TAUT-12.3]).
@@ -929,9 +929,13 @@ class MultiQueueWatcher(BaseWatcher):
         ]
 
     def _activity_wait_queues(self) -> list[Queue]:
-        """Return queues watched by the multi-queue activity waiter."""
+        """Return final notification interests, independent of delivery [QUEUE.7]."""
 
         return [config.queue for config in self._activity_wait_configs()]
+
+    def _has_pending_observation(self) -> bool:
+        """Return changed notification-only evidence for the owner [QUEUE.7]."""
+        return False
 
     def _reset_multi_activity_waiter(self) -> None:
         """Close the caller-owned multi-queue waiter if one is active."""
@@ -962,34 +966,53 @@ class MultiQueueWatcher(BaseWatcher):
 
     def _ensure_multi_activity_waiter(self) -> Any | None:
         """Create or return the SimpleBroker multi-queue activity waiter."""
-        wait_configs = self._activity_wait_configs()
-        signature = tuple(config.name for config in wait_configs)
+        wait_queues = self._activity_wait_queues()
+        signature = tuple(queue.name for queue in wait_queues)
         if (
             self._multi_activity_waiter_generation == self._queue_generation
             and self._multi_activity_waiter_signature == signature
         ):
             return self._multi_activity_waiter
 
-        self._reset_multi_activity_waiter()
-        self._multi_activity_waiter_generation = self._queue_generation
-        self._multi_activity_waiter_signature = signature
-        if not wait_configs:
-            return None
-
+        candidate = None
+        degraded = False
+        previous = self._multi_activity_waiter
+        displaced = None
+        installed = False
+        with self._topology_lock:
+            if self._topology_stopping or self._stop_event.is_set():
+                return previous
+            self._topology_sigint_critical = True
         try:
-            self._multi_activity_waiter = create_activity_waiter_for_queues(
-                [config.queue for config in wait_configs],
-                stop_event=self._stop_event,
-            )
-        except (BrokerError, OSError, RuntimeError, TypeError, ValueError):
-            logger.debug(
-                "Multi-queue activity waiter unavailable; falling back to polling",
-                exc_info=True,
-            )
-            self._multi_activity_waiter = None
-            self._native_activity_degraded = True
-        else:
-            self._native_activity_degraded = False
+            try:
+                if wait_queues:
+                    candidate = create_activity_waiter_for_queues(
+                        wait_queues, stop_event=self._stop_event
+                    )
+            except (BrokerError, OSError, RuntimeError, TypeError, ValueError):
+                logger.debug(
+                    "Multi-queue activity waiter unavailable; falling back to polling",
+                    exc_info=True,
+                )
+                degraded = True
+            with self._topology_lock:
+                if self._topology_stopping or self._stop_event.is_set():
+                    return previous
+                if self._strategy_started:
+                    displaced = self._strategy.replace_activity_waiter(candidate)
+                self._multi_activity_waiter = candidate
+                self._multi_activity_waiter_generation = self._queue_generation
+                self._multi_activity_waiter_signature = signature
+                self._native_activity_degraded = degraded
+                installed = True
+            if previous is not candidate:
+                self._close_activity_waiter_once(previous)
+            if displaced is not previous and displaced is not candidate:
+                self._close_activity_waiter_once(displaced)
+        finally:
+            if not installed and candidate is not previous:
+                self._close_candidate_resource_once(candidate)
+            self._finish_topology_sigint_critical(fatal_error=sys.exception())
         return self._multi_activity_waiter
 
     def _create_activity_waiter(self, queue: Queue) -> Any | None:
@@ -1167,19 +1190,31 @@ class MultiQueueWatcher(BaseWatcher):
 
         Strategy returns are readiness hints. Backend hints are confirmed with
         live queue state before dispatch, while a consumed local hint always
-        returns to the owner so broker-free source state can run.
+        returns to the owner so broker-free source state can run. The
+        observation check runs at entry and then only on returns that can
+        carry evidence.
 
-        Spec: [CC-2.1], [SB-0.4]
+        Spec: [CC-2.1], [QUEUE.7], [SB-0.4]
         """
         if self._stop_event.is_set() or (timeout is not None and timeout <= 0):
             return
 
         self._ensure_wait_strategy_started()
 
+        # Register before reading: an earlier publication is found here, while
+        # later publication wakes the retained waiter. No delivery is implied.
+        # Later checks run only on returns that can carry evidence.
+        if self._has_pending_observation():
+            return
+
         deadline = None if timeout is None else time.monotonic() + timeout
         while not self._stop_event.is_set():
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
+                # A strategy return that landed a hair before the deadline
+                # took no evidence; this pass is the deadline return and
+                # makes the deadline read before handing the turn back.
+                self._activity_hint_action(deadline=deadline)
                 return
 
             try:
@@ -1206,7 +1241,6 @@ class MultiQueueWatcher(BaseWatcher):
 
         if not self._strategy_started:
             self._start_strategy()
-            return
         waiter = self._ensure_multi_activity_waiter()
         if waiter is None or self._strategy.uses_native_activity():
             return
@@ -1219,12 +1253,49 @@ class MultiQueueWatcher(BaseWatcher):
         *,
         deadline: float | None,
     ) -> Literal["return", "continue"]:
-        """Validate strategy hints and decide whether the owner gets a turn."""
+        """Validate strategy hints and decide whether the owner gets a turn.
+
+        Observation and readiness checks run only on a return that can carry
+        evidence: a local, native or data-version hint, the owner's deadline,
+        any native-waiter return (including the strategy's slow safety
+        recheck), and every return of the degraded and nonpersistent polling
+        fallbacks. A healthy persistent SQLite return with none of these reads
+        nothing: no other connection committed since the last check, and the
+        owner's own writes are made in turns and read at the next wait entry.
+        The readiness deadline is evaluated after the observation read.
+
+        Spec: [CC-2.1], [QUEUE.7]
+        """
 
         local_hint = self._strategy.consume_local_activity_hint()
         native_hint = self._strategy.consume_native_activity_hint()
         data_version_hint = self._data_version_activity_pending
         self._data_version_activity_pending = False
+        uses_native_activity = self._strategy.uses_native_activity()
+        # A nonpersistent SQLite queue opens a fresh connection for each
+        # operation, so its connection-local PRAGMA data_version cannot be a
+        # durable change detector across strategy turns. Confirm readiness at
+        # the end of each fallback turn. PostgreSQL still uses its native
+        # activity waiter, and persistent SQLite tasks retain data_version as
+        # their quiet-path filter.
+        transient_fallback = not self._persistent and not uses_native_activity
+
+        # Read only on a return that can carry evidence [CC-2.1], [QUEUE.7].
+        # A healthy persistent SQLite return with no hint before the deadline
+        # means no other connection committed since the last check; the
+        # owner's own writes are made in turns and read at the next wait entry.
+        # Such a return also skips every readiness scan below.
+        can_carry_evidence = (
+            local_hint
+            or native_hint
+            or data_version_hint
+            or (deadline is not None and time.monotonic() >= deadline)
+            or uses_native_activity
+            or self._native_activity_degraded
+            or transient_fallback
+        )
+        if can_carry_evidence and self._has_pending_observation():
+            return "return"
 
         if local_hint:
             if self._has_pending_messages():
@@ -1237,23 +1308,42 @@ class MultiQueueWatcher(BaseWatcher):
                 return "return"
             return "continue"
 
+        return self._readiness_action(
+            deadline=deadline,
+            evidence_read=can_carry_evidence,
+            uses_native_activity=uses_native_activity,
+            transient_fallback=transient_fallback,
+        )
+
+    def _readiness_action(
+        self,
+        *,
+        deadline: float | None,
+        evidence_read: bool,
+        uses_native_activity: bool,
+        transient_fallback: bool,
+    ) -> Literal["return", "continue"]:
+        """Decide the hint-free tail: the owner's deadline and readiness scans.
+
+        The deadline is evaluated after the observation read. When this
+        reading is the first to find the deadline reached, the evidence
+        decision above it ran before the deadline and skipped the read, so
+        the deadline return makes its observation read here before the
+        turn is handed back [QUEUE.7].
+
+        Spec: [CC-2.1], [QUEUE.7]
+        """
         deadline_reached = deadline is not None and time.monotonic() >= deadline
-        if self._strategy.uses_native_activity() and not deadline_reached:
+        if deadline_reached and not evidence_read:
+            self._has_pending_observation()
+            return "return"
+        if uses_native_activity and not deadline_reached:
             if self._has_pending_messages():
                 self._mark_pending_messages_prechecked()
                 return "return"
             return "continue"
         if deadline_reached:
             return "return"
-        # A nonpersistent SQLite queue opens a fresh connection for each
-        # operation, so its connection-local PRAGMA data_version cannot be a
-        # durable change detector across strategy turns. Confirm readiness at
-        # the end of each fallback turn. PostgreSQL still uses its native
-        # activity waiter, and persistent SQLite tasks retain data_version as
-        # their quiet-path filter.
-        transient_fallback = (
-            not self._persistent and not self._strategy.uses_native_activity()
-        )
         if (
             self._native_activity_degraded or transient_fallback
         ) and self._has_pending_messages():
@@ -1357,7 +1447,8 @@ class MultiQueueWatcher(BaseWatcher):
         still_active: list[str] = [
             name
             for name in self._active_queues
-            if self._queue_has_pending(self._queues[name].queue)
+            if self._queue_counts_as_wait_activity(self._queues[name])
+            and self._queue_has_pending(self._queues[name].queue)
         ]
 
         now = time.monotonic()

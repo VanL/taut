@@ -29,7 +29,7 @@ COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 MCP_STAGE_TIMEOUT_SECONDS = 20.0
 MCP_SHUTDOWN_TIMEOUT_SECONDS = 20.0
-MATRIX_PYTHON_MIN_MINOR = 11
+MATRIX_PYTHON_MIN_MINOR = 12
 EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
     ("dismiss", "taut_summon.command_manifest:dismiss"),
     ("summon", "taut_summon.command_manifest:summon"),
@@ -381,7 +381,7 @@ def _matrix_python_candidates() -> tuple[str, ...]:
     if override:
         candidates.append(override)
     candidates.append(sys.executable)
-    for minor in range(14, MATRIX_PYTHON_MIN_MINOR - 1, -1):
+    for minor in range(15, MATRIX_PYTHON_MIN_MINOR - 1, -1):
         candidates.append(f"python3.{minor}")
     candidates.append("python3")
     candidates.append("python")

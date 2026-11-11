@@ -15,7 +15,6 @@ from bin.ruff_suppression_index import REGISTRY_HEADING, run
 
 ROOT = Path(__file__).resolve().parent.parent
 pytestmark = pytest.mark.sqlite_only
-RULE_FIXTURE = ROOT / "tests" / "fixtures" / "ruff-enabled-rules.txt"
 EXTENSIONLESS_PYTHON = {
     "bin/check-cli-claims",
     "bin/check-doc-paths",
@@ -29,7 +28,7 @@ REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 
 
-def _enabled_rules(*, source: str) -> set[str]:
+def _enabled_rules(*args: str, source: str = "taut/__init__.py") -> set[str]:
     command = [
         sys.executable,
         "-m",
@@ -37,6 +36,7 @@ def _enabled_rules(*, source: str) -> set[str]:
         "check",
         "--no-cache",
         "--show-settings",
+        *args,
         source,
     ]
     result = subprocess.run(
@@ -52,7 +52,9 @@ def _enabled_rules(*, source: str) -> set[str]:
         re.DOTALL,
     )
     assert match is not None, result.stdout
-    return set(re.findall(r"\(([A-Z]+\d+)\)", match.group("rules")))
+    codes = set(re.findall(r"\(([A-Z]+\d+)\)", match.group("rules")))
+    assert codes, f"No enabled rule codes parsed from Ruff settings:\n{result.stdout}"
+    return codes
 
 
 def _ruff(
@@ -108,9 +110,14 @@ def test_active_configs_extend_defaults_with_reviewed_families() -> None:
             encoding="utf-8"
         )
     )
+    tui = tomllib.loads(
+        (ROOT / "extensions" / "taut_tui" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert root["tool"]["ruff"]["extend-include"] == ["bin/*"]
-    for project in (root, mcp):
+    for project in (root, mcp, tui):
         lint = project["tool"]["ruff"]["lint"]
         assert "select" not in lint
         assert lint["extend-select"] == REVIEWED_FAMILIES
@@ -129,13 +136,22 @@ def test_generator_registry_heading_matches_the_promoted_spec() -> None:
     assert spec.count(REGISTRY_HEADING) == 1
 
 
-def test_effective_root_and_mcp_rules_match_the_reviewed_fixture() -> None:
-    expected = set(RULE_FIXTURE.read_text(encoding="utf-8").splitlines())
-    assert expected
+def test_effective_ruff_rules_extend_current_defaults() -> None:
+    # Independent CLI selections protect effective config discovery too:
+    # a shadowing ruff.toml must not silently replace pyproject's defaults.
+    defaults = _enabled_rules("--isolated")
+    explicit = _enabled_rules("--isolated", "--select", ",".join(REVIEWED_FAMILIES))
+    expected = (defaults | explicit) - set(GLOBAL_IGNORES)
     assert _enabled_rules(source="taut/__init__.py") == expected
     assert (
         _enabled_rules(
             source="extensions/taut_mcp/taut_mcp/__init__.py",
+        )
+        == expected
+    )
+    assert (
+        _enabled_rules(
+            source="extensions/taut_tui/taut_tui/__init__.py",
         )
         == expected
     )
@@ -171,7 +187,7 @@ def test_configured_complexity_boundary_fires_only_at_eleven() -> None:
     assert "`complexity_11` is too complex (11 > 10)" in diagnostics[0]["message"]
 
 
-def test_real_ruff_fires_stable_default_and_retained_legacy_rules() -> None:
+def test_real_ruff_preserves_default_diagnostics_and_legacy_rules() -> None:
     probe = """\
 def probe() -> None:
     try:
@@ -179,6 +195,20 @@ def probe() -> None:
     except Exception:
         raise RuntimeError("probe")
 """
+    default_result = _ruff(
+        "check",
+        "--isolated",
+        "--stdin-filename",
+        "probe.py",
+        "--output-format",
+        "json",
+        "-",
+        input_text=probe,
+    )
+    assert default_result.returncode in (0, 1), default_result.stderr
+    default_codes = {
+        diagnostic["code"] for diagnostic in json.loads(default_result.stdout)
+    } - set(GLOBAL_IGNORES)
     result = _ruff(
         "check",
         "--config",
@@ -192,7 +222,8 @@ def probe() -> None:
     )
     assert result.returncode == 1, result.stderr
     codes = {diagnostic["code"] for diagnostic in json.loads(result.stdout)}
-    assert {"BLE001", "B904"} <= codes
+    assert default_codes <= codes
+    assert "B904" in codes  # Explicitly selected B family, not an upstream default.
 
 
 def test_root_ruff_discovers_every_tracked_python_source() -> None:

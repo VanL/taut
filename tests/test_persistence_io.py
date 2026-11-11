@@ -223,7 +223,7 @@ def test_load_dry_run_validates_an_empty_dump_without_opening_destination(
     assert not destination.exists()
 
 
-def test_dump_writes_empty_composite_that_preflights_and_is_owner_only_on_posix(
+def test_dump_writes_empty_composite_that_preflights(
     tmp_path: Path,
 ) -> None:
     from taut import TautClient
@@ -246,8 +246,119 @@ def test_dump_writes_empty_composite_that_preflights_and_is_owner_only_on_posix(
     assert dumped.queues == checked.queues == 0
     assert dumped.messages == checked.messages == 0
     assert dumped.omitted_claimed_messages == 0
-    if os.name == "posix":
-        assert output.stat().st_mode & 0o777 == 0o600
+
+
+def test_dump_staging_writes_exact_lf_bytes_on_every_platform(
+    tmp_path: Path,
+) -> None:
+    # Regression: a staging fd from bare os.open() is CRT text mode on Windows,
+    # so every LF became CRLF after the digest was computed and dump failed its
+    # own validation. Fires on the Windows CI lanes; POSIX has no text-mode fds.
+    from taut import TautClient
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    output = tmp_path / "backup.taut.jsonl"
+
+    TautClient.dump(output=output, db_path=source)
+    raw = output.read_bytes()
+
+    assert raw.endswith(b"\n")
+    assert raw.count(b"\n") >= 2
+    assert b"\r" not in raw
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX umask contract")
+def test_dump_respects_operator_umask_and_replaces_existing_inode_mode(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+    import sys
+
+    from taut import TautClient
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+
+    script = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "from taut import TautClient\n"
+        "mask = int(sys.argv[1], 8)\n"
+        "source = Path(sys.argv[2])\n"
+        "output = Path(sys.argv[3])\n"
+        "os.umask(mask)\n"
+        "TautClient.dump(output=output, db_path=source)\n"
+    )
+    out_027 = tmp_path / "umask-027.taut.jsonl"
+    subprocess.run(
+        [sys.executable, "-c", script, "027", str(source), str(out_027)],
+        check=True,
+        timeout=15,
+    )
+    assert out_027.stat().st_mode & 0o777 == 0o640
+
+    out_077 = tmp_path / "umask-077.taut.jsonl"
+    subprocess.run(
+        [sys.executable, "-c", script, "077", str(source), str(out_077)],
+        check=True,
+        timeout=15,
+    )
+    assert out_077.stat().st_mode & 0o777 == 0o600
+
+    # Overwriting a pre-existing 0o600 file under umask 0o027 replaces the
+    # inode with a newly staged file taking 0o640.
+    subprocess.run(
+        [sys.executable, "-c", script, "027", str(source), str(out_077)],
+        check=True,
+        timeout=15,
+    )
+    assert out_077.stat().st_mode & 0o777 == 0o640
+
+    # CLI taut system dump honors umask 0o027 as well.
+    cli_out = tmp_path / "cli-027.taut.jsonl"
+    cli_script = (
+        "import os, subprocess, sys\n"
+        "os.umask(0o027)\n"
+        "subprocess.run(\n"
+        "    [sys.executable, '-m', 'taut', '--db', sys.argv[1], "
+        "'system', 'dump', '--output', sys.argv[2]],\n"
+        "    check=True,\n"
+        ")\n"
+    )
+    subprocess.run(
+        [sys.executable, "-c", cli_script, str(source), str(cli_out)],
+        check=True,
+        timeout=15,
+    )
+    assert cli_out.stat().st_mode & 0o777 == 0o640
+
+
+def test_dump_staging_o_excl_collision_fails_without_unlinking_colliding_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.persistence._operations as persistence_ops
+    from taut import TautClient
+    from taut._exceptions import TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    output = tmp_path / "backup.taut.jsonl"
+    colliding = tmp_path / ".backup.taut.jsonl.deadbeefcafebabe.tmp"
+    colliding.write_bytes(b"preexisting-staging-bytes")
+
+    monkeypatch.setattr(
+        persistence_ops.secrets,
+        "token_hex",
+        lambda _nbytes: "deadbeefcafebabe",
+        raising=False,
+    )
+    with pytest.raises(TautError, match="cannot create dump staging file"):
+        TautClient.dump(output=output, db_path=source)
+
+    assert colliding.read_bytes() == b"preexisting-staging-bytes"
+    assert not output.exists()
 
 
 def test_sqlite_round_trip_preserves_core_state_and_exact_message_ids(

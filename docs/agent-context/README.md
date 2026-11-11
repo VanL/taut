@@ -18,10 +18,13 @@ guides link here rather than copying it.
 
 1. If it was not already loaded by the tool, read `../../AGENTS.md`.
 2. Read `../program-theory.md` — conceptual identity of **this
-   product** (frames placement and refusal; load-bearing for
-   product-scope *judgment* — audits, reviews, feature-fit and design
-   opinions — not only for implementation). Theory does not override
-   the winning product contract.
+   product** (frames interpretation, placement, refusal, and the
+   direction in which plans move specs and code (`[AT-REF-3]`);
+   load-bearing for product-scope *judgment* — audits, reviews,
+   feature-fit and design opinions — not only for implementation). Do
+   **not** silently break active contracts mid-edit, and do **not**
+   treat an existing spec or plan as final when it pulls away from the
+   theory.
 3. Read `decision-hierarchy.md`.
 4. Read `principles.md`.
 5. Read `engineering-principles.md`.

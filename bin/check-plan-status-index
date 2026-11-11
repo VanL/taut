@@ -26,6 +26,7 @@ ALLOWED_STATUSES = frozenset(
     {
         "draft",
         "active",
+        "promoted",
         "status-review",
         "completed",
         "superseded",

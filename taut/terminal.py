@@ -78,7 +78,7 @@ def escape_terminal_text_packaged(text: str) -> str:
 
 def format_message_time(ts: int) -> str:
     """Format a nanosecond message id as local ``HH:MM`` time."""
-    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")  # noqa: DTZ006 approved [DOM-10.2.1] [RUFF-SUP-078] exception
+    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")
 
 
 def _escape_with_patterns(

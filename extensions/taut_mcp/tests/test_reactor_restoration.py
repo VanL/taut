@@ -114,7 +114,7 @@ def test_admission_retains_prestart_command_and_notification(
     import queue
     import threading
 
-    from simplebroker.watcher import PollingStrategy
+    from simplebroker.ext import PollingStrategy
 
     from taut_mcp import _workspace_reactor as module
 
@@ -220,7 +220,7 @@ def test_workspace_cleanup_attempts_client_and_preserves_first_failure(
     import queue
     import threading
 
-    from simplebroker.watcher import PollingStrategy
+    from simplebroker.ext import PollingStrategy
 
     from taut.watcher import BaseReactor
     from taut_mcp import _workspace_reactor as module

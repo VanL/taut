@@ -12,14 +12,13 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from threading import Event
-from typing import TypeAlias
 
 from simplebroker import (
     BrokerTarget,
     Config,
     resolve_broker_target,
 )
-from simplebroker.watcher import PollingStrategy
+from simplebroker.ext import PollingStrategy
 
 from taut import (
     BlankMessageError,
@@ -111,7 +110,7 @@ class CancelWorkspaceCommand:
     command_id: int
 
 
-WorkspaceControl: TypeAlias = (
+type WorkspaceControl = (
     Bootstrap
     | GrantValidation
     | StopWorkspace
@@ -185,7 +184,7 @@ class WorkspaceCommandOutcome:
     canceled: bool = False
 
 
-WorkspaceEvent: TypeAlias = (
+type WorkspaceEvent = (
     WorkspaceResolved
     | WorkspaceReady
     | WorkspaceSnapshot

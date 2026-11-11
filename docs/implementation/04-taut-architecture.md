@@ -77,8 +77,15 @@ retrying the operation, or changing errors for PostgreSQL targets. This keeps
 corrupt-file diagnostics actionable while leaving backend policy with
 SimpleBroker.
 
-The current SimpleBroker minimum is `simplebroker>=8.4.0`, aligned with the
-current `simplebroker-pg>=4.4.0` minimum and their owning lock selections.
+The current SimpleBroker minimum is `simplebroker>=8.8.1`, aligned with the
+current `simplebroker-pg>=4.8.1` minimum and their owning lock selections.
+Version 8.8.1 and `simplebroker-pg>=4.8.1` supply `simplebroker.ext.PollingStrategy`,
+per-queue PostgreSQL `LISTEN`/`NOTIFY` channels scoped to the exact queue set
+passed to `create_activity_waiter_for_queues` (so registering `taut.cache_stale`
+in every reactor's watched queue set is load-bearing on PostgreSQL), quiet
+`LISTEN` waiter data-connection release with a 30–60 second jittered safety
+recheck, waiter stop-event preservation, `BrokerRunner.setup()` partial-init
+cleanup, and fork-safe SQL runner invalidation.
 Version 8.4.0 adds bounded native waits and coalescing local activity
 notification for the shared reactor.
 Version 7.0.0 supplies the public message-id formatter
@@ -765,7 +772,7 @@ presentation out of uniqueness decisions and lets an alias-owned candidate
 advance to the next name instead of failing the same insert repeatedly.
 
 `BaseReactor` is the shared lifecycle template for broker-owning Taut contexts.
-It subclasses Weft's `MultiQueueWatcher` pinned at `9fc913c1`. Scheduler class
+It subclasses Weft's `MultiQueueWatcher` pinned at `62a4504b` (Weft `0.9.124`). Scheduler class
 bodies are copied verbatim except the reviewed two-line `yield_strategy`
 validation retained from Taut's public contract and `_TopologyStopping`, a private
 `RuntimeError` subclass replacing only the three synchronous stop rejections.
@@ -776,9 +783,9 @@ The existing transaction owns rollback; this adds no retry, waiter or lock.
 Queued foreign-request retirement remains the upstream `RuntimeError` path. Module shims preserve a supplied
 configuration snapshot and defer cwd target resolution when an explicit target
 already exists. The upstream file SHA-256 is
-`3afa84fc7998644cc63d40374fad9326236b73ba3e408a86086a6dc33089da89`;
+`713060f2880b401220505e82f9fad11916740a8355cad026f869ac61dfdbf086`;
 its `QueueMode`-through-EOF block SHA-256 is
-`fcf28f656ab15b0552de409069db70b6eeee29d63204999066f8030db9673244`.
+`792d34b26dd83d4b86b695e79d5e27130df510f39049fc6f6fac6b6b297ebd76`.
 
 Reproduce the source comparison from the Taut checkout (the sibling is only
 needed for inspection, never at runtime):
@@ -790,7 +797,7 @@ import subprocess
 from pathlib import Path
 source = subprocess.check_output([
     "git", "-C", "../weft", "show",
-    "9fc913c1:weft/core/tasks/multiqueue_watcher.py",
+    "62a4504b:weft/core/tasks/multiqueue_watcher.py",
 ], text=True)
 upstream = {n.name: ast.get_source_segment(source, n)
             for n in ast.parse(source).body if isinstance(n, ast.ClassDef)}
@@ -1083,7 +1090,14 @@ queue high-water mark.
   cross-queue transaction. Taut does not enumerate broker storage, use a
   wildcard, or write once per recipient.
 - Process capture: `psutil` is the primary source for argv, executable, cwd,
-  uid, parent, process group/session, and terminal when available. The
+  uid, parent, process group/session, and terminal when available. Exited or
+  zombie OS process entries (`psutil.STATUS_ZOMBIE`, `not proc.is_running()`,
+  or Linux `/proc/<pid>/stat` state `'Z'`) are rejected in
+  `_capture_psutil_process` and `_capture_linux_process`, and `start_time_token`
+  re-raises mid-capture `NoSuchProcess` / `ZombieProcess` races instead of
+  returning `None` so unreaped or exiting child processes never register as live
+  or indeterminate for presence, anchor capture, or Summon single-driver
+  reclamation. The
   start-time token comes from `start_time_token`: `/proc/<pid>/stat` ticks on
   Linux, because psutil's public `create_time()` there adds a boot time that
   drifts under clock adjustment; private
@@ -1127,8 +1141,9 @@ public defaults, changes only Taut's database filename, project filename, and
 project-scope defaults, and adds the Taut-only `DB`, `AS`, and sensitive `TOKEN`
 fields. SimpleBroker owns every other declaration and its normalization.
 
-`load_config()` resolves the `TAUT` namespace with `os.environ` supplied
-explicitly. Resolved keys are unprefixed. The same `Config` object flows through
+`load_config()` resolves the `TAUT` namespace directly with `os.environ`
+supplied explicitly, without mutating process-global warning filters via
+`warnings.catch_warnings(record=True)`. Resolved keys are unprefixed. The same `Config` object flows through
 target resolution, clients, watchers, persistence, MCP, Summon, and backend
 construction. Callers derive changed snapshots with upstream
 `resolve_config()`. `TAUT_DB` is read directly at Taut's database-selection

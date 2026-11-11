@@ -18,9 +18,7 @@ from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass
 from enum import Enum
 from types import TracebackType
-from typing import Any, Generic, Self, TypeVar, cast
-
-T = TypeVar("T")
+from typing import Any, Self, cast
 
 
 class CompletionStatus(Enum):
@@ -94,7 +92,7 @@ def _notify(
                 raise
 
 
-def _detach_async_future(
+def _detach_async_future[T](
     source: asyncio.Future[T], callback: Callable[[asyncio.Future[T]], object]
 ) -> None:
     loop = source.get_loop()
@@ -113,7 +111,7 @@ def _detach_async_future(
 
 
 @dataclass(frozen=True)
-class CompletionOutcome(Generic[T]):
+class CompletionOutcome[T]:
     key: CompletionKey
     status: CompletionStatus
     published_at: float
@@ -121,7 +119,7 @@ class CompletionOutcome(Generic[T]):
     error: BaseException | None = None
 
 
-class Completion(Generic[T]):
+class Completion[T]:
     """One immutable outcome and at most one active sync or async observer wait.
 
     Terminal publication is thread-safe and never raises an observer protocol error
@@ -359,7 +357,7 @@ class CompletionScope:
         if exc_type is None:
             self.raise_if_invalid()
 
-    def observe_future(
+    def observe_future[T](
         self,
         source: asyncio.Future[T] | ConcurrentFuture[T],
         *,

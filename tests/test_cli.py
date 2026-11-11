@@ -1131,7 +1131,7 @@ def test_project_terminal_policy_applies_with_taut_db_selector(
     assert "MARK-env.db" not in human
 
 
-def test_invalid_taut_future_skew_is_one_line_and_does_not_create_target(
+def test_invalid_taut_future_skew_reports_without_traceback_and_does_not_create_target(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / ".taut.db"
@@ -1157,8 +1157,13 @@ def test_invalid_taut_future_skew_is_one_line_and_does_not_create_target(
     assert version_err == ""
     assert rc == 1
     assert out == ""
-    assert len(err.splitlines()) == 1
-    assert "TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS='bad'" in err
+    assert "ignoring invalid TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS='bad'" in err
+    assert (
+        err.splitlines()[-1]
+        == "invalid configuration TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS='bad': "
+        "expected a non-negative integer number of seconds"
+    )
+    assert "Traceback" not in err
     assert not target.exists()
     assert force_rc == 1
     assert "unrecognized arguments: --force" in force_err

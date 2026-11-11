@@ -488,12 +488,19 @@ validate, and publish the file. Source movement alone is not a failure.
 
 ### [PIO-6.2] File lifecycle and permissions
 
-All staging files are created owner-only. The completed dump is mode `0600` on
-POSIX. Core writes in the destination directory, flushes and fsyncs the file
-where supported, verifies its own final digest, then atomically replaces the
-named output. Failure before replacement leaves any older output untouched and
-removes temporary artifacts best-effort. No partially written dump appears at
-the final path.
+Core creates a fresh, exclusive staging file in the destination directory with
+`open(candidate, "xb")`: `O_CREAT | O_EXCL` with ordinary `0666` open mode, so
+the operating system applies the caller's `umask` and any inherited parent
+directory ACLs, without calling `chmod` or forcing `0600` ([THEORY-2]). The
+staging file is binary on every platform (`O_BINARY` on Windows), so no newline
+translation alters the digested bytes. Core
+flushes and fsyncs the staging file where supported, verifies its own final
+digest, then atomically replaces the named output via `os.replace`, publishing a
+new inode with that freshly created mode rather than copying a previous inode's
+manual `chmod`. Failure before replacement leaves any older output untouched and
+removes only a staging file that this attempt created; an unexpected `O_EXCL`
+collision fails closed without unlinking the colliding path. No partially
+written dump appears at the final path.
 
 For SQLite, preflight rejects an output path that resolves to or is the same
 file as the source database or its `-wal`/`-shm` companions. Resolution covers
@@ -844,6 +851,9 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`:
+  replaces forced `0600` dump permissions with operator-owned `umask`/ACL staging
+  under [PIO-6.2] and [THEORY-2].
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans contributor validation before dump publication and retained-marker semantics.
 

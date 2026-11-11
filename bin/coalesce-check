@@ -128,28 +128,82 @@ def retired_plan_claims() -> tuple[list[tuple[str, str]], list[str]]:
     return claims, problems
 
 
-def retired_plan_problems(claims: list[tuple[str, str]]) -> list[str]:
+def retired_plan_problems(
+    claims: list[tuple[str, str]],
+    *,
+    object_info: dict[str, tuple[str, str] | None] | None = None,
+) -> list[str]:
     """Resolve every ledger source and its named archived plan."""
+    info = (
+        batch_object_info(
+            {f"{sha}^{{commit}}" for _plan, sha in claims}
+            | {f"{sha}:docs/plans/{plan}" for plan, sha in claims}
+        )
+        if object_info is None
+        else object_info
+    )
     problems: list[str] = []
     for plan, sha in claims:
-        if not resolves_locally(sha):
+        commit = info.get(f"{sha}^{{commit}}")
+        if commit is None or commit[1] != "commit":
             problems.append(f"retired plan `{plan}` source `{sha}` does not resolve")
             continue
         path = f"docs/plans/{plan}"
-        if git("cat-file", "-e", f"{sha}:{path}").returncode != 0:
+        if info.get(f"{sha}:{path}") is None:
             problems.append(
                 f"retired plan `{plan}` is missing at source `{sha}` ({path})"
             )
     return problems
 
 
-def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
+def git(
+    *args: str,
+    repo: Path | None = None,
+    stdin: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo or REPO_ROOT), *args],
         capture_output=True,
         text=True,
+        input=stdin,
         check=False,
     )
+
+
+def batch_object_info(expressions: set[str]) -> dict[str, tuple[str, str] | None]:
+    """Resolve every object expression through one long-lived Git process."""
+    ordered = sorted(expressions)
+    if not ordered:
+        return {}
+    result = git(
+        "cat-file",
+        "--batch-check=%(objectname) %(objecttype)",
+        stdin="\n".join(ordered) + "\n",
+    )
+    if result.returncode != 0:
+        return dict.fromkeys(ordered)
+    lines = result.stdout.splitlines()
+    if len(lines) != len(ordered):
+        return dict.fromkeys(ordered)
+    info: dict[str, tuple[str, str] | None] = {}
+    for index, expression in enumerate(ordered):
+        parts = lines[index].rsplit(" ", 1)
+        info[expression] = (
+            (parts[0], parts[1])
+            if len(parts) == 2 and parts[1] in {"blob", "commit", "tag", "tree"}
+            else None
+        )
+    return info
+
+
+def reachable_commits(remote_ref: str | None) -> set[str]:
+    """Return the commits published through the default remote branch."""
+    if remote_ref is None:
+        return set()
+    result = git("rev-list", remote_ref)
+    if result.returncode != 0:
+        return set()
+    return set(result.stdout.splitlines())
 
 
 def attributed_repo(text: str, pos: int) -> str | None:
@@ -160,7 +214,8 @@ def attributed_repo(text: str, pos: int) -> str | None:
 
 
 def resolves_locally(sha: str) -> bool:
-    return git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+    commit = batch_object_info({f"{sha}^{{commit}}"}).get(f"{sha}^{{commit}}")
+    return commit is not None and commit[1] == "commit"
 
 
 def in_local_checkout(sha: str) -> str | None:
@@ -206,30 +261,25 @@ def lessons_counts() -> tuple[int, int | None, str | None]:
     return len(dates), past, watermark
 
 
-def classify_claims(
+def _classify_sha_hits(
     text: str,
+    sha_hits: list[tuple[str, int]],
     *,
     remote_ok: bool,
-    remote_ref: str | None = "origin/main",
-) -> ClaimClassification:
-    """Classify claims and broken cues without owning report or exit policy."""
-
-    sha_hits = [(m.group(1), m.start()) for m in SHA_RE.finditer(text)]
-    cues = sorted(set(CUE_RE.findall(text)))
+    object_info: dict[str, tuple[str, str] | None],
+    remote_commits: set[str],
+) -> tuple[set[str], list[str], list[str], list[str]]:
     broken: list[str] = []
     local_only: list[str] = []
     foreign: list[str] = []
     seen: set[str] = set()
-    target_ref = remote_ref or "origin/main"
     for sha, pos in sha_hits:
         if sha in seen:
             continue
         seen.add(sha)
-        if resolves_locally(sha):
-            if (
-                remote_ok
-                and git("merge-base", "--is-ancestor", sha, target_ref).returncode != 0
-            ):
+        commit = object_info.get(f"{sha}^{{commit}}")
+        if commit is not None and commit[1] == "commit":
+            if remote_ok and commit[0] not in remote_commits:
                 local_only.append(sha)
             continue
         who = attributed_repo(text, pos)
@@ -244,12 +294,44 @@ def classify_claims(
                 f"`{sha}` resolves nowhere here and names no "
                 "repository — a cue must say where it is retrievable"
             )
+    return seen, broken, local_only, foreign
 
+
+def classify_claims(
+    text: str,
+    *,
+    remote_ok: bool,
+    remote_ref: str | None = "origin/main",
+    object_info: dict[str, tuple[str, str] | None] | None = None,
+    remote_commits: set[str] | None = None,
+) -> ClaimClassification:
+    """Classify claims and broken cues without owning report or exit policy."""
+
+    sha_hits = [(m.group(1), m.start()) for m in SHA_RE.finditer(text)]
+    cues = sorted(set(CUE_RE.findall(text)))
+    target_ref = (remote_ref or "origin/main") if remote_ok else None
+    info = (
+        batch_object_info(
+            {f"{sha}^{{commit}}" for sha, _pos in sha_hits}
+            | {f"{sha}^{{commit}}" for sha, _path in cues}
+            | {f"{sha}:{path}" for sha, path in cues}
+        )
+        if object_info is None
+        else object_info
+    )
+    published = (
+        reachable_commits(target_ref) if remote_commits is None else remote_commits
+    )
+    seen, broken, local_only, foreign = _classify_sha_hits(
+        text,
+        sha_hits,
+        remote_ok=remote_ok,
+        object_info=info,
+        remote_commits=published,
+    )
     for sha, path in cues:
-        if not (
-            resolves_locally(sha)
-            and git("cat-file", "-e", f"{sha}:{path}").returncode == 0
-        ):
+        commit = info.get(f"{sha}^{{commit}}")
+        if commit is None or commit[1] != "commit" or info.get(f"{sha}:{path}") is None:
             broken.append(f"cue `git show {sha}:{path}` does not resolve here")
     return ClaimClassification(
         sha_count=len(seen),
@@ -292,13 +374,27 @@ def main() -> int:
 
     remote_ref = resolve_remote_ref()
     remote_ok = remote_ref is not None
+    cues = sorted(set(CUE_RE.findall(text)))
+    expressions = (
+        {f"{m.group(1)}^{{commit}}" for m in SHA_RE.finditer(text)}
+        | {f"{sha}^{{commit}}" for sha, _path in cues}
+        | {f"{sha}:{path}" for sha, path in cues}
+        | {f"{sha}^{{commit}}" for _plan, sha in retired_claims}
+        | {f"{sha}:docs/plans/{plan}" for plan, sha in retired_claims}
+    )
+    object_info = batch_object_info(expressions)
+    remote_commits = reachable_commits(remote_ref if remote_ok else None)
 
     classification = classify_claims(
         text,
         remote_ok=remote_ok,
         remote_ref=remote_ref,
+        object_info=object_info,
+        remote_commits=remote_commits,
     )
-    retired_broken = retired_structure_problems + retired_plan_problems(retired_claims)
+    retired_broken = retired_structure_problems + retired_plan_problems(
+        retired_claims, object_info=object_info
+    )
 
     total, past, watermark = lessons_counts()
 

@@ -468,7 +468,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=8.4.0` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=8.8.1` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -500,8 +500,19 @@ an accident. Two consequences are binding:
   ascending public message id the uniform default retrieval order, removes
   the private SQL row-order surrogate in schema 6, and advances the backend
   API to v8. Version 8.4.0 adds bounded native waits and coalescing local
-  activity notification for the shared reactor; `simplebroker-pg>=4.4.0` is the
-  matching supported PostgreSQL line. Ordinary
+  activity notification for the shared reactor. Version 8.8.1 and the matching
+  `simplebroker-pg>=4.8.1` PostgreSQL line add waiter stop-event preservation,
+  `BrokerRunner.setup()` partial-initialization cleanup, fork-safe SQL runner
+  invalidation, pipelined PostgreSQL batch ID generation, quiet `LISTEN` waiter
+  data-connection release with a 30–60 second jittered safety recheck,
+  reconnect-coalescing `QueueActivityWaiter`, and per-queue PostgreSQL
+  `LISTEN`/`NOTIFY` channels scoped to the exact queue set passed to
+  `create_activity_waiter_for_queues` (making every reactor's registration of
+  `taut.cache_stale` in its subscribed queue set load-bearing on PostgreSQL).
+  On shared PostgreSQL targets, upgrade long-lived watchers (`taut watch`,
+  Summon drivers, `taut-mcp`, `taut-tui`) before or alongside `taut-pg` 4.8+
+  writers: `simplebroker-pg` 4.7.x listeners subscribe only to the schema-wide
+  channel and rely on their 30–60 second safety recheck until upgraded. Ordinary
   generated writes remain FIFO-like because their ids are monotonic. Exact
   inserts, loads, or id-preserving moves of lower ids are selected by public
   id rather than insertion time. Taut continues to expose only oldest
@@ -1251,7 +1262,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. Rejects `-q` (usage error, exit 1). | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
 | `search QUERY... [--channel CHANNEL]... [--dm TARGET]... [--dms] [--from MEMBER] [--kind KIND]... [--before MSG_ID] [--limit N] [--reindex]` | Cursor-neutral search over registered chat and actor-accessible DMs. Query, scope, freshness, and repair follow spec 06. | 0 hits; 1 usage, malformed selector, provider, or index error; 2 no hits or well-formed explicit selector miss |
-| `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace persistence maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
+| `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace persistence maintenance under spec 08. Dump writes an unredacted composite logical backup using ordinary OS and operator file-permission policy ([PIO-6.2]); load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
 | `system doctor` | Actor-free fixed report of bounded core, broker, extension, and search-work observations under spec 09. It performs no repair and makes no quiescence, dump-safety, process-census, or exhaustive-health claim. | 0 complete healthy report; 1 usage/target/access/framework failure prevented a complete report; 2 complete report has a fail or dependency skip |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean programmatic stop; 130 when stopped by SIGINT, after cleanup, with the one-line `taut: interrupted` diagnostic on stderr (SimpleBroker's `EXIT_INTERRUPTED` convention); 1 error; 2 unrecognized member / explicit thread or DM miss. An interrupt that lands before the watcher is constructed uses the same 130 and prints no traceback. |
@@ -1559,9 +1570,9 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=8.4.0` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=4.4.0` and its driver
-dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
+Core runtime dependencies: exactly `simplebroker>=8.8.1` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=4.8.1` and its driver
+dependencies in the same environment as Taut. Python ≥ 3.12. The CLI uses
 argparse, not a CLI framework.
 
 `taut.commands` is the typed extension-author surface for command manifests,
@@ -1941,9 +1952,10 @@ configuration. Core then uses argparse's intermixed parser for that command
 tail only. The adapter must not combine this opt-in with nested subparsers or a
 `REMAINDER` action, which argparse does not support in intermixed mode. The
 default remains unchanged for every adapter that does not opt in. A leading
-literal `--` still uses ordinary parsing because Python 3.11's intermixed
-parser loses the required positional in that shape; the separator and every
-later option-shaped token remain literal as required by dispatch.
+literal `--` still uses ordinary parsing because CPython's intermixed parser
+before 3.12.8 and 3.13.1 loses the required positionals in that shape; the
+separator and every later option-shaped token remain literal as required by
+dispatch.
 
 Installed discovery produces one immutable process-local registry snapshot.
 Built-in names are reserved. Duplicate external names make only that name
@@ -2061,21 +2073,23 @@ diagnostics and preserved causes.
 
 Verification must include source-tree and installed-wheel invocation, built-in
 parity, entry-point install/uninstall, duplicate/broken/incompatible providers,
-literal/global grammar on Python 3.11, exit classes, traceback absence, and
-isolated `sys.modules` import floors for version, help, ordinary messaging,
-watcher, and extension commands.
+literal/global grammar on the oldest supported Python (3.12), exit classes,
+traceback absence, and isolated `sys.modules` import floors for version, help,
+ordinary messaging, watcher, and extension commands.
 
 ## 9. Trust Model [TAUT-9]
 
 Taut's trust model is deliberately weak, and the documentation must say so
 plainly rather than imply otherwise:
 
-- Everyone who can open the file is root of the chat. `.taut.db` is
-  created with the process umask's default mode (typically 0644); taut
-  does not narrow it, and only the `taut system dump` output file is
-  created 0600. Any process that can read/write the database can read all
-  history, post as anyone (`--as` requires no proof), move cursors, and
-  edit tables with sqlite3.
+- Everyone who can open the file is root of the chat. `.taut.db` and
+  `taut system dump` outputs are created under the operating system's and
+  operator's permission policy (`umask` and inherited directory ACLs); Taut
+  does not narrow or `chmod` them ([THEORY-2], [PIO-6.2]). Operators exporting
+  dumps should write into a restricted directory or set an appropriate `umask`,
+  because dumps carry continuity tokens and unredacted chat history. Any process
+  that can read/write the database can read all history, post as anyone (`--as`
+  requires no proof), move cursors, and edit tables with sqlite3.
 - Identity claims identify, they do not authenticate. Process evidence,
   continuity tokens, names, existing aliases, and `rejoin` make the common case
   frictionless and make attribution inspectable (`whoami --explain`, claims on
@@ -3131,6 +3145,13 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`
+  — raises the supported broker floors to `simplebroker>=8.8.1` and
+  `simplebroker-pg>=4.8.1`, rotates supported Python versions to `3.12`–`3.15`,
+  re-pins vendored `MultiQueueWatcher` to Weft `0.9.124` (`62a4504b`), aligns
+  dump file permissions with operator-owned policy, and makes `load_config()`
+  thread-safe.
 
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
   stable actor per CLI read and uses broker timestamp metadata for count-free

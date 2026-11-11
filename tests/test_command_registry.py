@@ -4768,3 +4768,40 @@ def test_registry_names_taut_toml_for_a_presentation_only_project_file(
     assert ".broker.toml" not in message
     for key in ("version", "backend", "target"):
         assert key in message
+
+
+def test_command_parser_leading_double_dash_bypasses_intermixed_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: CPython's intermixed parser before 3.12.8 / 3.13.1 drops a
+    # leading "--" and reports the positionals missing. CI's patched 3.12 lane
+    # cannot observe that, so the routing itself is the contract under test.
+    from taut.commands import CommandArgumentParser
+
+    parser = CommandArgumentParser(prog="say")
+    parser.enable_intermixed_args()
+    parser.add_argument("target")
+    parser.add_argument("text")
+    parser.add_argument("--json", action="store_true")
+
+    intermixed_calls: list[list[str]] = []
+    real_intermixed = parser.parse_intermixed_args
+
+    def spy_intermixed(
+        args: list[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        intermixed_calls.append(list(args or []))
+        return real_intermixed(args, namespace)
+
+    monkeypatch.setattr(parser, "parse_intermixed_args", spy_intermixed)
+
+    parsed = parser.parse_command_args(["--", "general", "--not-a-flag"])
+    assert intermixed_calls == []
+    assert parsed.target == "general"
+    assert parsed.text == "--not-a-flag"
+    assert parsed.json is False
+
+    mixed = parser.parse_command_args(["general", "--json", "hello"])
+    assert intermixed_calls == [["general", "--json", "hello"]]
+    assert (mixed.target, mixed.text, mixed.json) == ("general", "hello", True)

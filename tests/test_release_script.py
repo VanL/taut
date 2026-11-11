@@ -2593,6 +2593,40 @@ def test_local_llm_default_image_contains_fixed_amx_build() -> None:
     assert release.LOCAL_LLM_DEFAULT_IMAGE == FIXED_AMX_OLLAMA_IMAGE
 
 
+def test_local_llm_preparation_close_removes_anonymous_volumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    prep = release.LocalLlmPreparation(dry_run=False)
+    prep.container_name = "taut-summon-release-llm-test"
+
+    class AliveThread:
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout == 10.0
+
+    prep._thread = AliveThread()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(
+        cmd: tuple[str, ...], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(cmd))
+        assert kwargs["check"] is False
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+    prep.close()
+
+    assert calls == [
+        ("docker", "rm", "-f", "-v", "taut-summon-release-llm-test"),
+        ("docker", "rm", "-f", "-v", "taut-summon-release-llm-test"),
+    ]
+
+
 def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
+import secrets
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
@@ -342,21 +342,21 @@ def dump_workspace(
         queue_names = tuple(
             record["name"] for record in core_records if record["type"] == "thread"
         )
+        candidate_path = (
+            output_path.parent / f".{output_path.name}.{secrets.token_hex(8)}.tmp"
+        )
         try:
-            fd, temp_name = tempfile.mkstemp(
-                prefix=f".{output_path.name}.",
-                suffix=".tmp",
-                dir=output_path.parent,
-            )
+            # "xb" is O_CREAT | O_EXCL with mode 0o666, plus O_BINARY on
+            # Windows; a bare os.open() fd there is CRT text mode (CRLF).
+            staging = candidate_path.open("xb")
         except OSError as exc:
             raise TautError(
                 f"cannot create dump staging file for {output_path}: {exc}"
             ) from exc
-        temp_path = Path(temp_name)
-        os.chmod(temp_path, 0o600)
+        temp_path = candidate_path
         components: list[PersistenceComponentReport] = []
         with (
-            os.fdopen(fd, "wb") as stream,
+            staging as stream,
             open_broker(target, config=config) as broker,
         ):
             high_water, broker_payload = _broker_payload(broker, queue_names)

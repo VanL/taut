@@ -553,6 +553,8 @@ def start_time_token(pid: int, proc: psutil.Process | None) -> str | None:
             seconds = cast(Any, proc)._proc.create_time(monotonic=True)
         else:
             seconds = proc.create_time()
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        raise
     except psutil.Error:
         return None
     return f"psutil:{round(seconds * 1_000_000)}"
@@ -568,6 +570,8 @@ def _capture_linux_process(pid: int) -> ProcessInfo | None:
         prefix, _, tail = stat.rpartition(") ")
         raw_pid, _, comm = prefix.partition(" (")
         fields = tail.split()
+        if fields[0] == "Z":
+            return None
         ppid = int(fields[1])
         pgid = int(fields[2])
         session_id = int(fields[3])
@@ -600,6 +604,16 @@ def _capture_psutil_process(pid: int) -> ProcessInfo | None:
         return None
     try:
         with proc.oneshot():
+            if not proc.is_running():
+                return None
+            try:
+                status = proc.status()
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                return None
+            except psutil.AccessDenied:
+                status = None
+            if status == psutil.STATUS_ZOMBIE:
+                return None
             ppid = _psutil_ppid(proc)
             start_time = start_time_token(pid, proc)
             exe = _psutil_exe(proc)

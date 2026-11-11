@@ -39,8 +39,8 @@ required persistent-session visibility behavior; 5.3.0 added the live waiter
 replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
 properties Summon requires. Version 5.6.1 added core reaction fanout; the
-repository-wide supported floor is now `simplebroker>=8.4.0`, aligned with
-`simplebroker-pg>=4.4.0`. The pair also exposes closeable public Queue
+repository-wide supported floor is now `simplebroker>=8.8.1`, aligned with
+`simplebroker-pg>=4.8.1`. The pair also exposes closeable public Queue
 iterators with same-thread synchronous operation cleanup. Version 8.0.0 makes
 ascending public message id the default retrieval order and advances the
 SQL/backend compatibility line; neither change alters Summon's read-one
@@ -301,9 +301,9 @@ in that case. A descendant that starts a new session also leaves the retained
 domain and has no controlling terminal from Taut.
 
 Natural exit is observed with `waitid(..., WNOWAIT)` and cached without
-reaping. Python runtimes that expose `os.waitid()` use it directly;
-macOS Python 3.11/3.12 use the isolated typed libc compatibility binding in
-`_darwin_wait.py`. Finalization keeps the leader waitable while sending the
+reaping. Python runtimes that expose `os.waitid()` (including macOS on Python
+3.13+) use it directly; macOS Python 3.12 uses the isolated typed libc
+compatibility binding in `_darwin_wait.py`. Finalization keeps the leader waitable while sending the
 bounded SIGTERM/SIGKILL ladder to the saved group. A successful SIGTERM
 delivery gets one bounded grace interval; finalization then attempts SIGKILL
 regardless of leader status or the prior stage's accepted no-target result,
@@ -645,9 +645,11 @@ as current version 4, checking their common durable session projection without
 running the upgrade.
 
 The live single-driver guard remains on each durable session row. It uses
-pid/start-time evidence with a predicated sidecar update, refuses a live
-driver, and permits explicit takeover only for unverifiable abandoned
-evidence. Its process-liveness check runs outside the write transaction.
+pid/start-time evidence (`capture_process`, which treats exited and unreaped
+zombie OS process entries as dead rather than live or indeterminate) with a
+predicated sidecar update, refuses a live driver, and permits explicit takeover
+only for unverifiable abandoned evidence. Its process-liveness check runs
+outside the write transaction.
 Dump/load projects durable sessions without driver evidence.
 
 ### Control plane: unregistered `sys.*` queues, weft-congruent verbs ([SUM-9])
@@ -745,7 +747,8 @@ closing its transient handle; the requester's timeout owns its disposition.
 There is no permanent control-health state or failure count. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-`simplebroker>=8.4.0` is the minimum supported runtime. Its reference reactor
+`simplebroker>=8.8.1` (with `simplebroker-pg>=4.8.1` on PostgreSQL) is the
+minimum supported runtime. Its reference reactor
 and public BrokerSession design provide process-shared keyed resources with
 owner-thread-local cores; cancellation can interrupt watcher bootstrap while
 PhaseLock or SQLite connection setup is blocked; runner cleanup does not infer
@@ -882,7 +885,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_control.py` | Same-owner `ControlPolicy`, bounded `_ReplyReactor`, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_process_domain_posix.py` | POSIX atomic spawn boundary, capability-minimal process I/O view, non-reaping group owner, and one leader reap ([SUM-7.1]) |
-| `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.11/3.12 |
+| `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.12 |
 | `extensions/taut_summon/taut_summon/_pty.py` | Platform-neutral interactive adapter, validation and dispatch, terminal state, query responder, injection framing, and detach matching |
 | `extensions/taut_summon/taut_summon/_pty_posix.py` | POSIX PTY fd, attach, signal, write-cancellation, and terminal-retirement lifecycle |
 | `extensions/taut_summon/taut_summon/_pty_windows.py` | Windows ConPTY creation, continuous output drain, attach generations, cancellable input, and process-tree retirement |

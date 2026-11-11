@@ -96,13 +96,44 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
-- 2026-09-24: (harvested from the 2026-08-14 review-findings remediation
-  plan) A delegated implementation slice must return a clean test-first RED
-  transcript before any production edit, and the delegating brief must
-  require it. Two delegated slices in one plan implemented before observing
-  RED; a completed-work review caught it after the fact, which is the wrong
-  place. Put the RED requirement in the brief and treat a missing transcript
-  as an incomplete slice, not a style note.
+- 2026-11-10: OS process liveness is distinct from creation-token readability.
+  Exited or zombie processes (`psutil.STATUS_ZOMBIE`, `not proc.is_running()`,
+  or Linux `/proc/<pid>/stat` state `'Z'`) retain a readable PID and creation
+  timestamp in unreaped process-table entries or open OS handles; liveness
+  probes (`taut/identity.py::capture_process`) must require running, non-zombie
+  status and re-raise `(psutil.NoSuchProcess, psutil.ZombieProcess)` from
+  creation-time helpers while keeping `psutil.AccessDenied` mapped to
+  `start_time=None` so live unreadable processes stay `indeterminate`.
+
+- 2026-11-10: `tempfile.mkstemp` hardcodes mode `0600` and `os.replace`
+  publishes that staging inode's mode over the destination path, silently
+  overriding operator `umask` and inherited directory ACLs. When the
+  storage/permission boundary is operator-owned (`[THEORY-2]`, `[PIO-6.2]`),
+  stage atomic replacements in the destination directory with
+  `open(candidate, "xb")` (`O_CREAT | O_EXCL`, mode `0o666`) and record the
+  cleanup path only after the open succeeds so an `O_EXCL` collision never
+  unlinks a pre-existing file. Do not substitute bare `os.open()` +
+  `os.fdopen(fd, "wb")`: without `O_BINARY` the Windows fd is CRT text mode and
+  every LF is written as CRLF after hashing (`tempfile` adds `O_BINARY` itself).
+
+- 2026-11-10: Inside containerized `postgres:alpine`, `pg_isready` over the
+  default Unix domain socket succeeds during `initdb`'s temporary local-only
+  server startup before the post-init restart opens TCP `5432` to host clients,
+  and static Ruff enabled-rule snapshot fixtures break whenever Ruff adds
+  stable default rules. Probe test-container readiness over TCP
+  (`psql -h 127.0.0.1 ... -c "SELECT 1"`) with failure-time `docker logs`
+  capture and `docker rm -f -v`, and derive expected Ruff rule sets dynamically
+  from `ruff check --isolated --show-settings`.
+
+- 2026-09-24: delegated RED transcripts and exact message-id validation,
+  verified distilled — `AGENTS.md`, [DOM-10], and
+  `docs/agent-context/runbooks/testing-patterns.md` require coordinators to
+  verify the exact failing assertion in a subagent's RED transcript before
+  advancing to GREEN; and [TAUT-3.5] plus
+  `taut/persistence/_format.py::_message_id_as_int` enforce
+  `value == format_message_id(value)` rather than treating SimpleBroker's
+  formatter as a validator.
+  (distilled from 2 entries, 2026-09-24..2026-09-24, source f4275a6)
 
 - 2026-09-24: (harvested from the 2026-07-28 message-react plan) Promote a
   spec only against a published upstream primitive whose target-selection
@@ -112,12 +143,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   membership-defined audience (members exist without inbox rows; vacuum
   removes emptied inboxes). The correct move was to block and add the
   primitive upstream, not to compensate in Taut with delivery accounting.
-
-- 2026-09-24: (harvested from the 2026-08-10 SimpleBroker 7 id-boundary
-  plan) An upstream canonicalizer is not a validator. Public
-  `simplebroker.format_message_id` accepts whitespace and non-ASCII decimal
-  digits, so an exact-format loader must require `input == formatter(input)`
-  rather than trusting the formatter to reject wider input.
 
 - 2026-09-24: (harvested from the 2026-08-17 CLI subprocess readiness plan)
   A test-side pipe that carries a documented UTF-8 contract must decode raw
@@ -931,20 +956,18 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   so setting a missing field is not proof that the native memory layout
   contains it.
 
-- 2026-09-03: Patching a function through an imported stdlib module object
-  changes that module globally in the test process. Replacing
-  `feature.time.monotonic` can therefore freeze pytest, xdist, and unrelated
-  threads, turning a fast unit test into a job-level timeout. Code with a
-  simulated clock should own narrow module-local callables such as
-  `_monotonic` and `_sleep`; tests patch those names, not the shared `time`
-  module.
-
-- 2026-09-22: A coalescing invalidation queue cannot safely filter hints by
-  origin or payload. Your own newest hint may have replaced a peer's unseen
-  change. Refresh authoritative state before advancing the hint cursor, and
-  capture startup watermarks before the initial snapshot. Publication after
-  commit is advisory: raw writers and failed hints leave an explicit gap on
-  both SQLite and PostgreSQL; a second freshness timer hides that contract.
+- 2026-09-23: module-owned clock seams and `taut.cache_stale` coalescing
+  invalidation, verified distilled — Pattern 9 in
+  `docs/agent-context/runbooks/testing-patterns.md` requires patching
+  module-owned callables (`_monotonic`, `_sleep`, `_getpid`) instead of shared
+  stdlib modules; [TAUT-8.5] and [IAN-6.1] own `taut.cache_stale` (`keep_newest=1`,
+  initial cursor captured before the first authoritative snapshot, reread
+  authoritative state before advancing past any hint including the owner's own,
+  and advisory post-commit publication with no freshness timer); and [SUM-5]
+  (`_DetachChordMatcher` in `extensions/taut_summon/taut_summon/_pty.py`) owns
+  semantic keyboard-protocol detach matching with Escape-hold arming gated on
+  forwarded enhanced-key output.
+  (distilled from 3 entries, 2026-09-03..2026-09-23, source f4275a6)
 
 - 2026-09-22: In a reactor restoration, distinguish completed native work from
   successfully applied owner policy. Retain a spawn/attach result until its
@@ -965,16 +988,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   authority until submission succeeds; release uncertain work using the existing
   stop handshake. Test both queued and already-dequeued failure cases with the
   real executor before inventing rollback observers or extra waiters.
-
-- 2026-09-23: Raw tty mode controls kernel input processing; it does not freeze
-  the terminal emulator's key encoding. A child can emit a keyboard-protocol
-  mode request that changes bytes later read by an otherwise transparent host
-  bridge. Match reserved host chords at the semantic protocol boundary, keep
-  original bytes for exact failure forwarding, and route ambiguity deadlines
-  through the native input owner rather than a peer scheduler. Byte-exact is
-  not timing-exact: holding a bare `ESC` changes its meaning (Escape vs. Alt),
-  so arm any such hold only while the forwarded output has actually enabled an
-  encoding that needs it.
 
 - 2026-09-25: An observer must retain identity across the work it observes.
   In Textual, instance handler replacement may not intercept class-based

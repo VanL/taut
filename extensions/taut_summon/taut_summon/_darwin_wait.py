@@ -1,8 +1,8 @@
-"""Darwin Python 3.11/3.12 non-reaping ``waitid`` compatibility shim.
+"""Darwin Python 3.12 non-reaping ``waitid`` compatibility shim.
 
-Python did not expose ``os.waitid`` on these runtimes even though Darwin's
-public libc ABI provides it. This module mirrors the SDK ``siginfo_t`` fields
-used by [SUM-7.1] and nothing more.
+Python did not expose ``os.waitid`` on macOS before Python 3.13 even though
+Darwin's public libc ABI provides it. This module mirrors the SDK ``siginfo_t``
+fields used by [SUM-7.1] and nothing more.
 """
 
 from __future__ import annotations

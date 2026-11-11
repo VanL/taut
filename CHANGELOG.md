@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.9.12 - 2026-11-10
+
+- Taut now supports Python 3.12 through 3.15 across core and every extension.
+  The coordinated packages require SimpleBroker 8.8.1 and taut-pg requires
+  simplebroker-pg 4.8.1, bringing per-queue PostgreSQL activity notification,
+  safer waiter replacement, fork-safe SQL resources, and faster batch ID
+  allocation into the supported runtime.
+- The shared watcher incorporates Weft 0.9.124's topology-safe activity-waiter
+  replacement, pending-observation checks, deadline handling, and dynamic
+  queue-activity filtering while preserving Taut's cursor and shutdown rules.
+- Identity and Summon driver ownership now treat zombie and exited processes as
+  dead even while their process-table entries or Windows handles remain
+  readable. Live processes whose creation token is inaccessible remain
+  indeterminate instead of being taken over.
+- Workspace dumps now create binary staging files exclusively in the target
+  directory under the operator's umask and ACL policy. Atomic replacement no
+  longer forces mode 0600 or risks deleting an unrelated collision file.
+- Configuration loading no longer mutates process-global warning filters,
+  improving isolation between concurrent MCP workspaces. MCP reactor imports
+  and architecture boundaries now use the public SimpleBroker extension API.
+- Release and CI infrastructure now tests Python 3.12 through 3.15, isolates
+  Windows temporary paths, probes PostgreSQL readiness over TCP, preserves
+  failure-time container logs, removes anonymous Docker volumes, and uses
+  refreshed SHA-pinned GitHub Actions. Ruff 0.17.4 policy is derived from the
+  pinned executable rather than a stale checked-in rule snapshot.
+- Agent guidance, program theory, plan-status checks, documentation reference
+  checks, coalescing tools, and the lessons ledger were synchronized with the
+  current repository contracts and independently reviewed.
+
 ## 0.9.11 - 2026-09-28
 
 - Search maintenance now skips unchanged postings, reuses registry and queue

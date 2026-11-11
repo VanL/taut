@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -181,3 +182,88 @@ def test_shallow_clone_skips_loudly(tmp_path: Path) -> None:
     assert "shallow clone detected" in result.stdout
     assert "retrieval cues found (syntax only, unverified here):" in result.stdout
     assert "lessons dated entries:" in result.stdout
+
+
+def _load_coalesce_module() -> Any:
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader("coalesce_check_mod", str(COALESCE_CHECK))
+    spec = spec_from_loader(loader.name, loader)
+    assert spec is not None
+    mod = module_from_spec(spec)
+    sys.modules[loader.name] = mod
+    loader.exec_module(mod)
+    return mod
+
+
+def test_batch_object_info_and_reachable_commits_single_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _script, published_sha = _coalesce_repository(tmp_path)
+    subprocess.run(
+        ("git", "update-ref", "refs/remotes/origin/main", published_sha),
+        cwd=tmp_path,
+        check=True,
+    )
+    blob_sha = subprocess.check_output(
+        ("git", "hash-object", "-w", "--stdin"),
+        cwd=tmp_path,
+        input="not a commit\n",
+        text=True,
+    ).strip()
+    (tmp_path / "local.txt").write_text("local\n", encoding="utf-8")
+    subprocess.run(("git", "add", "."), cwd=tmp_path, check=True)
+    subprocess.run(
+        ("git", "commit", "-m", "Local commit"),
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    local_sha = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=tmp_path, text=True
+    ).strip()
+
+    mod = _load_coalesce_module()
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    git_calls: list[tuple[str, ...]] = []
+    real_git = mod.git
+
+    def counting_git(*args: str, **kwargs: Any) -> Any:
+        git_calls.append(args)
+        return real_git(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "git", counting_git)
+
+    info = mod.batch_object_info(
+        {
+            f"{published_sha}^{{commit}}",
+            f"{published_sha}:docs/lessons.md",
+            f"{published_sha}:docs/missing.md",
+            f"{blob_sha}^{{commit}}",
+            "deadbeef^{commit}",
+        }
+    )
+    assert info[f"{published_sha}^{{commit}}"] == (published_sha, "commit")
+    assert info[f"{published_sha}:docs/lessons.md"] is not None
+    assert info[f"{published_sha}:docs/lessons.md"][1] == "blob"
+    assert info[f"{published_sha}:docs/missing.md"] is None
+    assert info[f"{blob_sha}^{{commit}}"] is None
+    assert info["deadbeef^{commit}"] is None
+
+    reachable = mod.reachable_commits("origin/main")
+    assert published_sha in reachable
+    assert local_sha not in reachable
+    assert len(git_calls) == 2
+    assert git_calls[0][0] == "cat-file"
+    assert git_calls[1] == ("rev-list", "origin/main")
+
+    # Non-commit blob SHA cited without repository attribution must fail as broken
+    script = tmp_path / "bin" / "coalesce-check"
+    (tmp_path / "docs" / "coalescing.md").write_text(
+        f"blob sha `{blob_sha[:12]}`\n",
+        encoding="utf-8",
+    )
+    result = _run_coalesce(script)
+    assert result.returncode == 1
+    assert "resolves nowhere here" in result.stdout

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias, cast
+from typing import cast
 
 from simplebroker import format_message_id
 
@@ -21,9 +21,9 @@ from taut import (
     addressing,
 )
 
-CommandScalar: TypeAlias = str | int | bool | None | tuple[str, ...]
-CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
-CommandRecord: TypeAlias = (
+type CommandScalar = str | int | bool | None | tuple[str, ...]
+type CommandArguments = tuple[tuple[str, CommandScalar], ...]
+type CommandRecord = (
     Channel
     | Message
     | MessageDeletion

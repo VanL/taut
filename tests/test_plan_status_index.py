@@ -15,6 +15,7 @@ CHECKER = REPO_ROOT / "bin" / "check-plan-status-index"
 ALLOWED_STATUSES = (
     "draft",
     "active",
+    "promoted",
     "status-review",
     "completed",
     "superseded",

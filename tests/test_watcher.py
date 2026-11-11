@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import IO, Any, TypeVar, cast
+from typing import IO, Any, cast
 
 import pytest
 from simplebroker import Queue
@@ -41,7 +41,6 @@ from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.sqlite_only
 
-_TautWatcherT = TypeVar("_TautWatcherT", bound=TautWatcher)
 _BASE_REACTOR_SIGINT_PROBE_MODULE = "tests.helpers.base_reactor_sigint_probe"
 _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT = 15.0
 _BASE_REACTOR_SIGINT_PROBE_TIMEOUT = 3.0
@@ -1973,14 +1972,14 @@ def test_multi_queue_watcher_reserve_moves_message_before_dispatch(
         target.close()
 
 
-def _white_box_watcher_cls(
-    watcher_cls: type[_TautWatcherT],
+def _white_box_watcher_cls[TautWatcherT: TautWatcher](
+    watcher_cls: type[TautWatcherT],
     client: TautClient,
     handler: Callable[[Message | Notification], None],
     *,
     threads: list[str] | None = None,
     membership_refresh_interval: float = 0.05,
-) -> _TautWatcherT:
+) -> TautWatcherT:
     """Build watcher tests through the internal runtime seam.
 
     These tests need constructor knobs and internal counters that the public
@@ -4211,3 +4210,303 @@ def test_membership_refresh_runtime_error_is_not_stop(
     finally:
         watcher.stop(join=False)
         client.close()
+
+
+class _CountingFakeWaiter:
+    def __init__(self, backend_name: str = "postgres") -> None:
+        self.backend_name = backend_name
+        self.close_calls = 0
+
+    def wait(self, timeout: float) -> bool:
+        threading.Event().wait(min(timeout, 0.005))
+        return False
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_multi_activity_waiter_candidate_cleanup_and_strategy_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "waiter-custody.db"
+    first_queue = Queue("custody.first", db_path=str(db_path), persistent=True)
+    second_queue = Queue("custody.second", db_path=str(db_path), persistent=True)
+    third_queue = Queue("custody.third", db_path=str(db_path), persistent=True)
+    first_queue.write("seed")
+
+    class InterestWatcher(MultiQueueWatcher):
+        def __init__(self) -> None:
+            self.interest_queues: list[Queue] = [first_queue]
+            self.swap_on_start = True
+            super().__init__(
+                queue_configs={"custody.delivery": {"handler": lambda *_: None}},
+                db=db_path,
+                persistent=True,
+            )
+
+        def _activity_wait_queues(self) -> list[Queue]:
+            return list(self.interest_queues)
+
+        def _start_strategy(self) -> None:
+            super()._start_strategy()
+            if self.swap_on_start:
+                self.swap_on_start = False
+                self.interest_queues = [first_queue, second_queue]
+
+    initial_waiter = _CountingFakeWaiter()
+    post_start_waiter = _CountingFakeWaiter()
+    displaced_foreign_waiter = _CountingFakeWaiter()
+    live_replacement_waiter = _CountingFakeWaiter()
+    stopped_candidate = _CountingFakeWaiter()
+    aborted_candidate = _CountingFakeWaiter()
+    factory_queue: list[_CountingFakeWaiter] = [
+        initial_waiter,
+        post_start_waiter,
+        live_replacement_waiter,
+        stopped_candidate,
+        aborted_candidate,
+    ]
+    stop_during_factory = False
+
+    watcher: InterestWatcher | None = None
+
+    def fake_create(
+        queues: Sequence[Queue], *, stop_event: threading.Event
+    ) -> _CountingFakeWaiter:
+        del queues
+        candidate = factory_queue.pop(0)
+        if stop_during_factory:
+            stop_event.set()
+        return candidate
+
+    monkeypatch.setattr(
+        watcher_module, "create_activity_waiter_for_queues", fake_create
+    )
+    watcher = InterestWatcher()
+    try:
+        # 1. _ensure_wait_strategy_started() must not return early after initial
+        # _start_strategy(); if interests changed during startup, it installs the
+        # refreshed waiter immediately.
+        watcher._ensure_wait_strategy_started()
+        assert watcher._multi_activity_waiter is post_start_waiter
+        assert initial_waiter.close_calls == 1
+        assert post_start_waiter.close_calls == 0
+
+        # 2. Live replacement inside _ensure_multi_activity_waiter() replaces on
+        # the started strategy and closes both previous and any distinct displaced
+        # waiter once.
+        replace_calls: list[Any] = []
+        original_replace = watcher._strategy.replace_activity_waiter
+
+        def spy_replace(candidate: Any) -> Any:
+            replace_calls.append(candidate)
+            original_replace(candidate)
+            return displaced_foreign_waiter
+
+        monkeypatch.setattr(watcher._strategy, "replace_activity_waiter", spy_replace)
+        watcher.interest_queues = [first_queue, second_queue, third_queue]
+        installed = watcher._ensure_multi_activity_waiter()
+        assert installed is live_replacement_waiter
+        assert replace_calls == [live_replacement_waiter]
+        assert post_start_waiter.close_calls == 1
+        assert displaced_foreign_waiter.close_calls == 1
+        assert live_replacement_waiter.close_calls == 0
+
+        # 3. BaseException raised before installation closes the candidate once
+        # via _close_candidate_resource_once without overwriting _multi_activity_waiter.
+        class BoomError(BaseException):
+            pass
+
+        def aborting_replace(_candidate: Any) -> Any:
+            raise BoomError("aborted during replace")
+
+        monkeypatch.setattr(
+            watcher._strategy, "replace_activity_waiter", aborting_replace
+        )
+        watcher.interest_queues = [second_queue]
+        # Force aborted_candidate next (keep stopped_candidate for step 4)
+        factory_queue[:] = [aborted_candidate, stopped_candidate]
+        with pytest.raises(BoomError):
+            watcher._ensure_multi_activity_waiter()
+        assert aborted_candidate.close_calls == 1
+        assert watcher._multi_activity_waiter is live_replacement_waiter
+        assert live_replacement_waiter.close_calls == 0
+
+        # 4. Stop event set during factory creation closes candidate once and
+        # preserves previous _multi_activity_waiter for stop cleanup.
+        monkeypatch.setattr(
+            watcher._strategy, "replace_activity_waiter", original_replace
+        )
+        stop_during_factory = True
+        watcher.interest_queues = [third_queue]
+        returned = watcher._ensure_multi_activity_waiter()
+        assert returned is live_replacement_waiter
+        assert stopped_candidate.close_calls == 1
+        assert watcher._multi_activity_waiter is live_replacement_waiter
+    finally:
+        watcher.stop(join=False)
+        first_queue.close()
+        second_queue.close()
+        third_queue.close()
+
+
+def test_pending_observation_gated_on_entry_evidence_and_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "observation-gate.db"
+
+    class ObservationProbeWatcher(MultiQueueWatcher):
+        def __init__(self) -> None:
+            self.observation_ready = False
+            self.observation_calls = 0
+            super().__init__(
+                queue_configs={"obs.delivery": {"handler": lambda *_: None}},
+                db=db_path,
+                persistent=True,
+            )
+
+        def _has_pending_observation(self) -> bool:
+            self.observation_calls += 1
+            return self.observation_ready
+
+    watcher = ObservationProbeWatcher()
+    try:
+        # Base implementation returns False.
+        assert MultiQueueWatcher._has_pending_observation(watcher) is False
+
+        # (a) Wait-entry check runs right after _ensure_wait_strategy_started()
+        # and returns immediately without entering _strategy.wait_for_activity.
+        strategy_waits = 0
+
+        def fail_if_waited(*, timeout: float | None = None) -> None:
+            nonlocal strategy_waits
+            del timeout
+            strategy_waits += 1
+
+        monkeypatch.setattr(watcher._strategy, "wait_for_activity", fail_if_waited)
+        watcher.observation_ready = True
+        watcher.wait_for_activity(timeout=0.5)
+        assert watcher.observation_calls == 1
+        assert strategy_waits == 0
+
+        # (b) Quiet persistent SQLite returns before deadline with no hints skip
+        # _has_pending_observation() completely until the deadline return.
+        watcher.observation_ready = False
+        watcher.observation_calls = 0
+        quiet_waits = 0
+        now_b = 50.00
+        monkeypatch.setattr(
+            watcher_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: now_b),
+        )
+
+        def quiet_pass(*, timeout: float | None = None) -> None:
+            nonlocal now_b, quiet_waits
+            del timeout
+            quiet_waits += 1
+            now_b += 0.03
+
+        monkeypatch.setattr(watcher._strategy, "wait_for_activity", quiet_pass)
+        monkeypatch.setattr(
+            watcher._strategy, "consume_local_activity_hint", lambda: False
+        )
+        monkeypatch.setattr(
+            watcher._strategy, "consume_native_activity_hint", lambda: False
+        )
+        monkeypatch.setattr(watcher._strategy, "uses_native_activity", lambda: False)
+        watcher.wait_for_activity(timeout=0.08)
+        assert quiet_waits == 3
+        assert watcher.observation_calls == 2  # 1 at entry + 1 at deadline
+
+        # (c1) Loop-head remaining <= 0 exit after an early strategy return just
+        # before deadline still performs the deadline observation read.
+        watcher.observation_calls = 0
+        # Calls: deadline=100.04+0.10=100.14; pass1 remaining=100.14-100.08>0;
+        # hint1 can_carry=100.12<100.14; readiness1=100.13<100.14;
+        # pass2 remaining=100.14-100.15<=0 -> _activity_hint_action(deadline).
+        steps_c1 = [100.04, 100.08, 100.12, 100.13, 100.15, 100.16]
+        monkeypatch.setattr(
+            watcher_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: steps_c1.pop(0) if steps_c1 else 100.20),
+        )
+        monkeypatch.setattr(
+            watcher._strategy, "wait_for_activity", lambda *, timeout=None: None
+        )
+        watcher.wait_for_activity(timeout=0.10)
+        assert watcher.observation_calls == 2  # 1 at entry + 1 on remaining<=0 exit
+
+        # (c2) _readiness_action(deadline_reached and not evidence_read): when
+        # can_carry_evidence saw clock < deadline and _readiness_action sees
+        # clock >= deadline, _has_pending_observation() is called once before return.
+        watcher.observation_calls = 0
+        steps_c2 = [200.00, 200.02, 200.09, 200.11]
+        monkeypatch.setattr(
+            watcher_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: steps_c2.pop(0) if steps_c2 else 200.20),
+        )
+        watcher.wait_for_activity(timeout=0.10)
+        assert watcher.observation_calls == 2  # 1 at entry + 1 inside _readiness_action
+    finally:
+        watcher.stop(join=False)
+
+
+def test_update_active_queues_evicts_disabled_wait_activity_lane(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "evict-active-lane.db"
+    ctrl_queue = Queue("lane.ctrl", db_path=str(db_path), persistent=True)
+    work_queue = Queue("lane.work", db_path=str(db_path), persistent=True)
+    ctrl_seen: list[str] = []
+    work_seen: list[str] = []
+
+    class GatedLaneWatcher(MultiQueueWatcher):
+        def __init__(self) -> None:
+            self.work_enabled = True
+            super().__init__(
+                queue_configs={
+                    ctrl_queue.name: {
+                        "handler": lambda msg, *_args: ctrl_seen.append(msg),
+                        "mode": QueueMode.READ,
+                    },
+                    work_queue.name: {
+                        "handler": lambda msg, *_args: work_seen.append(msg),
+                        "mode": QueueMode.READ,
+                    },
+                },
+                db=db_path,
+                persistent=True,
+            )
+
+        def _queue_counts_as_wait_activity(self, config: QueueRuntimeConfig) -> bool:
+            if not self.work_enabled and config.name == work_queue.name:
+                return False
+            return super()._queue_counts_as_wait_activity(config)
+
+    watcher = GatedLaneWatcher()
+    try:
+        ctrl_queue.write("ctrl-1")
+        work_queue.write("work-1")
+        watcher._pending_messages_precheck_confirmed = True
+        watcher._update_active_queues()
+        assert set(watcher._active_queues) == {ctrl_queue.name, work_queue.name}
+
+        watcher.work_enabled = False
+        watcher._update_active_queues()
+        assert watcher._active_queues == [ctrl_queue.name]
+        assert watcher._queue_has_pending(work_queue) is True
+
+        watcher._drain_queue()
+        assert ctrl_seen == ["ctrl-1"]
+        assert work_seen == []
+        assert work_queue.peek_one() == "work-1"
+    finally:
+        watcher.stop(join=False)
+        ctrl_queue.close()
+        work_queue.close()

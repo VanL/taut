@@ -76,58 +76,62 @@ def test_select_site_packages_rejects_missing_package_directory(
 def test_matrix_python_uses_explicit_override(
     wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TAUT_WHEEL_MATRIX_PYTHON", "/custom/python311")
+    monkeypatch.setenv("TAUT_WHEEL_MATRIX_PYTHON", "/custom/python312")
     monkeypatch.setattr(
         wheel_matrix_module,
         "_candidate_path",
-        lambda _candidate: Path("/custom/python311"),
+        lambda _candidate: Path("/custom/python312"),
     )
     monkeypatch.setattr(
-        wheel_matrix_module, "_python_version", lambda _candidate: (3, 11)
+        wheel_matrix_module, "_python_version", lambda _candidate: (3, 12)
     )
 
-    assert wheel_matrix_module._resolve_matrix_python() == Path("/custom/python311")
+    assert wheel_matrix_module._resolve_matrix_python() == Path("/custom/python312")
 
 
 def test_matrix_python_falls_back_to_compatible_version(
     wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("TAUT_WHEEL_MATRIX_PYTHON", raising=False)
-    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python39")
+    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python311")
 
     def fake_version(candidate: str) -> tuple[int, int]:
         if candidate in {
-            "/custom/python39",
+            "/custom/python311",
+            "python3.15",
             "python3.14",
             "python3.13",
-            "python3.12",
             "python3",
             "python",
         }:
-            return 3, 10
-        if candidate == "python3.11":
             return 3, 11
+        if candidate == "python3.12":
+            return 3, 12
         return 0, 0
 
     monkeypatch.setattr(wheel_matrix_module, "_candidate_path", Path)
     monkeypatch.setattr(wheel_matrix_module, "_python_version", fake_version)
 
-    assert wheel_matrix_module._resolve_matrix_python() == Path("python3.11")
+    candidates = wheel_matrix_module._matrix_python_candidates()
+    assert ("python3.15", "python3.14", "python3.13", "python3.12") == tuple(
+        item for item in candidates if item.startswith("python3.")
+    )
+    assert wheel_matrix_module._resolve_matrix_python() == Path("python3.12")
 
 
 def test_matrix_python_resolution_fails_when_only_too_old(
     wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("TAUT_WHEEL_MATRIX_PYTHON", raising=False)
-    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python39")
+    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python311")
     monkeypatch.setattr(wheel_matrix_module, "_candidate_path", Path)
     monkeypatch.setattr(
-        wheel_matrix_module, "_python_version", lambda _candidate: (3, 10)
+        wheel_matrix_module, "_python_version", lambda _candidate: (3, 11)
     )
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
-        match="could not find a Python interpreter >= 3.11 for wheel-matrix environments",
+        match="could not find a Python interpreter >= 3.12 for wheel-matrix environments",
     ):
         wheel_matrix_module._resolve_matrix_python()
 
@@ -629,10 +633,7 @@ def test_installed_duplicate_official_claims_do_not_run_legacy_fallback(
     wheel = _write_command_provider_wheel(
         tmp_path / "taut_summon-0.0.0-py3-none-any.whl",
         name="taut-summon",
-        entry_points=(
-            ("summon", "duplicate_manifest:summon"),
-            ("summon", "duplicate_manifest:second"),
-        ),
+        entry_points=(("summon", "duplicate_manifest:summon"),),
         modules={
             "duplicate_manifest.py": _VALID_SUMMON_MANIFEST + "\nsecond = summon\n",
             "synthetic_command.py": _VALID_SUMMON_COMMAND,
@@ -644,6 +645,14 @@ def test_installed_duplicate_official_claims_do_not_run_legacy_fallback(
         tmp_path / "duplicate-official"
     )
     _assert_wheels_installed(environment, wheel)
+    [entry_points_path] = list(
+        environment.root.rglob("taut_summon-0.0.0.dist-info/entry_points.txt")
+    )
+    entry_points_path.write_text(
+        entry_points_path.read_text(encoding="utf-8")
+        + "summon = duplicate_manifest:second\n",
+        encoding="utf-8",
+    )
 
     result = environment.run_console("summon", "reviewer")
 
@@ -989,7 +998,7 @@ def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_pin(
         ("taut-chat==0.6.1",),
         ("taut-chat>=0.6.0",),
         ("taut-chat>=0.6.0,<1",),
-        ('taut-chat>=0.6.0; python_version >= "3.11"',),
+        ('taut-chat>=0.6.0; python_version >= "3.12"',),
         ("taut-chat>=0.6.0", "taut-chat>=0.6.0"),
     ],
 )
@@ -1174,7 +1183,7 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             "taut-mcp",
             (
                 "taut-chat==0.6.0",
-                'simplebroker>=8.2.2; python_version >= "3.11"',
+                'simplebroker>=8.2.2; python_version >= "3.12"',
             ),
             "same single unmarked SimpleBroker requirement",
         ),

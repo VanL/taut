@@ -290,7 +290,13 @@ Rules:
   memory overclaim, and the reviewer should check rule-vs-code, not just
   rule-vs-intent
 - do not treat plan-only text as a second governing contract after
-  promotion — once promoted, the spec tree is canonical
+  promotion — once promoted, the spec tree is canonical; in active plans that
+  have promoted their delta (recorded a non-pending `Promotion baseline` or
+  `promoted` / `spec promoted` status in `docs/plans/README.md`), any
+  `Replacement (`<path>`):` (or heading-scoped `Replacement:`) fenced block is
+  checked by `bin/check-doc-paths` for text containment in the target file so
+  the plan's fenced delta and the promoted target file do not drift apart
+  during review dispositions
 
 ### 4d. Spec-Changing Work — Slice Order
 

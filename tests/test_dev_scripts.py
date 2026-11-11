@@ -147,6 +147,8 @@ def test_docker_port_returns_none_until_port_is_published(
 def test_cleanup_container_removes_docker_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``-v`` removes the data volume the Postgres image declares; ``rm -f``
+    alone leaves one behind per run, even with ``--rm``."""
     calls: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -160,7 +162,7 @@ def test_cleanup_container_removes_docker_container(
 
     scripts._cleanup_container("container")
 
-    assert calls == [["docker", "rm", "-f", "container"]]
+    assert calls == [["docker", "rm", "-f", "-v", "container"]]
 
 
 def test_host_port_accepts_connections_reports_invalid_success_and_failure(
@@ -214,9 +216,22 @@ def test_wait_for_postgres_polls_until_host_port_accepts_connections(
     )
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd[:3] == ["docker", "exec", "container"]
+        assert cmd == [
+            "docker",
+            "exec",
+            "container",
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            scripts.POSTGRES_USER,
+            "-d",
+            scripts.POSTGRES_DB,
+            "-c",
+            "SELECT 1",
+        ]
         assert kwargs["check"] is False
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "1\n", "")
 
     monkeypatch.setattr(scripts.subprocess, "run", fake_run)
 
@@ -242,7 +257,7 @@ def test_wait_for_postgres_raises_last_readiness_error(
         scripts._wait_for_postgres("container", timeout_seconds=1.0)
 
 
-def test_start_postgres_container_builds_encoded_host_dsn(
+def test_launch_postgres_container_and_dsn_encode_host_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeUuid:
@@ -272,7 +287,8 @@ def test_start_postgres_container_builds_encoded_host_dsn(
 
     monkeypatch.setattr(scripts, "_run", fake_run)
 
-    container, dsn = scripts._start_postgres_container()
+    container = scripts._launch_postgres_container()
+    dsn = scripts._postgres_test_dsn(container)
 
     assert container == "taut-pg-test-321-abcdef12"
     assert dsn == "postgresql://post%20gres:p%40ss%2Fword@127.0.0.1:15432/taut%20test"
@@ -511,10 +527,10 @@ def test_pytest_pg_main_starts_no_container_for_help(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def unexpected_start() -> tuple[str, str]:
+    def unexpected_start() -> str:
         raise AssertionError("should not start Docker for --help")
 
-    monkeypatch.setattr(scripts, "_start_postgres_container", unexpected_start)
+    monkeypatch.setattr(scripts, "_launch_postgres_container", unexpected_start)
 
     with pytest.raises(SystemExit) as excinfo:
         scripts.pytest_pg_main(["--help"])
@@ -530,10 +546,11 @@ def test_pytest_pg_main_runs_only_selected_extension_suite_with_overrides(
     cleaned: list[str] = []
 
     monkeypatch.setattr(scripts.shutil, "which", lambda _command: "/usr/bin/tool")
+    monkeypatch.setattr(scripts, "_launch_postgres_container", lambda: "container")
     monkeypatch.setattr(
         scripts,
-        "_start_postgres_container",
-        lambda: ("container", "postgresql://postgres:postgres@127.0.0.1:1/taut_test"),
+        "_postgres_test_dsn",
+        lambda _container: "postgresql://postgres:postgres@127.0.0.1:1/taut_test",
     )
     monkeypatch.setattr(scripts, "_verify_postgres_test_dsn", lambda _dsn: None)
     monkeypatch.setattr(
@@ -579,14 +596,16 @@ def test_pytest_pg_main_runs_only_selected_extension_suite_with_overrides(
 
 def test_pytest_pg_main_returns_subprocess_failure_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cleaned: list[str] = []
+    events: list[tuple[str, str]] = []
 
     monkeypatch.setattr(scripts.shutil, "which", lambda _command: "/usr/bin/tool")
+    monkeypatch.setattr(scripts, "_launch_postgres_container", lambda: "container")
     monkeypatch.setattr(
         scripts,
-        "_start_postgres_container",
-        lambda: ("container", "postgresql://postgres:postgres@127.0.0.1:1/taut_test"),
+        "_postgres_test_dsn",
+        lambda _container: "postgresql://postgres:postgres@127.0.0.1:1/taut_test",
     )
     monkeypatch.setattr(
         scripts,
@@ -595,23 +614,76 @@ def test_pytest_pg_main_returns_subprocess_failure_and_cleans_up(
             subprocess.CalledProcessError(7, ["verify"])
         ),
     )
+
+    def fake_docker_logs(
+        cmd: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        assert cmd == ["docker", "logs", "container"]
+        events.append(("logs", cmd[-1]))
+        return subprocess.CompletedProcess(cmd, 0, "FATAL: postmaster crashed\n", "")
+
+    monkeypatch.setattr(scripts.subprocess, "run", fake_docker_logs)
     monkeypatch.setattr(
-        scripts, "_cleanup_container", lambda name: cleaned.append(name)
+        scripts, "_cleanup_container", lambda name: events.append(("cleanup", name))
     )
 
     assert scripts.pytest_pg_main([]) == 7
-    assert cleaned == ["container"]
+    assert events == [("logs", "container"), ("cleanup", "container")]
+    stderr = capsys.readouterr().err
+    assert "Postgres container logs (container):" in stderr
+    assert "FATAL: postmaster crashed" in stderr
+
+
+def test_pytest_pg_main_logs_and_removes_container_that_never_became_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression: a readiness failure escaped before the container name reached
+    # the cleanup owner, so its logs were never shown and the container leaked.
+    events: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(scripts.shutil, "which", lambda _command: "/usr/bin/tool")
+    monkeypatch.setattr(scripts.os, "getpid", lambda: 321)
+    monkeypatch.setattr(
+        scripts, "_run", lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0)
+    )
+
+    def never_ready(container: str, **_kwargs: Any) -> str:
+        events.append(("wait", container))
+        raise RuntimeError("Postgres did not become ready: initdb failed")
+
+    def fake_docker_logs(
+        cmd: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        assert cmd[:2] == ["docker", "logs"]
+        events.append(("logs", cmd[-1]))
+        return subprocess.CompletedProcess(cmd, 0, "FATAL: bad initdb\n", "")
+
+    monkeypatch.setattr(scripts, "_wait_for_postgres", never_ready)
+    monkeypatch.setattr(scripts.subprocess, "run", fake_docker_logs)
+    monkeypatch.setattr(
+        scripts, "_cleanup_container", lambda name: events.append(("cleanup", name))
+    )
+
+    assert scripts.pytest_pg_main([]) == 1
+
+    assert [kind for kind, _name in events] == ["wait", "logs", "cleanup"]
+    assert len({name for _kind, name in events}) == 1
+    assert events[0][1].startswith("taut-pg-test-321-")
+    stderr = capsys.readouterr().err
+    assert "Postgres did not become ready: initdb failed" in stderr
+    assert "FATAL: bad initdb" in stderr
 
 
 def test_pytest_pg_main_reports_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def interrupted() -> tuple[str, str]:
+    def interrupted() -> str:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(scripts.shutil, "which", lambda _command: "/usr/bin/tool")
-    monkeypatch.setattr(scripts, "_start_postgres_container", interrupted)
+    monkeypatch.setattr(scripts, "_launch_postgres_container", interrupted)
 
     assert scripts.pytest_pg_main([]) == 130
     assert "Interrupted" in capsys.readouterr().err
@@ -623,10 +695,11 @@ def test_pg_runner_command_uses_bounded_xdist_defaults(
     commands: list[list[str]] = []
 
     monkeypatch.setattr(scripts.shutil, "which", lambda _command: "/usr/bin/tool")
+    monkeypatch.setattr(scripts, "_launch_postgres_container", lambda: "container")
     monkeypatch.setattr(
         scripts,
-        "_start_postgres_container",
-        lambda: ("container", "postgresql://postgres:postgres@127.0.0.1:1/taut_test"),
+        "_postgres_test_dsn",
+        lambda _container: "postgresql://postgres:postgres@127.0.0.1:1/taut_test",
     )
     monkeypatch.setattr(scripts, "_verify_postgres_test_dsn", lambda _dsn: None)
     monkeypatch.setattr(scripts, "_cleanup_container", lambda _container: None)

@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TypeVar
 
 from taut import EmptyResultError
 from taut.client import (
@@ -32,8 +31,6 @@ from taut.client import (
 from taut_tui.actions import ActionId
 from taut_tui.session import ConversationSnapshot, TuiSession
 from taut_tui.system import TuiSystemOperations, load_help_command
-
-_ItemT = TypeVar("_ItemT")
 
 CORE_DOMAIN_ACTIONS = frozenset(
     {
@@ -293,7 +290,7 @@ class TuiDomainActions:
         return load_help_command(input_path=input_path, db_path=self._db_path)
 
 
-def _empty_ok(operation: Callable[[], list[_ItemT]]) -> list[_ItemT]:
+def _empty_ok[ItemT](operation: Callable[[], list[ItemT]]) -> list[ItemT]:
     """Convert core's empty-result signal into the empty collection."""
 
     try:

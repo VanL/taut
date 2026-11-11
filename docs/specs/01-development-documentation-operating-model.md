@@ -36,8 +36,10 @@ The repository documentation surface is split by role:
 - `docs/program-theory.md`: the conceptual identity of **this product** — the
   written account of what kind of system Taut is, why it has its shape, what it
   deliberately refuses to do, and what evidence would show that account is
-  wrong. Program theory **frames** interpretation and placement; it is not a
-  behavioral contract and never overrides winning specs or product contracts.
+  wrong. Program theory **frames** interpretation, placement, and the direction
+  in which plans move specs and code (`[AT-REF-3]`); it is not a behavioral
+  contract (do not silently break active spec clauses mid-edit, and do not
+  treat a spec or plan that pulls away from the theory as final).
 - `docs/agent-context/`: canonical shared context and reusable runbooks
 - `docs/specs/`: intended behavior, invariants, and verification expectations
 - `docs/plans/`: dated execution documents for concrete work
@@ -67,17 +69,19 @@ term is unfamiliar or before crystallizing an account, not at every session
 start).
 
 **Module theory** (conventional path `MODULE-THEORY.md` next to owning code) is
-a scoped extension of the product program theory for one subsystem. It is not a
-separate taxonomy tier and is loaded only on entry to that module, not at every
-session start. Keep the product theory short; extend with module theory when
-depth is local.
+a human-decided scoped extension of the product program theory for a module that
+is weakly coupled to the rest of the program and has theory-level invariants
+applying only to that module (`[AT-REF-2]`). It is not a separate taxonomy tier
+and is loaded only on entry to that module, not at every session start.
 
 ## 3. Agent Startup Context [DOM-3]
 
-Program theory loads first among conceptual surfaces (see [DOM-2]);
-when theory and the winning contract appear to conflict, the contract
-governs current behavior — call out the mismatch and revise one or
-the other explicitly.
+Program theory loads first among conceptual surfaces (see [DOM-2]). Three
+directional rules govern how theory, specs, and plans interact (`[AT-REF-3]`):
+the program theory is the ideal, specs describe what is currently in the code,
+and plans morph code and specs closer to the ideal. When the active contract and
+code disagree, the presumption is a code bug; when a spec or plan pulls away
+from the theory, surface the drift and revise the spec or theory explicitly.
 
 At the start of a session, agents follow the canonical order in
 `docs/agent-context/README.md`. Root entry points and newcomer guides link to
@@ -343,18 +347,20 @@ own reproducible tool selection. An approved dependency refresh raises each
 manifest minimum to the version selected by its owning retained lock; the
 lockless PostgreSQL manifest uses the root lock's development resolution.
 Exact dependency pins are permitted only for a separately documented concrete
-need; no current dependency has one. The root and MCP Ruff configurations
+need; no current dependency has one. The root, MCP, and TUI Ruff configurations
 continue to own the reviewed stable-default rule inventory and suppression
 policy.
-`pyproject.toml` and `extensions/taut_mcp/pyproject.toml` own their respective
-Ruff configuration; both enable Ruff's stable defaults and extend them with
+`pyproject.toml`, `extensions/taut_mcp/pyproject.toml`, and
+`extensions/taut_tui/pyproject.toml` own their respective Ruff configuration;
+all three enable Ruff's stable defaults and extend them with
 `E`, `W`, `F`, `I`, `B`, `C901`, `C4`, and `UP`, use
 `mccabe.max-complexity = 10`, ignore only `E501` and `B008`, and keep preview
-rules opt-in. The two configurations must resolve the exact reviewed rule
-inventory recorded in `tests/fixtures/ruff-enabled-rules.txt`. A Ruff selection
-change must update manifest ranges and retained locks in one reviewed change,
-regenerate the effective-rule fixture when the selected rule inventory changes,
-and re-run the raw suppression audit before adoption.
+rules opt-in. All three configurations must resolve the exact effective rule set
+derived dynamically from the pinned Ruff binary's isolated default rule set
+(`ruff check --isolated --show-settings`) unioned with those reviewed rule
+families minus the declared global ignores. A Ruff selection or floor change
+must update manifest ranges and retained locks in one reviewed change and re-run
+the raw suppression audit before adoption.
 
 Owner: the Ruff configurations own rule selection and discovery; the root CI
 lint job owns repository-wide enforcement; the PG and MCP lint jobs provide
@@ -502,7 +508,6 @@ replacement leaves the spec byte-for-byte unchanged.
 | `[RUFF-SUP-074]` | `SIM117` | `5` directives; raw: `SIM117=5` | Distinct assertion and resource scopes keep acquisition, cleanup, and the lifetime under test visually separate | MCP process, Summon interaction, PostgreSQL DSN, and signal-probe tests | Merging contexts that obscures the asserted exit or distinct resource owner | Independent review passed; user-approved exact fields 2026-08-05; two obsolete test directives removed under owner removal policy 2026-09-28. |
 | `[RUFF-SUP-075]` | `N999` | `6` directives; raw: `N999=6` | Stable documented and workflow-invoked public hyphenated script filenames remain unchanged | Workflow, release, documentation, and command-shape tests | Rename, exclusion, global ignore, or duplicate compatibility shims | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-076]` | `SIM115` | `3` directives; raw: `SIM115=3` | Stderr handles stay open for exactly the subprocess lifetime and close through the existing lifecycle owner | Driver-process and live-harness cleanup tests | Indenting whole process scenarios under `with` blocks or adding an `ExitStack` owner solely for lint | Independent review passed; user-approved exact fields 2026-08-05. |
-| `[RUFF-SUP-078]` | `DTZ006` | `1` directive; raw: `DTZ006=1` | User-facing timestamps retain local-time rendering | Rendering tests | Silently changing output to UTC or attaching an invented timezone | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-079]` | `FURB122` | `1` directive; raw: `FURB122=1` | GitHub output records remain an explicit local one-record-per-write loop | Release-publication output tests | A generator passed to `writelines`, which decreases locality without changing ownership or behavior | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-080]` | `LOG001` | `1` directive; raw: `LOG001=1` | Formatter-test logging remains isolated from the process-global logger registry and pre-existing handlers | Exact formatter and bootstrap test | `getLogger`, which adds global registry state to a unit test | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-081]` | `PYI041` | `1` directive; raw: `PYI041=1` | The live-harness helper explicitly mirrors the complete `JSONPrimitive` vocabulary, including both `int` and `float` | `SummonStatus` construction, live-harness tests, and static typing | Dropping `int` through numeric-tower compatibility, which makes the runtime data vocabulary less clear | Independent review passed; user-approved exact fields 2026-08-05. |
@@ -520,7 +525,7 @@ replacement leaves the spec byte-for-byte unchanged.
 | `[RUFF-SUP-094]` | `SIM102` | `1` directive; raw: `SIM102=1` | Copied candidate waiter cleanup preserves upstream transaction structure | Topology rollback and source-body equivalence tests | Cosmetic divergence in copied scheduler | User-authorized reactor restoration; exact vendoring reviewed. |
 | `[RUFF-SUP-095]` | `BLE001` | `2` directives; raw: `BLE001=2` | Copied topology failure boundary restores state for arbitrary backend and signal failures | Topology rollback, SIGINT and source-body equivalence tests | Guessing backend exception types or leaving foreign request unresolved | User-authorized reactor restoration; exact vendoring reviewed. |
 
-Global raw-`noqa` inventory: `BLE001=130`, `C901=34`, `DTZ006=1`, `F401=1`, `FLY002=16`, `FURB122=1`, `LOG001=1`, `N999=6`, `PYI041=1`, `SIM102=1`, `SIM115=3`, `SIM117=5`, `TRY004=11`
+Global raw-`noqa` inventory: `BLE001=130`, `C901=34`, `F401=1`, `FLY002=16`, `FURB122=1`, `LOG001=1`, `N999=6`, `PYI041=1`, `SIM102=1`, `SIM115=3`, `SIM117=5`, `TRY004=11`
 
 <!-- BEGIN GENERATED RUFF SUPPRESSION INDEX -->
 | Group | Locations | Directives | Raw diagnostics |
@@ -569,7 +574,6 @@ Global raw-`noqa` inventory: `BLE001=130`, `C901=34`, `DTZ006=1`, `F401=1`, `FLY
 | `[RUFF-SUP-074]` | `extensions/taut_mcp/tests/test_stdio_server.py::test_two_stdio_processes_keep_explicit_workspace_identities_isolated`; `extensions/taut_summon/tests/test_interaction.py::test_rich_host_identity_remains_usable_while_scripted_driver_runs`; `extensions/taut_summon/tests/test_interaction.py::test_shell_interaction_refuses_lease_after_unavailable_probe`; `taut/_scripts.py::_verify_postgres_test_dsn_from_env`; `tests/helpers/base_reactor_sigint_probe.py::_run_probe` | 5 | `SIM117=5` |
 | `[RUFF-SUP-075]` | `bin/build-and-check-release-wheels.py::<module>`; `bin/check-core-summon-wheel-matrix.py::<module>`; `bin/check-required-coverage-paths.py::<module>`; `bin/combine-coverage.py::<module>`; `bin/release-artifact.py::<module>`; `bin/require-green-workflows.py::<module>` | 6 | `N999=6` |
 | `[RUFF-SUP-076]` | `extensions/taut_summon/tests/conftest.py::DriverProcess.__init__`; `extensions/taut_summon/tests/test_driver.py::test_pty_first_run_acknowledges_before_spawn_then_detaches_and_sets_wired`; `extensions/taut_summon/tests/test_live_harness.py::test_live_pty_harness_reaches_ready_and_accepts_injection` | 3 | `SIM115=3` |
-| `[RUFF-SUP-078]` | `taut/terminal.py::format_message_time` | 1 | `DTZ006=1` |
 | `[RUFF-SUP-079]` | `.github/scripts/release_publication.py::_write_outputs` | 1 | `FURB122=1` |
 | `[RUFF-SUP-080]` | `extensions/taut_summon/tests/test_summon_cli.py::test_summon_logging_formatter_escapes_messages_and_bootstraps_safely` | 1 | `LOG001=1` |
 | `[RUFF-SUP-081]` | `extensions/taut_summon/tests/test_live_harness.py::_status_with_details` | 1 | `PYI041=1` |
@@ -628,12 +632,14 @@ Non-trivial plans and completed work should receive an independent review.
 Requirements:
 
 - the reviewer receives the governing spec, active plan, relevant
-  implementation note, and touched files
+  implementation note, and touched files, plus any standing invariants or
+  refused alternatives in force for the touched surface
 - the review focuses on errors, bad ideas, latent ambiguities, performative
   overengineering — process, abstraction, or ceremony that does not address
-  a real risk or improve correctness — and whether a different engineer
-  could implement the plan confidently and correctly; when reviewing a plan,
-  analyze the plan as a whole, including all amendments, with two lenses:
+  a real risk or improve correctness — whether the plan's causal premise holds
+  in the code and its proposed proof is falsifiable, and whether a different
+  engineer could implement the plan confidently and correctly; when reviewing a
+  plan, analyze the plan as a whole, including all amendments, with two lenses:
   (1) is this what an expert developer would do and think well-crafted or
   elegant? (2) is there a known algorithm or computer science principle that
   should be applied here?
@@ -641,7 +647,13 @@ Requirements:
 - the authoring agent either updates the work or records why the current path
   remains the best choice, and verifies that every `fixed in plan` disposition
   is reflected in the plan's task list and code snippets before closing the
-  review loop
+  review loop (backed by `bin/check-doc-paths` verifying that promoted
+  `Replacement` fenced blocks appear in their target files); when a review
+  returns `PASS` or `no blocker`, the loop closes after the author applies
+  dispositions, verifies them locally, and `bin/check-doc-paths` passes — do not
+  run follow-up external review rounds merely to re-verify non-blocking edits
+  (a second round is warranted only after `BLOCKED` / `blocker: F<ids>` or when
+  scope, invariants, or authority change after review)
 - select a different agent family from `docs/implementation/03-agent-inventory.md`
   and invoke it via `skills/call-agent/SKILL.md` (Tier-1 cross-family CLI
   review); native harness subagents inherit the authoring model family and
@@ -753,12 +765,12 @@ Requirements:
 - enumerable coalescing metadata uses an executable gate. In this repository,
   every plan file appears exactly once in a structured status index with an
   allowed lifecycle status and explicit exemplar marker. The closed status
-  vocabulary is `draft`, `active`, `status-review`, `completed`, `superseded`,
-  and `retired-pending`; `status-review` is a conservative maintenance
-  quarantine, not a completion state. The exemplar field is exactly `yes` or
-  `no`. Missing rows, duplicate rows, nonexistent-path rows, unknown statuses,
-  unknown exemplar values, and malformed status tables fail the gate. A sweep
-  repairs gate failures before trusting the affected trigger count
+  vocabulary is `draft`, `active`, `promoted`, `status-review`, `completed`,
+  `superseded`, and `retired-pending`; `status-review` is a conservative
+  maintenance quarantine, not a completion state. The exemplar field is exactly
+  `yes` or `no`. Missing rows, duplicate rows, nonexistent-path rows, unknown
+  statuses, unknown exemplar values, and malformed status tables fail the gate.
+  A sweep repairs gate failures before trusting the affected trigger count
 - coalescing removals are Git-backed archive maintenance, not
   permanently destructive, when a verified pre-fold source SHA
   reachable from a retained ref contains every removed item. The
@@ -966,6 +978,10 @@ edit; escalate loudly the moment a trigger fires.
 
 ## Related Plans
 
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`:
+  propagates `agent-theory` @ `e6ac579`, dynamic Ruff `0.17.4` rule-inventory
+  verification, `bin/check-doc-paths` `Replacement` sync checking, batched
+  `bin/coalesce-check` git probes, and the 2026-11-10 lessons coalescing sweep.
 - `docs/plans/2026-10-14-agent-theory-delta-wave-plan.md`: propagates the
   2026-10-14 `agent-theory` hub delta (`0423923..8f41a9d`).
 - `docs/plans/2026-09-24-review-inputs-and-doc-gates-plan.md`: makes review

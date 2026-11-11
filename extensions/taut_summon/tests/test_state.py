@@ -1127,3 +1127,108 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
         )
     finally:
         verify.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX unreaped zombie contract",
+)
+def test_claim_driver_reclaims_unreaped_zombie_without_takeover_and_preserves_indeterminate(
+    state_queue: Queue,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import time
+
+    import psutil
+
+    from taut.identity import ProcessInfo
+
+    ensure_summon_schema(state_queue)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys; "
+                "sys.stdout.write('ready\\n'); sys.stdout.flush(); "
+                "sys.stdin.read(1); "
+                "os._exit(0)"
+            ),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdin is not None
+        assert proc.stdout.readline().strip() == "ready"
+        zombie_pid, zombie_start = capture_driver_evidence(proc.pid)
+        record_session(
+            state_queue,
+            member_id="m_zombie",
+            token="taut-tok-zombie",
+            provider="claude",
+            driver_pid=zombie_pid,
+            driver_start_time=zombie_start,
+            updated_ts=state_queue.generate_timestamp(),
+        )
+
+        proc.stdin.close()
+        deadline = time.monotonic() + 5.0
+        while psutil.Process(proc.pid).status() != psutil.STATUS_ZOMBIE:
+            if time.monotonic() > deadline:
+                raise AssertionError("child did not transition to STATUS_ZOMBIE")
+            time.sleep(0.01)
+
+        stored_before = get_session(state_queue, "m_zombie")
+        assert stored_before is not None
+        assert driver_liveness(stored_before) == "dead"
+
+        my_pid, my_start = capture_driver_evidence(os.getpid())
+        reclaimed = claim_driver(
+            state_queue,
+            member_id="m_zombie",
+            driver_pid=my_pid,
+            driver_start_time=my_start,
+            updated_ts=state_queue.generate_timestamp(),
+            takeover=False,
+        )
+        assert reclaimed["driver_pid"] == my_pid
+        assert reclaimed["driver_start_time"] == my_start
+    finally:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.close()
+        if proc.stdout is not None and not proc.stdout.closed:
+            proc.stdout.close()
+        proc.wait(timeout=5)
+
+    # Live process with unreadable start_time=None remains "indeterminate"
+    # and requires --takeover.
+    record_session(
+        state_queue,
+        member_id="m_unreadable",
+        token="taut-tok-unreadable",
+        provider="claude",
+        driver_pid=99999,
+        driver_start_time="psutil:111",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    monkeypatch.setattr(
+        state_module,
+        "capture_process",
+        lambda pid: ProcessInfo(pid=pid, start_time=None),
+    )
+    unreadable_row = get_session(state_queue, "m_unreadable")
+    assert unreadable_row is not None
+    assert driver_liveness(unreadable_row) == "indeterminate"
+    with pytest.raises(DriverConflictError, match="cannot verify"):
+        claim_driver(
+            state_queue,
+            member_id="m_unreadable",
+            driver_pid=my_pid,
+            driver_start_time=my_start,
+            updated_ts=state_queue.generate_timestamp(),
+            takeover=False,
+        )

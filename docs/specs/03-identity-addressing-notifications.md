@@ -144,7 +144,15 @@ matches `^(proc|psutil):[0-9]+$`. Taut never derives it from wall-clock
 arithmetic and never spawns a subprocess to obtain it, so two captures
 of one live process agree regardless of locale, clock adjustments, or
 capturing process lifetime. A process whose start time cannot be read
-has no token and cannot be an `agent_process` anchor.
+has no token (`start_time` is null) and cannot be an `agent_process` anchor,
+while remaining distinguishable from a missing process so [SUM-8] treats live
+unreadable evidence as indeterminate. An exited or zombie process
+(`psutil.STATUS_ZOMBIE`, `not proc.is_running()`, or Linux `/proc/<pid>/stat`
+state `'Z'`) whose unreaped process-table entry or open OS handle still keeps
+its PID and creation timestamp readable is not a live process:
+`capture_process()` returns `None` so presence, anchor capture, and [SUM-8]
+single-driver liveness classify it as gone/dead rather than alive or
+indeterminate.
 
 The host id is an opaque platform identity: `machine-id:<value>` from
 `/etc/machine-id` or `/var/lib/dbus/machine-id` on Linux, and
@@ -841,8 +849,8 @@ normalized from `rename` without an alias.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=8.4.0` and `taut-pg` requires
-`simplebroker-pg>=4.4.0`, the same floors as the core runtime dependency
+Taut requires `simplebroker>=8.8.1` and `taut-pg` requires
+`simplebroker-pg>=4.8.1`, the same floors as the core runtime dependency
 contract. This compatible pair preserves the atomic write ids,
 rename-capable backend handshake, persistent-reactor ownership, live
 activity-waiter replacement, interruptible watcher bootstrap, corrected
@@ -1067,6 +1075,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-11-10-upstream-port-runtime-hardening-and-theory-wave-plan.md`
+  — rejects exited and zombie OS process entries in `capture_process()` and
+  reconciles the `simplebroker>=8.8.1` / `simplebroker-pg>=4.8.1` floors.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-24-identity-claim-boundary-plan.md` — narrows the
   step-4 anchor match so a parent agent cannot capture a child agent, specifies

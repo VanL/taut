@@ -1234,6 +1234,12 @@ def test_capture_psutil_process_reads_best_effort_fields(  # noqa: C901 approved
         def oneshot(self) -> FakeOneshot:
             return FakeOneshot()
 
+        def is_running(self) -> bool:
+            return True
+
+        def status(self) -> str:
+            return psutil.STATUS_RUNNING
+
         def ppid(self) -> int:
             return 1
 
@@ -2256,3 +2262,184 @@ def test_concurrent_first_contact_joins_all_get_distinct_names(
     members = [json.loads(stdout.strip().splitlines()[-1]) for stdout, _ in outputs]
     assert len({member["member_id"] for member in members}) == count
     assert len({member["name"] for member in members}) == count
+
+
+@_POSIX_SHELL_PROCESS_TEST
+def test_capture_process_and_presence_treat_unreaped_zombie_as_gone() -> None:
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys; "
+                "sys.stdout.write('ready\\n'); sys.stdout.flush(); "
+                "sys.stdin.read(1); "
+                "os._exit(0)"
+            ),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdin is not None
+        assert proc.stdout.readline().strip() == "ready"
+        live = identity.capture_process(proc.pid)
+        assert live is not None
+        assert live.start_time is not None
+        member = _member_row(
+            anchor_pid=proc.pid,
+            anchor_start_time=live.start_time,
+        )
+        assert identity.member_presence(member, "host:test") == "here"
+
+        proc.stdin.close()
+        deadline = time.monotonic() + 5.0
+        while psutil.Process(proc.pid).status() != psutil.STATUS_ZOMBIE:
+            if time.monotonic() > deadline:
+                raise AssertionError("child did not transition to STATUS_ZOMBIE")
+            time.sleep(0.01)
+
+        assert identity.capture_process(proc.pid) is None
+        assert identity.member_presence(member, "host:test") == "gone"
+    finally:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.close()
+        if proc.stdout is not None and not proc.stdout.closed:
+            proc.stdout.close()
+        proc.wait(timeout=5)
+
+
+class _LivenessOneshot:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
+
+
+class _ConfigurableLivenessProcess:
+    def __init__(
+        self,
+        *,
+        running: bool = True,
+        status_val: str | BaseException = psutil.STATUS_RUNNING,
+        create_val: float | BaseException = 42.5,
+    ) -> None:
+        self._running = running
+        self._status_val = status_val
+        self._create_val = create_val
+        self._proc = self
+
+    def oneshot(self) -> _LivenessOneshot:
+        return _LivenessOneshot()
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def status(self) -> str:
+        if isinstance(self._status_val, BaseException):
+            raise self._status_val
+        return self._status_val
+
+    def create_time(self, **_kwargs: Any) -> float:
+        if isinstance(self._create_val, BaseException):
+            raise self._create_val
+        return self._create_val
+
+    def ppid(self) -> int:
+        return 1
+
+    def exe(self) -> str:
+        return "/usr/bin/python3"
+
+    def cmdline(self) -> list[str]:
+        return ["python3"]
+
+    def cwd(self) -> str:
+        return "/tmp"
+
+    def uids(self) -> SimpleNamespace:
+        return SimpleNamespace(real=501)
+
+    def terminal(self) -> None:
+        return None
+
+
+def test_capture_psutil_process_and_start_time_token_liveness_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity, "_safe_getpgid", lambda _pid: 10)
+    monkeypatch.setattr(identity, "_safe_getsid", lambda _pid: 10)
+
+    for dead_proc in (
+        _ConfigurableLivenessProcess(running=False),
+        _ConfigurableLivenessProcess(status_val=psutil.STATUS_ZOMBIE),
+        _ConfigurableLivenessProcess(status_val=psutil.NoSuchProcess(777)),
+        _ConfigurableLivenessProcess(status_val=psutil.ZombieProcess(777)),
+    ):
+        monkeypatch.setattr(
+            identity.psutil,
+            "Process",
+            lambda _pid, proc=dead_proc: proc,
+        )
+        assert identity._capture_psutil_process(777) is None
+
+    for create_err in (psutil.NoSuchProcess(777), psutil.ZombieProcess(777)):
+        dead_proc = _ConfigurableLivenessProcess(create_val=create_err)
+        with pytest.raises(type(create_err)):
+            identity.start_time_token(777, cast(psutil.Process, dead_proc))
+        monkeypatch.setattr(
+            identity.psutil,
+            "Process",
+            lambda _pid, proc=dead_proc: proc,
+        )
+        assert identity._capture_psutil_process(777) is None
+
+    monkeypatch.setattr(
+        identity.psutil,
+        "Process",
+        lambda _pid: _ConfigurableLivenessProcess(
+            status_val=psutil.AccessDenied(777),
+            create_val=42.5,
+        ),
+    )
+    restricted = identity._capture_psutil_process(777)
+    assert restricted is not None
+    assert restricted.start_time == "psutil:42500000"
+
+    monkeypatch.setattr(
+        identity.psutil,
+        "Process",
+        lambda _pid: _ConfigurableLivenessProcess(
+            status_val=psutil.STATUS_RUNNING,
+            create_val=psutil.AccessDenied(777),
+        ),
+    )
+    unreadable_start = identity._capture_psutil_process(777)
+    assert unreadable_start is not None
+    assert unreadable_start.start_time is None
+
+
+def test_capture_linux_process_rejects_zombie_stat_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stat_fields = ["Z", "1", "1234", "1234", "0", *("0" for _ in range(14)), "98765"]
+    stat = "1234 (python (worker)) " + " ".join(stat_fields)
+
+    def fake_read_text(self: Path, **_kwargs: Any) -> str:
+        if self.as_posix() == "/proc/1234/stat":
+            return stat
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", fake_read_text)
+    monkeypatch.setattr(identity.sys, "platform", "linux")
+
+    assert identity._capture_linux_process(1234) is None

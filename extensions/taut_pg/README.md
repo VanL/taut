@@ -9,14 +9,22 @@ backend.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - PostgreSQL
+- `simplebroker-pg>=4.8.1` (installed automatically by `taut-pg`)
 - A dedicated schema for Taut and SimpleBroker tables
 - Core distribution `taut-chat` and extension `taut-pg` installed in the same
   environment
 
 The Postgres database must already exist. `taut init` initializes the configured
 schema and tables inside that database; it does not create the database.
+
+`simplebroker-pg>=4.8.1` scopes per-queue PostgreSQL `LISTEN`/`NOTIFY` channels
+to the exact queue set registered with SimpleBroker's activity waiter. On shared
+PostgreSQL targets, upgrade long-lived watchers (`taut watch`, Summon drivers,
+`taut-mcp`, `taut-tui`) before or alongside `taut-pg` 4.8+ writers:
+`simplebroker-pg` 4.7.x listeners subscribe only to the schema-wide channel and
+rely on their 30–60 second safety recheck until upgraded.
 
 The package also supplies Taut's PostgreSQL search provider. It uses only
 PostgreSQL's built-in `tsvector`, `pg_catalog.simple` configuration, GIN, and
@@ -83,5 +91,7 @@ From the repository root:
 uv run ./bin/pytest-pg
 ```
 
-That helper starts a temporary Docker Postgres container, runs shared Taut tests
-against Postgres, runs `pg_only` extension tests, and removes the container.
+That helper starts a temporary Docker Postgres container, verifies TCP SQL
+readiness (`SELECT 1`), runs shared Taut tests against Postgres, runs `pg_only`
+extension tests, prints container logs on failure, and removes the container
+and its anonymous volumes.

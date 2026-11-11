@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TextIO, TypeAlias
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TextIO
 
 if TYPE_CHECKING:
     from simplebroker import BrokerTarget, Config
@@ -70,9 +70,10 @@ class CommandArgumentParser(argparse.ArgumentParser):
     def parse_command_args(self, args: list[str]) -> argparse.Namespace:
         """Parse a dispatcher-owned tail with the adapter's selected policy."""
 
-        # Python 3.11's intermixed parser drops a leading ``--`` while it
-        # temporarily disables positionals, then reports those positionals as
-        # missing. Ordinary argparse already handles this literal-only shape.
+        # CPython's intermixed parser before 3.12.8 / 3.13.1 drops a leading
+        # ``--`` while it temporarily disables positionals, then reports those
+        # positionals as missing. Ordinary argparse already handles this
+        # literal-only shape on every supported release.
         if self._taut_intermixed_args and (not args or args[0] != "--"):
             return self.parse_intermixed_args(args)
         return self.parse_args(args)
@@ -218,7 +219,7 @@ class Command(Protocol):
     def run(self, context: CommandContext, args: argparse.Namespace) -> int: ...
 
 
-CommandFactory: TypeAlias = Callable[[], Command]
+type CommandFactory = Callable[[], Command]
 
 
 class CommandError(Exception):

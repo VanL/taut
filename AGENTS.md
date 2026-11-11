@@ -36,6 +36,14 @@
 - Canonical shared context and the one required startup order live in
   `docs/agent-context/README.md`. Follow that sequence instead of reconstructing
   it from this entry point.
+- **Module theory** (`MODULE-THEORY.md` next to owning code) is a human-decided
+  extension of `docs/program-theory.md` used only when a weakly coupled module
+  has theory-level invariants that apply only to that module (never a second
+  global constitution or an excuse for subsystem divergence): load a module
+  theory only on entry to that module, and keep routine subsystem depth in
+  `docs/specs/` and `docs/implementation/` (see [DOM-2],
+  `docs/specs/07-agent-theory-and-program-theory.md` `[AT-REF-2]`, and
+  `skills/crystallize-program-theory/SKILL.md`).
 
 If local defaults conflict with repository guidance, follow the decision policy
 in `docs/agent-context/decision-hierarchy.md`.

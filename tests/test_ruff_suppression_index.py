@@ -654,3 +654,87 @@ def test_vendored_markers_are_scoped_and_mapped_to_local_registry(
     else:
         with pytest.raises(ruff_suppression_index.PolicyMismatch, match="malformed"):
             ruff_suppression_index.scan_source_directives(tmp_path, [source])
+
+
+def test_transient_replacement_permission_errors_retry_and_succeed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "policy.md"
+    target.write_bytes(b"original\n")
+    original_replace = ruff_suppression_index.os.replace
+    calls = 0
+    sleeps: list[float] = []
+
+    def replace_twice_blocked(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise PermissionError("sharing violation")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(ruff_suppression_index.os, "replace", replace_twice_blocked)
+    monkeypatch.setattr(
+        ruff_suppression_index,
+        "time",
+        type("FakeTime", (), {"sleep": staticmethod(sleeps.append)}),
+        raising=False,
+    )
+
+    ruff_suppression_index._atomic_replace(target, b"updated\n")
+
+    assert calls == 3
+    assert len(sleeps) == 2
+    assert target.read_bytes() == b"updated\n"
+    assert not list(tmp_path.glob(".policy.md.*.tmp"))
+
+
+def test_exhausted_replacement_permission_errors_preserve_cause_and_cleanup_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "policy.md"
+    target.write_bytes(b"original\n")
+    calls = 0
+
+    def always_blocked(_source: Path, _destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(ruff_suppression_index.os, "replace", always_blocked)
+    monkeypatch.setattr(
+        ruff_suppression_index,
+        "time",
+        type("FakeTime", (), {"sleep": staticmethod(lambda _seconds: None)}),
+        raising=False,
+    )
+
+    with pytest.raises(
+        ruff_suppression_index.ToolFailure,
+        match="could not replace",
+    ) as exc_info:
+        ruff_suppression_index._atomic_replace(target, b"updated\n")
+
+    assert calls == 10
+    assert isinstance(exc_info.value.__cause__, PermissionError)
+    assert target.read_bytes() == b"original\n"
+    assert not list(tmp_path.glob(".policy.md.*.tmp"))
+
+
+def test_ruff_runs_from_the_running_interpreter_not_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: the tool ran bare `ruff` from PATH, so a stale global Ruff
+    # (0.16.x still flags DTZ006) failed the 0.17.4 policy gate spuriously.
+    from importlib.metadata import version
+
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+
+    result = ruff_suppression_index._run_ruff(tmp_path, "--version")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"ruff {version('ruff')}"

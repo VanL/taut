@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from conftest import canonical_of
-from simplebroker.watcher import PollingStrategy
+from simplebroker.ext import PollingStrategy
 from tests.helpers.eventually import async_eventually
 
 import taut.watcher as core_watcher

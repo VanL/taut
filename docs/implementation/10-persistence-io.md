@@ -93,6 +93,12 @@ references from the parsed staged file and gives each active contributor a
 fresh replay iterator over that same file. Dump runs this path after framing,
 digest, version, and core validation and before atomic replacement. It does not
 validate a second live projection or rediscover contributors after assembly.
+Dump creates its exclusive same-directory staging file with
+`open(candidate, "xb")` (`O_CREAT | O_EXCL`, mode `0o666`), letting the
+process `umask` and enclosing directory permissions govern file mode without
+post-creation `chmod` widening or forced `0600` narrowing. Python's `open()`
+adds `O_BINARY` on Windows; a bare `os.open()` fd there is CRT text mode, which
+rewrote every LF as CRLF after hashing and failed dump's own digest check.
 
 This is a coherent, validated, importable logical projection, not a frozen
 cross-store transaction. Claims, deletes, moves, registry changes, and sidecar

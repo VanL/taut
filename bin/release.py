@@ -1375,7 +1375,7 @@ class LocalLlmPreparation:
             return
         if self._thread is not None and self._thread.is_alive():
             subprocess.run(
-                ("docker", "rm", "-f", self.container_name),
+                ("docker", "rm", "-f", "-v", self.container_name),
                 cwd=PROJECT_ROOT,
                 check=False,
                 stdout=subprocess.DEVNULL,
@@ -1383,7 +1383,7 @@ class LocalLlmPreparation:
             )
             self._thread.join(timeout=10.0)
         subprocess.run(
-            ("docker", "rm", "-f", self.container_name),
+            ("docker", "rm", "-f", "-v", self.container_name),
             cwd=PROJECT_ROOT,
             check=False,
             stdout=subprocess.DEVNULL,

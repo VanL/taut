@@ -30,7 +30,7 @@ Command registration and rich-host composition are documented in
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - Core distribution `taut-chat` and extension `taut-summon` installed in the
   same environment
 - A SQL-sidecar backend (SQLite or Postgres) — summon state rides sidecar

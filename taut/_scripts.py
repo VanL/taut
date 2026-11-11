@@ -87,15 +87,55 @@ def _docker_port(container_name: str) -> str | None:
 
 
 def _cleanup_container(container_name: str) -> None:
-    """Remove the temporary Docker container if it still exists."""
+    """Remove the temporary Docker container and its anonymous volumes.
+
+    The Postgres image declares its data directory a volume, so each run gets
+    an anonymous one. ``rm -f`` without ``-v`` leaves it behind, even for a
+    container started with ``--rm``.
+    """
 
     subprocess.run(
-        ["docker", "rm", "-f", container_name],
+        ["docker", "rm", "-f", "-v", container_name],
         cwd=ROOT,
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _print_container_logs(container_name: str | None) -> None:
+    """Print temporary Postgres container logs before cleanup on failure."""
+
+    if not container_name:
+        return
+    print(f"Postgres container logs ({container_name}):", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            ["docker", "logs", container_name],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"Unable to read logs for Postgres container {container_name}: {exc}",
+            file=sys.stderr,
+        )
+        return
+    stdout = result.stdout.rstrip()
+    stderr = result.stderr.rstrip()
+    if stdout:
+        print(stdout, file=sys.stderr)
+    if stderr:
+        print(stderr, file=sys.stderr)
+    if result.returncode != 0 and not stdout and not stderr:
+        print(
+            f"Unable to read logs for Postgres container {container_name}",
+            file=sys.stderr,
+        )
 
 
 def _host_port_accepts_connections(
@@ -133,11 +173,15 @@ def _wait_for_postgres(container_name: str, *, timeout_seconds: float = 60.0) ->
                 "docker",
                 "exec",
                 container_name,
-                "pg_isready",
+                "psql",
+                "-h",
+                "127.0.0.1",
                 "-U",
                 POSTGRES_USER,
                 "-d",
                 POSTGRES_DB,
+                "-c",
+                "SELECT 1",
             ],
             cwd=ROOT,
             check=False,
@@ -156,16 +200,18 @@ def _wait_for_postgres(container_name: str, *, timeout_seconds: float = 60.0) ->
             _sleep(1.0)
             continue
 
-        last_error = (
-            result.stderr.strip() or result.stdout.strip() or "pg_isready failed"
-        )
+        last_error = result.stderr.strip() or result.stdout.strip() or "psql failed"
         _sleep(1.0)
 
     raise RuntimeError(f"Postgres did not become ready: {last_error}")
 
 
-def _start_postgres_container() -> tuple[str, str]:
-    """Start the temporary Postgres container and return its name and DSN."""
+def _launch_postgres_container() -> str:
+    """Start the temporary Postgres container and return its name at once.
+
+    The caller owns cleanup from this point: a readiness failure gets log
+    capture and removal, and an interrupt during the wait still gets removal.
+    """
 
     container_name = f"taut-pg-test-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     _run(
@@ -189,15 +235,20 @@ def _start_postgres_container() -> tuple[str, str]:
         ],
         capture_output=True,
     )
+    return container_name
+
+
+def _postgres_test_dsn(container_name: str) -> str:
+    """Wait until the container accepts TCP connections and return its DSN."""
+
     port = _wait_for_postgres(container_name)
     encoded_user = quote(POSTGRES_USER, safe="")
     encoded_password = quote(POSTGRES_PASSWORD, safe="")
     encoded_database = quote(POSTGRES_DB, safe="")
-    dsn = (
+    return (
         f"postgresql://{encoded_user}:{encoded_password}"
         f"@127.0.0.1:{port}/{encoded_database}"
     )
-    return container_name, dsn
 
 
 def _build_test_env(*, dsn: str, include_backend_marker: bool) -> dict[str, str]:
@@ -471,7 +522,8 @@ def pytest_pg_main(argv: list[str] | None = None) -> int:
     container_name: str | None = None
 
     try:
-        container_name, dsn = _start_postgres_container()
+        container_name = _launch_postgres_container()
+        dsn = _postgres_test_dsn(container_name)
         print(f"Postgres test DSN: {redact_backend_target(dsn)}", flush=True)
         _verify_postgres_test_dsn(dsn)
 
@@ -511,12 +563,14 @@ def pytest_pg_main(argv: list[str] | None = None) -> int:
             )
         return 0
     except subprocess.CalledProcessError as exc:
+        _print_container_logs(container_name)
         return exc.returncode or 1
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
         return 130
-    except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(str(exc), file=sys.stderr)
+        _print_container_logs(container_name)
         return 1
     finally:
         if container_name and not args.keep_container:
