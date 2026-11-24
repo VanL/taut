@@ -206,9 +206,7 @@ class TuiDomainActions:
         )
 
     def inbox(self) -> Future[list[Notification]]:
-        return self._session.submit_client_operation(
-            lambda client: _empty_ok(client.inbox)
-        )
+        return self._session.claim_inbox()
 
     def log_messages(
         self,

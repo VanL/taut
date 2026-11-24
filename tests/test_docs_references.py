@@ -115,6 +115,8 @@ def _markdown_path_sources() -> list[Path]:
         REPO_ROOT / "llms.txt",
         REPO_ROOT / "docs" / "README.md",
         REPO_ROOT / "docs" / "agent-kernel.md",
+        REPO_ROOT / "docs" / "coalescing.md",
+        REPO_ROOT / "docs" / "plans" / "README.md",
     ]
     sources += sorted((REPO_ROOT / "extensions").glob("*/README.md"))
     sources += sorted((REPO_ROOT / "docs" / "agent-context").glob("*.md"))
@@ -485,3 +487,9 @@ def test_check_doc_paths_rejects_traversal_and_targetless_replacement(
     rc, out = _run_check_doc_paths(tree)
     assert rc == 1, out
     assert expected_substr in out
+
+
+def test_markdown_path_sources_cover_maintained_governance_docs() -> None:
+    sources = {path.relative_to(REPO_ROOT) for path in _markdown_path_sources()}
+    assert Path("docs/coalescing.md") in sources
+    assert Path("docs/plans/README.md") in sources

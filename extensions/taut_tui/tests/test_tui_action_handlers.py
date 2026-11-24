@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import ExitStack
@@ -458,7 +459,9 @@ async def _members_open(context: HandlerContext) -> None:
     await _applied(
         context, "members", lambda: _select_palette(context, ActionId.MEMBERS_OPEN)
     )
-    assert "alice" in _inspector(context) and "bob" in _inspector(context)
+    rendered = _inspector(context)
+    assert "alice  active  human" in rendered
+    assert "bob  gone  agent" in rendered
 
 
 async def _channel_show_topic(context: HandlerContext) -> None:
@@ -1409,6 +1412,48 @@ def test_colon_command_line_reports_cli_only_paths_and_options(
     asyncio.run(exercise())
 
 
+def _deterministic_alice_bob_captures() -> tuple[Any, Any]:
+    from taut import identity
+
+    local_host = identity.capture_host_identity()
+    human_anchor = identity.ProcessInfo(
+        pid=os.getpid(),
+        ppid=1,
+        exe="/bin/zsh",
+        argv=("zsh",),
+        cwd="/workspace",
+    )
+    dead_agent_anchor = identity.ProcessInfo(
+        pid=2_000_000_001,
+        ppid=1,
+        pgid=2_000_000_001,
+        session_id=2_000_000_001,
+        start_time="1700000001.000000",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+        cwd="/workspace",
+    )
+    alice_capture = identity.IdentityCapture(
+        chain=(human_anchor,),
+        host=local_host,
+        uid=501,
+        login="alice",
+        anchor=human_anchor,
+        kind="human",
+        rule="test-human",
+    )
+    bob_capture = identity.IdentityCapture(
+        chain=(dead_agent_anchor,),
+        host=local_host,
+        uid=502,
+        login="bob",
+        anchor=dead_agent_anchor,
+        kind="agent",
+        rule="test-agent",
+    )
+    return alice_capture, bob_capture
+
+
 @pytest.mark.parametrize("action_id", tuple(ActionId), ids=lambda item: item.value)
 def test_every_action_reaches_a_concrete_handler(
     action_id: ActionId,
@@ -1421,8 +1466,17 @@ def test_every_action_reaches_a_concrete_handler(
         alice_token = ""
         if action_id is not ActionId.WORKSPACE_INITIALIZE:
             TautClient.init(db_path=db_path)
-            alice = TautClient(db_path=db_path, as_name="alice")
-            bob = TautClient(db_path=db_path, as_name="bob")
+            alice_capture, bob_capture = _deterministic_alice_bob_captures()
+            alice = TautClient(
+                db_path=db_path,
+                as_name="alice",
+                identity_capture=alice_capture,
+            )
+            bob = TautClient(
+                db_path=db_path,
+                as_name="bob",
+                identity_capture=bob_capture,
+            )
             try:
                 alice.join("general")
                 created = alice.last_created_member
@@ -1466,5 +1520,127 @@ def test_every_action_reaches_a_concrete_handler(
                 context.screens.close()
                 context.scope.close()
             context.scope.raise_if_invalid()
+
+    asyncio.run(exercise())
+
+
+def test_inspector_formats_domain_records_and_escapes_hostile_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+
+    db_path = tmp_path / "inspector-format.db"
+    TautClient.init(db_path=db_path)
+    alice_capture, bob_capture = _deterministic_alice_bob_captures()
+    alice = TautClient(
+        db_path=db_path,
+        as_name="alice",
+        identity_capture=alice_capture,
+    )
+    bob = TautClient(
+        db_path=db_path,
+        as_name="bob",
+        identity_capture=bob_capture,
+    )
+    try:
+        alice.join("general")
+        bob.join("general")
+        bob.set_persona("lead\ninjected-persona")
+        chan_msg = bob.say("general", "channel alpha body")
+        dm_msg = bob.say("@alice", "secret dm body")
+    finally:
+        alice.close()
+        bob.close()
+
+    async def run_colon_command(
+        app: TautApp,
+        scope: CompletionScope,
+        patch: pytest.MonkeyPatch,
+        line: str,
+        method: str,
+    ) -> None:
+        invocation = parse_command_line(line, syntax=core_command_syntax())
+        assert app._domain is not None
+        observed_req = AppliedRequest(scope, patch, app, app._domain, method)
+        deadline = scope.now() + 5
+        app._dispatch_command_invocation(invocation)
+        await observed_req.wait(deadline)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        with CompletionScope() as scope, monkeypatch.context() as patch:
+            async with app.run_test(size=(120, 36)):
+                # Wait for initial navigation so _target_labels has @bob DM label.
+                nav_done = scope.expect(CompletionKey(app, "initial.nav", request=app))
+                orig_nav = app._apply_navigation_result
+
+                def track_nav(fut: Any) -> None:
+                    orig_nav(fut)
+                    if nav_done.snapshot() is None:
+                        nav_done.succeed(nav_done.key, None)
+
+                patch.setattr(app, "_apply_navigation_result", track_nav)
+                assert app._session is not None
+                app._watch_future(
+                    app._session.refresh_navigation(), app._apply_navigation_result
+                )
+                await nav_done.wait(deadline=scope.now() + 5, description="nav ready")
+
+                await run_colon_command(
+                    app, scope, patch, "log general --limit 2", "log_messages"
+                )
+                log_text = str(app.query_one("#inspector-body").render())
+                assert "channel alpha body" in log_text
+                assert "bob" in log_text
+                assert log_text.strip() != "Message"
+
+                await run_colon_command(
+                    app, scope, patch, "read general", "read_messages"
+                )
+                read_text = str(app.query_one("#inspector-body").render())
+                assert "channel alpha body" in read_text
+
+                await run_colon_command(
+                    app, scope, patch, f"message show {chan_msg.ts}", "show_message"
+                )
+                show_text = str(app.query_one("#inspector-body").render())
+                assert "channel alpha body" in show_text
+                assert "bob" in show_text
+
+                await run_colon_command(app, scope, patch, "search body", "search")
+                search_text = str(app.query_one("#inspector-body").render())
+                assert "channel alpha body" in search_text
+                assert "secret dm body" in search_text
+                assert "DM with bob" in search_text
+                assert dm_msg.thread not in search_text
+
+                await run_colon_command(app, scope, patch, "who", "members")
+                who_text = str(app.query_one("#inspector-body").render())
+                assert "alice  active  human" in who_text
+                assert r"bob  gone  agent  (lead\ninjected-persona)" in who_text
+
+                await run_colon_command(app, scope, patch, "list --dms", "list_threads")
+                dms_text = str(app.query_one("#inspector-body").render())
+                assert "DM with bob" in dms_text
+                assert dms_text.strip() != "Thread"
+
+                # Hostile foreign metadata vs body escaping.
+                hostile = Message(
+                    thread="general",
+                    ts=chan_msg.ts,
+                    from_id=None,
+                    from_name="mallory\ninjected-header",
+                    kind="foreign",
+                    text="col1\tcol2\n\x1b[31mline2",
+                )
+                app._render_domain_result(hostile)
+                hostile_text = str(app.query_one("#inspector-body").render())
+                assert r"mallory\ninjected-header" in hostile_text
+                assert "\ninjected-header" not in hostile_text
+                assert "col1    col2" in hostile_text
+                assert "\x1b" not in hostile_text
+                assert r"\x1b[31mline2" in hostile_text
 
     asyncio.run(exercise())

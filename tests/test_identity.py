@@ -290,6 +290,25 @@ def test_capture_host_identity_uses_macos_platform_uuid(
 ) -> None:
     monkeypatch.setattr(identity.sys, "platform", "darwin")
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "mac")
+    monkeypatch.setattr(
+        identity, "_darwin_gethostuuid", lambda: "DEF-456", raising=False
+    )
+
+    def forbid_subprocess(
+        _cmd: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(
+            "subprocess must not run when _darwin_gethostuuid succeeds"
+        )
+
+    monkeypatch.setattr(identity.subprocess, "run", forbid_subprocess)
+    assert identity.capture_host_identity() == identity.HostIdentity(
+        "ioplatformuuid:DEF-456",
+        "mac",
+        "macOS IOKit platform UUID",
+    )
+
+    monkeypatch.setattr(identity, "_darwin_gethostuuid", lambda: None, raising=False)
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert cmd == ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
@@ -317,6 +336,7 @@ def test_capture_host_identity_falls_back_to_hostname(
 ) -> None:
     monkeypatch.setattr(identity.sys, "platform", "darwin")
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "fallback-host")
+    monkeypatch.setattr(identity, "_darwin_gethostuuid", lambda: None, raising=False)
 
     def fake_run(_cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise OSError("ioreg unavailable")
@@ -2443,3 +2463,166 @@ def test_capture_linux_process_rejects_zombie_stat_state(
     monkeypatch.setattr(identity.sys, "platform", "linux")
 
     assert identity._capture_linux_process(1234) is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native macOS IOKit/gethostuuid parity"
+)
+def test_darwin_gethostuuid_matches_ioreg_and_avoids_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.run(
+        ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    ioreg_uuid = next(
+        line.partition("=")[2].strip().strip('"')
+        for line in completed.stdout.splitlines()
+        if "IOPlatformUUID" in line
+    )
+    assert ioreg_uuid
+
+    in_process_uuid = identity._darwin_gethostuuid()
+    assert in_process_uuid == ioreg_uuid
+
+    def forbid_subprocess(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("capture_host_identity spawned a subprocess on darwin")
+
+    monkeypatch.setattr(identity.subprocess, "run", forbid_subprocess)
+    host = identity.capture_host_identity()
+    assert host.host_id == f"ioplatformuuid:{ioreg_uuid}"
+    assert host.host_rule == "macOS IOKit platform UUID"
+
+
+def test_who_batches_selected_member_aliases_and_reuses_host_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    local_host = identity.capture_host_identity()
+    live_proc = identity.capture_process(os.getpid())
+    assert live_proc is not None and live_proc.start_time is not None
+
+    expected_ops_ids: set[str] = set()
+    for index in range(12):
+        in_ops = index in {1, 5, 9}
+        is_live = index == 1
+        anchor = identity.ProcessInfo(
+            pid=os.getpid() if is_live else 999_000 + index,
+            start_time=live_proc.start_time if is_live else f"psutil:{100 + index}",
+            exe="/usr/local/bin/codex",
+            argv=("codex",),
+            cwd="/workspace",
+        )
+        cap = identity.IdentityCapture(
+            chain=(anchor,),
+            host=(
+                local_host
+                if index in {1, 5}
+                else identity.HostIdentity(
+                    "machine-id:remote", "remote", "linux machine-id"
+                )
+            ),
+            uid=501,
+            login="tester",
+            anchor=anchor,
+            kind="agent",
+            rule="test",
+        )
+        member_client = TautClient(
+            db_path=db,
+            as_name=f"init_{index:02d}",
+            identity_capture=cap,
+            persistent=True,
+        )
+        try:
+            member_client.join("general")
+            if in_ops:
+                member_client.join("ops")
+            current = member_client.whoami()
+            member_client._state.add_member_alias(
+                member_id=current.member_id,
+                alias=f"z_alias_{index:02d}",
+                created_ts=index * 2 + 1,
+            )
+            member_client._state.add_member_alias(
+                member_id=current.member_id,
+                alias=f"a_alias_{index:02d}",
+                created_ts=index * 2 + 2,
+            )
+            if in_ops:
+                expected_ops_ids.add(current.member_id)
+        finally:
+            member_client.close()
+
+    observer = TautClient(db_path=db, as_name="init_01", persistent=True)
+    try:
+        host_calls = 0
+        real_capture_host = identity.capture_host_identity
+
+        def spy_capture_host() -> identity.HostIdentity:
+            nonlocal host_calls
+            host_calls += 1
+            return real_capture_host()
+
+        monkeypatch.setattr(identity, "capture_host_identity", spy_capture_host)
+        monkeypatch.setattr(
+            SqlSidecarTautState,
+            "list_member_aliases",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError(
+                    "per-member list_member_aliases must not be called by who()"
+                )
+            ),
+        )
+
+        alias_queries: list[tuple[str, tuple[object, ...]]] = []
+        meta_queue = observer._meta_queue
+        real_sidecar = meta_queue.sidecar
+
+        class _SpySession:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def run(
+                self,
+                sql: str,
+                params: tuple[object, ...] = (),
+                *,
+                fetch: bool = False,
+            ) -> Any:
+                if "FROM taut_member_aliases" in sql and "JOIN" not in sql:
+                    alias_queries.append((sql, tuple(params)))
+                return self._inner.run(sql, params, fetch=fetch)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+        @contextmanager
+        def spy_sidecar(*, transaction: bool = False) -> Any:
+            with real_sidecar(transaction=transaction) as session:
+                yield _SpySession(session)
+
+        monkeypatch.setattr(meta_queue, "sidecar", spy_sidecar)
+
+        members = observer.who("ops")
+        assert [m.name for m in members] == ["init_01", "init_05", "init_09"]
+        assert host_calls <= 1
+        assert len(alias_queries) == 1
+        _sql, bound_params = alias_queries[0]
+        assert set(bound_params) == expected_ops_ids
+        assert len(bound_params) == 3
+        by_name = {m.name: m for m in members}
+        assert by_name["init_01"].aliases == ("a_alias_01", "z_alias_01")
+        assert by_name["init_05"].aliases == ("a_alias_05", "z_alias_05")
+        assert by_name["init_01"].presence == "here"
+        assert by_name["init_05"].presence == "gone"
+        assert by_name["init_09"].presence == "remote"
+    finally:
+        observer.close()

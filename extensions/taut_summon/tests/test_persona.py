@@ -87,3 +87,24 @@ def test_default_thread_when_none_given() -> None:
         name="claude", threads=(), workspace="/x.db", provider="claude"
     )
     assert "#general" in prompt
+
+
+def test_all_inline_taut_examples_parse_against_core_command_syntax() -> None:
+    import re
+
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+
+    for threads in (("dev", "ops"), ()):
+        prompt = render_default_persona(
+            name="reviewer",
+            threads=threads,
+            workspace="/work/.taut.db",
+            provider="claude",
+        )
+        snippets = re.findall(r"`(taut [^`]+)`", prompt)
+        assert snippets
+        syntax = core_command_syntax()
+        for snippet in snippets:
+            parse_command_line(snippet.removeprefix("taut "), syntax=syntax)
+        assert "19-digit" in prompt
+        assert "parent channel" in prompt

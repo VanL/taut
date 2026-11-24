@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from importlib import import_module, metadata
+from inspect import Parameter, signature
 from typing import Protocol, cast
 
 from taut.search._manifest import SEARCH_PROVIDER_API_VERSION, SearchBackendSpec
@@ -97,11 +98,29 @@ def _load_factory(target: str) -> Callable[..., object]:
     return cast(Callable[..., object], value)
 
 
+def _validate_callable_signature(
+    method: object,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> None:
+    allowed_kinds = {Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY}
+    try:
+        sig = signature(cast(Callable[..., object], method))
+        sig.bind(*args, **kwargs)
+    except (TypeError, ValueError) as exc:
+        raise SearchProviderUnavailableError(_DIAGNOSTIC) from exc
+    for name in kwargs:
+        param = sig.parameters.get(name)
+        if param is None or param.kind not in allowed_kinds:
+            raise SearchProviderUnavailableError(_DIAGNOSTIC)
+
+
 def _validate_provider(provider: object) -> None:
     required = (
         "schema_version",
         "ensure_schema",
         "replace_document",
+        "reconcile_unchanged_batch",
         "delete_document",
         "applied_revision",
         "retarget_threads",
@@ -119,6 +138,17 @@ def _validate_provider(provider: object) -> None:
     )
     if any(not callable(getattr(provider, name, None)) for name in required):
         raise SearchProviderUnavailableError(_DIAGNOSTIC)
+    typed = cast(SearchProvider, provider)
+    _validate_callable_signature(
+        typed.reconcile_unchanged_batch,
+        ((),),
+        {"revision": 1},
+    )
+    _validate_callable_signature(
+        typed.query,
+        ((),),
+        {"before": None, "threads": None, "limit": 1},
+    )
 
 
 def _normalized_distribution(name: str) -> str:

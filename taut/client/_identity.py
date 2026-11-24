@@ -99,7 +99,7 @@ class IdentityMixin(_ClientBase):
         )
 
     def who(self, thread: str | None = None) -> list[Member]:
-        self._resolve_member(
+        resolved = self._resolve_member(
             create=False,
             allow_guest=True,
             _touch_activity=False,
@@ -113,7 +113,24 @@ class IdentityMixin(_ClientBase):
             rows = self._state.list_thread_members(thread)
         else:
             rows = self._state.list_members()
-        return [self._member_from_row(row) for row in rows]
+        if not rows:
+            return []
+        local_host_id = (
+            resolved.capture.host.host_id
+            if resolved.capture is not None
+            else identity.capture_host_identity().host_id
+        )
+        aliases_by_member = self._state.list_aliases_for_members(
+            [row["member_id"] for row in rows]
+        )
+        return [
+            self._member_from_row(
+                row,
+                local_host_id=local_host_id,
+                aliases=aliases_by_member.get(row["member_id"], ()),
+            )
+            for row in rows
+        ]
 
     def rejoin(
         self,
@@ -578,22 +595,33 @@ class IdentityMixin(_ClientBase):
         row: MemberRow,
         *,
         capture: identity.IdentityCapture | None = None,
+        local_host_id: str | None = None,
+        aliases: tuple[str, ...] | None = None,
         token: str | None = None,
         explain: dict[str, Any] | None = None,
     ) -> Member:
-        local_host_id = (
-            capture.host.host_id
-            if capture
-            else identity.capture_host_identity().host_id
+        effective_host_id = (
+            local_host_id
+            if local_host_id is not None
+            else (
+                capture.host.host_id
+                if capture
+                else identity.capture_host_identity().host_id
+            )
+        )
+        resolved_aliases = (
+            aliases
+            if aliases is not None
+            else tuple(self._state.list_member_aliases(row["member_id"]))
         )
         meta = row["meta"]
         persona = meta.get("persona") if isinstance(meta.get("persona"), str) else None
         return Member(
             member_id=row["member_id"],
             name=row["display_name"],
-            aliases=tuple(self._state.list_member_aliases(row["member_id"])),
+            aliases=resolved_aliases,
             kind=row["kind"],
-            presence=identity.member_presence(row, local_host_id),
+            presence=identity.member_presence(row, effective_host_id),
             last_active_ts=row["last_active_ts"],
             persona=persona,
             token=token,

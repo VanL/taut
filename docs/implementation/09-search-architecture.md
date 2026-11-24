@@ -31,7 +31,9 @@ FTS5 is part of the default runtime. PostgreSQL SQL lives only in
 `extensions/taut_pg/taut_pg/_search.py`. Core discovers that provider lazily
 through the strict first-party descriptor in `taut/search/_discovery.py`.
 Discovery filters inert entry-point metadata by backend name and normalized
-`taut-pg` distribution ownership before it counts eligible claims. Foreign
+`taut-pg` distribution ownership before it counts eligible claims, and validates
+the loaded provider's required methods and keyword-accepting `reconcile_unchanged_batch`
+and `query` signatures before search work starts. Foreign
 same-name claims are ignored and never loaded; zero or multiple eligible
 first-party claims fail search without affecting other Taut operations.
 Both providers receive a bound `Queue.sidecar()` accessor. Neither opens a
@@ -54,8 +56,15 @@ can be repeated. The move API need not select the oldest row first: original
 message timestamps are preserved, and no worker drains either queue during the
 upgrade. No projection or document rebuild is part of this upgrade.
 The unchanged-document path advances its revision without replacing postings.
-This comparison and the revision fence occur in the same provider transaction
-for both current and staging generations.
+During thread reconciliation, core closes each 100-row `Queue.peek_generator`
+page immediately, partitions decoded check metadata into bounded `<= 2 MiB`
+(or singleton) sub-batches, classifies unchanged rows across all writable
+generations inside one `reconcile_unchanged_batch` transaction before bumping
+`latest_revision`, and computes `projection_segments` outside write locks only
+for rows requiring replacement. Both providers push `before` into SQL;
+PostgreSQL pushes all `threads` scopes into SQL (`IN` up to 500, `= ANY(...)`
+above 500), while SQLite pushes `threads` scopes up to 500 into SQL and filters
+larger scopes in Python before chunk intersection and `limit` slicing.
 
 ## Lexical Analysis Decision
 

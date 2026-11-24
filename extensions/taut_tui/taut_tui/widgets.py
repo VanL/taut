@@ -597,34 +597,79 @@ class TautTranscript(TautOptionList):
         """Extract the same policy-filtered lines rendered by this transcript."""
 
         self._update_lines()
-        lines = [self._selection_line(y) for y in range(self.virtual_size.height)]
-        rendered = "\n".join(lines)
-        if lines and not lines[-1]:
-            # Selection.extract() uses splitlines(), which otherwise drops the
-            # final blank display row and may index past the remaining lines.
-            rendered += "\n"
-        return selection.extract(rendered), "\n"
+        height = self.virtual_size.height
+        if height <= 0:
+            return "", "\n"
+        start_line_index, start_offset = (
+            (0, 0)
+            if selection.start is None or selection.start.y < 0
+            else selection.start.transpose
+        )
+        if start_line_index >= height:
+            return "", "\n"
 
-    def _selection_line(self, y: int) -> str:
+        strips_by_option: dict[int, list[Strip]] = {}
+        if selection.end is None:
+            selected_lines = [
+                self._selection_line(y, strips_by_option)
+                for y in range(start_line_index, height)
+            ]
+            selected_lines[0] = selected_lines[0][start_offset:]
+            return "\n".join(selected_lines), "\n"
+
+        end_line, end_offset = selection.end.transpose
+        if end_line < start_line_index:
+            return "", "\n"
+        end_line = min(height, end_line)
+        if start_line_index == end_line:
+            return (
+                self._selection_line(start_line_index, strips_by_option)[
+                    start_offset:end_offset
+                ],
+                "\n",
+            )
+        upper = min(height, end_line + 1)
+        selected_lines = [
+            self._selection_line(y, strips_by_option)
+            for y in range(start_line_index, upper)
+        ]
+        if len(selected_lines) >= 2:
+            first_line, *mid_lines, last_line = selected_lines
+            return (
+                "\n".join(
+                    [first_line[start_offset:], *mid_lines, last_line[:end_offset]]
+                ),
+                "\n",
+            )
+        return selected_lines[0][start_offset:end_offset], "\n"
+
+    def _selection_line(
+        self,
+        y: int,
+        strips_by_option: dict[int, list[Strip]],
+    ) -> str:
         """Render one virtual line without OptionList's pane-fill padding."""
 
         option_index, line_offset = self._lines[y]
-        option = self.get_option_at_index(option_index)
-        padding = self.get_component_styles("option-list--option").padding
-        width = (
-            self.scrollable_content_region.width
-            - self._get_left_gutter_width()
-            - padding.width
-        )
-        visual = self._get_visual(option)
-        strips = Visual.to_strips(
-            self,
-            visual,
-            max(1, width),
-            None,
-            self.get_visual_style("option-list--option"),
-            apply_selection=False,
-        )
+        strips = strips_by_option.get(option_index)
+        if strips is None:
+            option = self.get_option_at_index(option_index)
+            padding = self.get_component_styles("option-list--option").padding
+            width = (
+                self.scrollable_content_region.width
+                - self._get_left_gutter_width()
+                - padding.width
+            )
+            visual = self._get_visual(option)
+            strips = Visual.to_strips(
+                self,
+                visual,
+                max(1, width),
+                None,
+                self.get_visual_style("option-list--option"),
+                apply_selection=False,
+            )
+            strips_by_option[option_index] = strips
         try:
             return strips[line_offset].text
         except IndexError:

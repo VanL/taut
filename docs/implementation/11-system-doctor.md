@@ -38,8 +38,8 @@ The seven observations use these owners:
    validated registered threads.
 5. Persistence discovery supplies installed contributors. Active contributors
    may run only `validate_live_schema`, `dump_records`, and `validate_records`.
-6. A later public broker-stat snapshot supplies the three exact search-work
-   queue totals. No search provider is loaded.
+6. A later public broker-stat snapshot supplies the pending search-work
+   queue total. No search provider is loaded.
 7. The already-open core state owner reads `debug_capture`. Absent means
    disabled, exact `1` means enabled, and any other value is a finding. When
    enabled, sink is advisory: it is `action` when `TAUT_DEBUG_ACTION` is

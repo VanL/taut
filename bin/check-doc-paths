@@ -47,12 +47,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 _prose_text_lines = importlib.import_module("bin.markdown_fences").prose_lines
 
-# Surfaces the pytest gate's source list does not cover. Both are maintained
-# routing/state documents, not immutable historical records.
-EXTRA_SOURCES = [
-    Path("docs/coalescing.md"),
-    Path("docs/plans/README.md"),
-]
+# Additional surfaces outside tests/test_docs_references.py::_markdown_path_sources().
+EXTRA_SOURCES: list[Path] = []
 
 # Plan Replacement-block sync checks for active promoted plans (adapted to
 # Taut's 4-column `## Plan Status Index` in `docs/plans/README.md`).
@@ -112,6 +108,8 @@ def _root_sources(root: Path) -> list[Path]:
         root / "llms.txt",
         root / "docs" / "README.md",
         root / "docs" / "agent-kernel.md",
+        root / "docs" / "coalescing.md",
+        root / "docs" / "plans" / "README.md",
         *sorted((root / "extensions").glob("*/README.md")),
         *sorted((root / "docs" / "agent-context").glob("*.md")),
         *sorted((root / "docs" / "agent-context" / "runbooks").glob("*.md")),

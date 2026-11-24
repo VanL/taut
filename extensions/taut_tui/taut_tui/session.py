@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, TypeVar
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 Delivery = Message | Notification
 _ResultT = TypeVar("_ResultT")
+_NOTIFICATION_FEED_LIMIT = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +84,11 @@ class TuiSession:
         self._client: TautClient | None = None
         self._watcher: tuple[TautWatcher, threading.Thread] | None = None
         self._conversation: ConversationSnapshot | None = None
-        self._notification_feed: deque[Notification] = deque(maxlen=200)
+        self._notification_feed: deque[Notification] = deque(
+            maxlen=_NOTIFICATION_FEED_LIMIT
+        )
+        self._notification_seq_by_item: list[tuple[int, Notification]] = []
+        self._next_notification_seq = 0
 
     def refresh_navigation(self) -> Future[NavigationSnapshot]:
         self._ensure_accepting()
@@ -105,6 +110,41 @@ class TuiSession:
     def notification_feed(self) -> tuple[Notification, ...]:
         with self._state_lock:
             return tuple(self._notification_feed)
+
+    def _record_notifications_locked(
+        self,
+        items: Sequence[Notification],
+    ) -> None:
+        if not items:
+            return
+        for item in items:
+            self._next_notification_seq += 1
+            self._notification_seq_by_item.append((self._next_notification_seq, item))
+        self._notification_seq_by_item.sort(
+            key=lambda pair: (pair[1].ts is None, pair[1].ts or 0, pair[0])
+        )
+        if len(self._notification_seq_by_item) > _NOTIFICATION_FEED_LIMIT:
+            del self._notification_seq_by_item[:-_NOTIFICATION_FEED_LIMIT]
+        self._notification_feed.clear()
+        self._notification_feed.extend(
+            item for _seq, item in self._notification_seq_by_item
+        )
+
+    def claim_inbox(self) -> Future[list[Notification]]:
+        """Claim up to the session-feed limit and merge into the session feed."""
+
+        def claim_owned(client: TautClient) -> list[Notification]:
+            from taut import EmptyResultError
+
+            try:
+                claimed = client.inbox(limit=_NOTIFICATION_FEED_LIMIT)
+            except EmptyResultError:
+                return []
+            with self._state_lock:
+                self._record_notifications_locked(claimed)
+            return claimed
+
+        return self.submit_client_operation(claim_owned)
 
     def commit_returned_message(self, item: Message) -> ConversationSnapshot | None:
         """Commit a successful send result without waiting for watcher replay."""
@@ -375,7 +415,7 @@ class TuiSession:
 
             if isinstance(item, Notification):
                 with self._state_lock:
-                    self._notification_feed.append(item)
+                    self._record_notifications_locked((item,))
                 self._accept_delivery(generation, item)
                 return
             if isinstance(item, Message) and not self._current_generation(generation):

@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Thread, get_ident
 from typing import Any, cast
@@ -1496,6 +1497,534 @@ def test_sqlite_provider_reports_clear_fts5_unavailable_diagnostic(
             match=r"^SQLite FTS5 search is unavailable in this Python runtime$",
         ):
             provider.ensure_schema()
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_delete_tombstone_binds_search_projection_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.search._provider as provider_mod
+    import taut.search._sqlite as sqlite_mod
+
+    db_path = str(tmp_path / ".taut.db")
+    queue = Queue(META_QUEUE_NAME, db_path=db_path)
+    pending = Queue(PENDING_QUEUE_NAME, db_path=db_path)
+    jobs = JobQueues(pending=pending)
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    try:
+        provider.ensure_schema()
+        monkeypatch.setattr(provider_mod, "SEARCH_PROJECTION_VERSION", 2)
+        monkeypatch.setattr(sqlite_mod, "SEARCH_PROJECTION_VERSION", 2)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_search_metadata SET projection_version = 2 WHERE singleton = 1"
+            )
+
+        drained_ts = queue.generate_timestamp()
+        assert provider.replace_document(
+            _document(message_ts=drained_ts, text="before delete"),
+            revision=100,
+        )
+        job_ts = jobs.enqueue_message(message_ts=drained_ts, thread="general")
+        row = pending.peek_one(exact_timestamp=job_ts, with_timestamps=True)
+        assert row is not None
+        assert process_one(jobs, provider, lambda _job: None, row=row)
+
+        direct_ts = queue.generate_timestamp()
+        assert provider.delete_document(
+            message_ts=direct_ts,
+            thread="general",
+            revision=500,
+        )
+
+        with queue.sidecar() as session:
+            rows = list(
+                session.run(
+                    """
+                    SELECT message_ts, projection_version, indexed
+                    FROM taut_search_documents
+                    WHERE message_ts IN (?, ?)
+                    ORDER BY message_ts
+                    """,
+                    (drained_ts, direct_ts),
+                    fetch=True,
+                )
+            )
+        assert [(int(ts), int(proj), int(idx)) for ts, proj, idx in rows] == [
+            (drained_ts, 2, 0),
+            (direct_ts, 2, 0),
+        ]
+    finally:
+        provider.close()
+        pending.close()
+        queue.close()
+
+
+def test_sqlite_thread_index_ddl_fresh_upgrade_and_schema2_steady_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import TautClient
+
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+    client = TautClient(as_name="alice")
+    client.join("general")
+    msg = client.say("general", "indexed needle")
+    queue = client.queue(META_QUEUE_NAME)
+    provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+    try:
+        provider.ensure_schema()
+        with queue.sidecar() as session:
+            indexes = {
+                str(row[0])
+                for row in session.run(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'",
+                    fetch=True,
+                )
+            }
+            plan_rows = list(
+                session.run(
+                    """
+                    EXPLAIN QUERY PLAN
+                    SELECT message_ts
+                    FROM taut_search_documents
+                    WHERE generation = 1 AND thread = 'general' AND indexed = 1
+                    ORDER BY message_ts
+                    """,
+                    fetch=True,
+                )
+            )
+        assert "taut_search_documents_thread_idx" in indexes
+        assert any(
+            "taut_search_documents_thread_idx" in " ".join(map(str, row))
+            for row in plan_rows
+        )
+
+        # Schema-1 upgrade creates taut_search_documents_thread_idx.
+        with queue.sidecar(transaction=True) as session:
+            session.run("DROP INDEX taut_search_documents_thread_idx")
+            session.run(
+                "UPDATE taut_search_metadata SET schema_version = 1 WHERE singleton = 1"
+            )
+        provider.ensure_schema()
+        with queue.sidecar() as session:
+            upgraded_indexes = {
+                str(row[0])
+                for row in session.run(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'",
+                    fetch=True,
+                )
+            }
+        assert "taut_search_documents_thread_idx" in upgraded_indexes
+
+        # Pre-fix schema-2 database without the index runs zero DDL on search.
+        with queue.sidecar(transaction=True) as session:
+            session.run("DROP INDEX taut_search_documents_thread_idx")
+        statements: list[str] = []
+
+        def recording_provider(meta: Queue) -> Any:
+            return SQLiteSearchProvider(
+                sidecar=_record_schema_statements(meta.sidecar, statements)
+            )
+
+        monkeypatch.setattr(client, "_search_provider", recording_provider)
+        hits = client.search("needle", channels=("general",))
+        assert [hit.ts for hit in hits] == [msg.ts]
+        assert not any(stmt.upper().startswith("CREATE INDEX") for stmt in statements)
+        with queue.sidecar() as session:
+            after_indexes = {
+                str(row[0])
+                for row in session.run(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'",
+                    fetch=True,
+                )
+            }
+        assert "taut_search_documents_thread_idx" not in after_indexes
+    finally:
+        provider.close()
+        queue.close()
+        client.close()
+
+
+@dataclass
+class _ReconcileInstrumentation:
+    open_generators: int = 0
+    active_write_tx: int = 0
+    yielded_counts: list[int] = field(default_factory=list)
+    batches: list[tuple[int, int, int]] = field(default_factory=list)
+
+
+def _wrap_peek_generator(
+    orig_peek_generator: Any,
+    inst: _ReconcileInstrumentation,
+) -> Any:
+    def spy_peek_generator(self: Queue, *args: Any, **kwargs: Any) -> Any:
+        raw_gen = orig_peek_generator(self, *args, **kwargs)
+        if self.name != "general":
+            return raw_gen
+        inst.open_generators += 1
+
+        def wrapped() -> Iterator[Any]:
+            count = 0
+            try:
+                for item in raw_gen:
+                    count += 1
+                    yield item
+            finally:
+                close = getattr(raw_gen, "close", None)
+                if close is not None:
+                    close()
+                inst.yielded_counts.append(count)
+                inst.open_generators -= 1
+
+        return wrapped()
+
+    return spy_peek_generator
+
+
+def _install_reconcile_spies(
+    monkeypatch: pytest.MonkeyPatch,
+    client: Any,
+) -> _ReconcileInstrumentation:
+    import taut.client._searching as searching_mod
+
+    inst = _ReconcileInstrumentation()
+    orig_projection = searching_mod.projection_segments
+    orig_batch = SQLiteSearchProvider.reconcile_unchanged_batch
+
+    def spy_projection(text: str, *, max_segment_bytes: int) -> tuple[str, ...]:
+        assert inst.open_generators == 0, "peek_generator still open during projection"
+        assert inst.active_write_tx == 0, "projection_segments ran inside write tx"
+        return orig_projection(text, max_segment_bytes=max_segment_bytes)
+
+    def spy_batch(
+        self: SQLiteSearchProvider,
+        checks: Any,
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        assert inst.open_generators == 0, (
+            "peek_generator still open during reconcile_unchanged_batch"
+        )
+        check_list = list(checks)
+        total_bytes = sum(c.text_bytes for c in check_list)
+        max_item = max((c.text_bytes for c in check_list), default=0)
+        inst.batches.append((len(check_list), total_bytes, max_item))
+        return orig_batch(self, check_list, revision=revision)
+
+    def spy_search_provider(meta: Queue) -> SQLiteSearchProvider:
+        base_sidecar = meta.sidecar
+
+        @contextmanager
+        def tracked_sidecar(*, transaction: bool = False) -> Iterator[SidecarSession]:
+            if transaction:
+                inst.active_write_tx += 1
+            try:
+                with base_sidecar(transaction=transaction) as session:
+                    yield session
+            finally:
+                if transaction:
+                    inst.active_write_tx -= 1
+
+        return SQLiteSearchProvider(sidecar=tracked_sidecar)
+
+    monkeypatch.setattr(
+        Queue,
+        "peek_generator",
+        _wrap_peek_generator(Queue.peek_generator, inst),
+    )
+    monkeypatch.setattr(searching_mod, "projection_segments", spy_projection)
+    monkeypatch.setattr(SQLiteSearchProvider, "reconcile_unchanged_batch", spy_batch)
+    monkeypatch.setattr(client, "_search_provider", spy_search_provider)
+    return inst
+
+
+def test_sqlite_reconcile_per_100_generator_close_and_byte_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import TautClient
+
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+    client = TautClient(as_name="alice")
+    try:
+        client.join("general")
+        assert client.search("created", channels=("general",))
+
+        small_payload = "needle " + ("s" * 93)
+        for _ in range(110):
+            client.say("general", small_payload)
+        medium_payload = "needle " + ("m" * (900 * 1024 - 7))
+        for _ in range(3):
+            client.say("general", medium_payload)
+        singleton_bytes = int(2.5 * 1024 * 1024)
+        singleton_payload = "needle singleton " + ("L" * (singleton_bytes - 17))
+        singleton_msg = client.say("general", singleton_payload)
+
+        pending = client.queue(PENDING_QUEUE_NAME)
+        try:
+            while pending.read_one() is not None:
+                pass
+        finally:
+            pending.close()
+
+        inst = _install_reconcile_spies(monkeypatch, client)
+        hits = client.search("singleton", channels=("general",))
+        assert [hit.ts for hit in hits] == [singleton_msg.ts]
+        assert inst.open_generators == 0
+        assert inst.yielded_counts and all(c <= 100 for c in inst.yielded_counts)
+        assert inst.batches, "expected reconcile_unchanged_batch calls"
+        assert any(row_count == 100 for row_count, _, _ in inst.batches)
+        for row_count, total_bytes, max_item in inst.batches:
+            assert 1 <= row_count <= 100
+            assert total_bytes <= max(2 * 1024 * 1024, max_item)
+        assert any(
+            row_count == 1 and max_item >= singleton_bytes
+            for row_count, _total_bytes, max_item in inst.batches
+        )
+    finally:
+        client.close()
+
+
+def test_sqlite_reconcile_quiescent_fast_path_and_cross_generation_fences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.client._searching as searching_mod
+    from taut.client import TautClient
+    from taut.search import _provider as provider_mod
+
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+    client = TautClient(as_name="alice")
+    try:
+        client.join("general")
+        seeded_ids: list[int] = []
+        last_msg = None
+        for idx in range(300):
+            last_msg = client.say("general", f"quiescent item {idx:03d} needle")
+            seeded_ids.append(last_msg.ts)
+        assert last_msg is not None
+        assert client.search("item 299", channels=("general",))
+
+        projection_calls = 0
+        write_tx_count = 0
+        orig_projection = searching_mod.projection_segments
+
+        def count_projection(text: str, *, max_segment_bytes: int) -> tuple[str, ...]:
+            nonlocal projection_calls
+            projection_calls += 1
+            return orig_projection(text, max_segment_bytes=max_segment_bytes)
+
+        monkeypatch.setattr(searching_mod, "projection_segments", count_projection)
+
+        def tracked_provider(meta: Queue) -> Any:
+            base_sidecar = meta.sidecar
+
+            @contextmanager
+            def sidecar(*, transaction: bool = False) -> Iterator[SidecarSession]:
+                nonlocal write_tx_count
+                if transaction:
+                    write_tx_count += 1
+                with base_sidecar(transaction=transaction) as session:
+                    yield session
+
+            return SQLiteSearchProvider(sidecar=sidecar)
+
+        monkeypatch.setattr(client, "_search_provider", tracked_provider)
+        before_rev_queue = client.queue(META_QUEUE_NAME)
+        try:
+            before_rev = SQLiteSearchProvider(
+                sidecar=before_rev_queue.sidecar
+            ).applied_revision(last_msg.ts)
+        finally:
+            before_rev_queue.close()
+        assert before_rev is not None
+
+        allocated_revisions: list[int] = []
+        orig_gen_ts = Queue.generate_timestamp
+
+        def spy_gen_ts(self: Queue) -> int:
+            ts = orig_gen_ts(self)
+            if self.name == META_QUEUE_NAME:
+                allocated_revisions.append(ts)
+            return ts
+
+        with monkeypatch.context() as rev_patch:
+            rev_patch.setattr(Queue, "generate_timestamp", spy_gen_ts)
+            hits = client.search("item 299", channels=("general",))
+        assert [hit.ts for hit in hits] == [last_msg.ts]
+        assert projection_calls == 0
+        assert write_tx_count <= 6
+        assert len(allocated_revisions) == 1
+        scan_rev = allocated_revisions[0]
+        assert scan_rev > before_rev
+
+        check_cls = provider_mod.DocumentCheck
+        queue = client.queue(META_QUEUE_NAME)
+        provider = SQLiteSearchProvider(sidecar=queue.sidecar)
+        try:
+            with queue.sidecar() as session:
+                current_gen, _slot, _stg = SQLiteSearchProvider._state(session)
+                placeholders = ", ".join("?" for _ in seeded_ids)
+                rev_rows = list(
+                    session.run(
+                        f"""
+                        SELECT message_ts, latest_revision
+                        FROM taut_search_documents
+                        WHERE generation = ? AND message_ts IN ({placeholders})
+                        """,
+                        (current_gen, *seeded_ids),
+                        fetch=True,
+                    )
+                )
+            rev_by_ts = {int(ts): int(rev) for ts, rev in rev_rows}
+            assert set(rev_by_ts) == set(seeded_ids)
+            assert set(rev_by_ts.values()) == {scan_rev}
+
+            # Newer tombstone (latest_revision > scan_revision) is preserved.
+            tomb_doc = _document(
+                message_ts=queue.generate_timestamp(),
+                text="tombstoned marker",
+            )
+            tomb_check = check_cls(
+                message_ts=tomb_doc.message_ts,
+                thread=tomb_doc.thread,
+                text_sha256=tomb_doc.text_sha256,
+                text_bytes=tomb_doc.text_bytes,
+            )
+            assert provider.delete_document(
+                message_ts=tomb_doc.message_ts,
+                thread="general",
+                revision=500,
+            )
+            assert (
+                provider.reconcile_unchanged_batch([tomb_check], revision=400)
+                == frozenset()
+            )
+            assert provider.applied_revision(tomb_doc.message_ts) == 500
+            assert provider.query(query_chunks("tombstoned"), limit=10) == []
+
+            # Matching current + matching active staging advances both without projection.
+            both_doc = _document(
+                message_ts=queue.generate_timestamp(),
+                text="both generations match",
+            )
+            both_check = check_cls(
+                message_ts=both_doc.message_ts,
+                thread=both_doc.thread,
+                text_sha256=both_doc.text_sha256,
+                text_bytes=both_doc.text_bytes,
+            )
+            assert provider.replace_document(both_doc, revision=100)
+            gen_ok = provider.begin_rebuild(scan_revision=200)
+            assert provider.replace_rebuild_document(
+                both_doc, generation=gen_ok, revision=200
+            )
+            assert (
+                provider.reconcile_unchanged_batch([both_check], revision=300)
+                == frozenset()
+            )
+            with queue.sidecar() as session:
+                revs = [
+                    int(r[0])
+                    for r in session.run(
+                        "SELECT latest_revision FROM taut_search_documents WHERE message_ts = ? ORDER BY generation",
+                        (both_doc.message_ts,),
+                        fetch=True,
+                    )
+                ]
+            assert revs == [300, 300]
+            provider.abort_rebuild(gen_ok)
+
+            # R2-02: Mixed current match + missing active staging must NOT bump current prematurely.
+            mixed_doc = _document(
+                message_ts=queue.generate_timestamp(),
+                text="mixed staging repair marker",
+            )
+            mixed_check = check_cls(
+                message_ts=mixed_doc.message_ts,
+                thread=mixed_doc.thread,
+                text_sha256=mixed_doc.text_sha256,
+                text_bytes=mixed_doc.text_bytes,
+            )
+            assert provider.replace_document(mixed_doc, revision=100)
+            gen_mixed = provider.begin_rebuild(scan_revision=200)
+            needs = provider.reconcile_unchanged_batch([mixed_check], revision=300)
+            assert needs == frozenset({mixed_doc.message_ts})
+            assert provider.applied_revision(mixed_doc.message_ts) == 100
+            assert provider.replace_document(mixed_doc, revision=300)
+            assert not provider.delete_document(
+                message_ts=mixed_doc.message_ts,
+                thread="general",
+                revision=250,
+            )
+            provider.finish_rebuild(gen_mixed)
+            assert provider.applied_revision(mixed_doc.message_ts) == 300
+            assert provider.query(query_chunks("mixed"), limit=10) == [
+                _candidate(mixed_doc)
+            ]
+        finally:
+            provider.close()
+            queue.close()
+    finally:
+        client.close()
+
+
+def test_sqlite_query_pushes_down_before_and_threads_and_intersects_chunks(
+    tmp_path: Path,
+) -> None:
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    @contextmanager
+    def recording_sidecar(*, transaction: bool = False) -> Iterator[SidecarSession]:
+        with queue.sidecar(transaction=transaction) as session:
+
+            def run(
+                sql: str,
+                params: tuple[Any, ...] = (),
+                *,
+                fetch: bool = False,
+            ) -> Iterable[tuple[Any, ...]]:
+                calls.append((" ".join(sql.split()), params))
+                return session.run(sql, params, fetch=fetch)
+
+            yield SidecarSession(run)
+
+    provider = SQLiteSearchProvider(sidecar=recording_sidecar)
+    try:
+        provider.ensure_schema()
+        doc_match = _document(message_ts=100, text="alpha beta", thread="general")
+        doc_other_thread = _document(message_ts=200, text="alpha beta", thread="random")
+        doc_after_cutoff = _document(message_ts=300, text="alpha beta", thread="ops")
+        doc_partial_newer = _document(message_ts=250, text="alpha only", thread="ops")
+        for doc in (doc_match, doc_other_thread, doc_after_cutoff, doc_partial_newer):
+            assert provider.replace_document(doc, revision=doc.message_ts)
+
+        calls.clear()
+        assert provider.query(("alpha",), threads=(), limit=5) == []
+        assert calls == []
+
+        result = provider.query(
+            ("alpha", "beta"),
+            before=280,
+            threads=("general", "ops"),
+            limit=1,
+        )
+        assert result == [_candidate(doc_match)]
+        fts_queries = [(sql, params) for sql, params in calls if "MATCH ?" in sql]
+        assert len(fts_queries) == 2
+        for sql, params in fts_queries:
+            assert "d.message_ts < ?" in sql
+            assert "d.thread IN (?, ?)" in sql
+            assert 280 in params
+            assert "general" in params and "ops" in params
     finally:
         provider.close()
         queue.close()

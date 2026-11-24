@@ -2,7 +2,7 @@
 
 Date: 2026-10-15
 
-Status: active (see `docs/plans/README.md` status index)
+Status: superseded by `docs/plans/2026-11-23-phase-0-bug-and-performance-remediation-plan.md` (see `docs/plans/README.md` status index)
 
 Class: 4+P (effective 5). The unit remediates verified product and lifecycle
 defects in `taut-tui`, `taut-summon`, `taut-pg`, and core `taut`, and upgrades

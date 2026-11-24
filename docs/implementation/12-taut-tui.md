@@ -65,13 +65,19 @@ once the base screen detaches.
 
 Notifications differ on purpose. Every public watcher already claims the
 member notification queue, so the TUI stores those pointers in a bounded
-session feed. It does not call `inbox()` behind the watcher or promise replay
+200-entry session feed ordered monotonically by notification timestamp. The
+`:inbox` command claims at most 200 pending pointers via `TuiSession.claim_inbox()`,
+merges them into that same session feed, and renders the live feed on the UI
+thread. It does not call `inbox()` behind the watcher or promise replay
 after a display failure. A newly claimed notification triggers a cursor-neutral
 navigation refresh. That keeps registered reply-thread markers discoverable
 when the first reply is created while the parent conversation is already open.
 Notification delivery re-renders the inspector only when the notification
 inbox owns that surface; message, help, system, and Summon inspectors retain
-their content.
+their content. Domain inspector views format messages, search hits, members
+(including presence), and threads via inline-escaped metadata and body-escaped
+message text, while `TautTranscript.get_selection()` slices displayed virtual
+rows directly with per-option strip memoization.
 
 ## Typed Actions and Native Screens
 

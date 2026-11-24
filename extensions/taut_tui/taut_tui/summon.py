@@ -224,7 +224,7 @@ class TuiSummonOperations:
                 current = self._owned.get(token)
                 if current is not record:
                     return
-                if self._closed:
+                if self._closed or current.cancel.is_set():
                     stop_after_close = True
                 else:
                     current.handle = handle
@@ -303,14 +303,21 @@ class TuiSummonOperations:
         with self._lock:
             return tuple(self._project(record) for record in self._owned.values())
 
-    def request_owned_stops(self) -> None:
+    def _cancel_and_collect_handles(
+        self,
+        records: tuple[_OwnedRecord, ...] | None = None,
+    ) -> tuple[_RunHandle, ...]:
         with self._lock:
-            handles = tuple(
-                record.handle
-                for record in self._owned.values()
-                if record.handle is not None
-            )
-        for handle in handles:
+            targets = tuple(self._owned.values()) if records is None else records
+            handles: list[_RunHandle] = []
+            for record in targets:
+                record.cancel.set()
+                if record.handle is not None:
+                    handles.append(record.handle)
+            return tuple(handles)
+
+    def request_owned_stops(self) -> None:
+        for handle in self._cancel_and_collect_handles():
             handle.request_stop()
 
     def quit_block_reason(self) -> str | None:
@@ -339,11 +346,8 @@ class TuiSummonOperations:
             records = tuple(self._owned.values())
 
         def supervise() -> OwnedSummonShutdown:
-            for record in records:
-                if record.handle is not None:
-                    record.handle.request_stop()
-                else:
-                    record.cancel.set()
+            for handle in self._cancel_and_collect_handles(records):
+                handle.request_stop()
             future_records = tuple(
                 (record, record.future)
                 for record in records

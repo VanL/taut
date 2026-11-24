@@ -20,7 +20,12 @@ from taut._constants import META_QUEUE_NAME, route_key, validate_member_name
 from taut._exceptions import EmptyResultError, NotFoundError
 from taut.search import projection_segments, query_chunks
 from taut.search._discovery import load_search_provider
-from taut.search._provider import IndexedDocument, SearchCandidate, SearchProvider
+from taut.search._provider import (
+    DocumentCheck,
+    IndexedDocument,
+    SearchCandidate,
+    SearchProvider,
+)
 from taut.search._sqlite import SQLiteSearchProvider
 from taut.state import MemberRow, ThreadRow
 
@@ -31,6 +36,8 @@ from ._models import Message, SearchHit
 
 _INDEX_SEGMENT_BYTES = 64 * 1024
 _INDEX_QUERY_BATCH = 100_000
+_RECONCILE_BATCH_MAX_ROWS = 100
+_RECONCILE_BATCH_MAX_BYTES = 2 * 1024 * 1024
 _KINDS = frozenset({"message", "notice", "foreign"})
 
 
@@ -297,6 +304,9 @@ class SearchingMixin(_ClientBase):
         actor: MemberRow | None,
         author_id: str | None,
     ) -> list[SearchHit]:
+        if not scope:
+            return []
+        scope_threads = tuple(sorted(scope))
         hits: list[SearchHit] = []
         candidate_before = request.before_ts
         with ExitStack() as owned:
@@ -314,6 +324,7 @@ class SearchingMixin(_ClientBase):
                 candidates = provider.query(
                     request.chunks,
                     before=candidate_before,
+                    threads=scope_threads,
                     limit=_INDEX_QUERY_BATCH,
                 )
                 if not candidates:
@@ -329,7 +340,7 @@ class SearchingMixin(_ClientBase):
                         queue_for=queue_for,
                     )
                 )
-                if len(candidates) < _INDEX_QUERY_BATCH:
+                if len(hits) >= request.limit or len(candidates) < _INDEX_QUERY_BATCH:
                     break
                 candidate_before = candidates[-1].message_ts
         return hits[: request.limit]
@@ -440,15 +451,13 @@ class SearchingMixin(_ClientBase):
                     scan_revision=scan_revision,
                 )
             elif _is_higher_watermark(source_latest, state.message_ts):
-                with closing(
-                    self._thread_source_documents(
-                        queue,
-                        thread=thread,
-                        after=state.message_ts,
-                    )
-                ) as documents:
-                    for document in documents:
-                        provider.replace_document(document, revision=scan_revision)
+                self._reconcile_source_stream(
+                    provider,
+                    queue,
+                    thread=thread,
+                    scan_revision=scan_revision,
+                    after=state.message_ts,
+                )
             elif _is_lower_watermark(source_latest, state.message_ts):
                 assert state.message_ts is not None
                 found = queue.peek_one(
@@ -482,10 +491,13 @@ class SearchingMixin(_ClientBase):
         scan_revision: int,
     ) -> None:
         source_ids: set[int] = set()
-        with closing(self._thread_source_documents(queue, thread=thread)) as documents:
-            for document in documents:
-                source_ids.add(document.message_ts)
-                provider.replace_document(document, revision=scan_revision)
+        self._reconcile_source_stream(
+            provider,
+            queue,
+            thread=thread,
+            scan_revision=scan_revision,
+            source_ids=source_ids,
+        )
         for message_ts in provider.indexed_message_ids(thread):
             if message_ts not in source_ids:
                 provider.delete_document(
@@ -493,6 +505,115 @@ class SearchingMixin(_ClientBase):
                     thread=thread,
                     revision=scan_revision,
                 )
+
+    def _reconcile_source_stream(
+        self,
+        provider: SearchProvider,
+        queue: Queue,
+        *,
+        thread: str,
+        scan_revision: int,
+        after: int | None = None,
+        source_ids: set[int] | None = None,
+    ) -> None:
+        cursor = after
+        while True:
+            generator = queue.peek_generator(
+                with_timestamps=True,
+                after_timestamp=cursor,
+            )
+            try:
+                raw_page = cast(
+                    list[tuple[str, int]],
+                    list(islice(generator, _RECONCILE_BATCH_MAX_ROWS)),
+                )
+            finally:
+                close = getattr(generator, "close", None)
+                if close is not None:
+                    close()
+            if not raw_page:
+                return
+            next_cursor = raw_page[-1][1]
+            sub_batch: list[tuple[DocumentCheck, str]] = []
+            sub_bytes = 0
+            for body, timestamp in raw_page:
+                if source_ids is not None:
+                    source_ids.add(timestamp)
+                check, text = self._decode_check_item(thread, body, timestamp)
+                body = ""
+                if (
+                    sub_batch
+                    and sub_bytes + check.text_bytes > _RECONCILE_BATCH_MAX_BYTES
+                ):
+                    self._flush_reconcile_sub_batch(
+                        provider,
+                        sub_batch,
+                        scan_revision=scan_revision,
+                    )
+                    sub_batch.clear()
+                    sub_bytes = 0
+                sub_batch.append((check, text))
+                sub_bytes += check.text_bytes
+                text = ""
+            raw_page.clear()
+            if sub_batch:
+                self._flush_reconcile_sub_batch(
+                    provider,
+                    sub_batch,
+                    scan_revision=scan_revision,
+                )
+                sub_batch.clear()
+                sub_bytes = 0
+            cursor = next_cursor
+
+    @staticmethod
+    def _decode_check_item(
+        thread: str,
+        body: str,
+        timestamp: int,
+    ) -> tuple[DocumentCheck, str]:
+        message = message_from_body(thread, body, timestamp)
+        encoded = message.text.encode("utf-8")
+        return (
+            DocumentCheck(
+                message_ts=timestamp,
+                thread=thread,
+                text_sha256=hashlib.sha256(encoded).hexdigest(),
+                text_bytes=len(encoded),
+            ),
+            message.text,
+        )
+
+    @staticmethod
+    def _flush_reconcile_sub_batch(
+        provider: SearchProvider,
+        sub_batch: Sequence[tuple[DocumentCheck, str]],
+        *,
+        scan_revision: int,
+    ) -> None:
+        needs_replace = provider.reconcile_unchanged_batch(
+            [check for check, _text in sub_batch],
+            revision=scan_revision,
+        )
+        if not needs_replace:
+            return
+        for check, text in sub_batch:
+            if check.message_ts not in needs_replace:
+                continue
+            segments = projection_segments(
+                text,
+                max_segment_bytes=_INDEX_SEGMENT_BYTES,
+            )
+            provider.replace_document(
+                IndexedDocument(
+                    message_ts=check.message_ts,
+                    thread=check.thread,
+                    text_sha256=check.text_sha256,
+                    text_bytes=check.text_bytes,
+                    segments=segments,
+                ),
+                revision=scan_revision,
+            )
 
     def _registered_searchable_rows(
         self,

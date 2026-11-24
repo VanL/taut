@@ -498,6 +498,20 @@ def test_detach_matcher_lone_escape_deadline_survives_unrelated_checks() -> None
     assert matcher.pending_deadline is None
 
 
+def test_detach_matcher_completed_enhanced_atom_clears_pending_deadline() -> None:
+    clock = _MatcherClock()
+    matcher = _semantic_matcher(clock)
+    enhanced_atom = b"\x1b[92::92;5:1u"
+
+    assert matcher.feed(enhanced_atom[:-1]) == (b"", False)
+    assert matcher.pending_deadline == pytest.approx(100.1)
+    assert matcher.feed(enhanced_atom[-1:]) == (b"", False)
+    assert matcher.pending_deadline is None
+    clock.now = 101.0
+    assert matcher.expire() == b""
+    assert matcher.feed(enhanced_atom) == (b"", True)
+
+
 def test_detach_matcher_prefix_deadline_does_not_slide_with_slow_bytes() -> None:
     clock = _MatcherClock()
     matcher = _semantic_matcher(clock)

@@ -6,6 +6,7 @@ Spec references:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from simplebroker.ext import OperationalError, SidecarSession
@@ -13,12 +14,15 @@ from simplebroker.ext import OperationalError, SidecarSession
 from taut.search._provider import (
     SEARCH_PROJECTION_VERSION,
     SEARCH_SCHEMA_VERSION,
+    DocumentCheck,
     IndexedDocument,
     SearchCandidate,
     SidecarAccessor,
     ThreadWatermark,
     validate_search_versions,
 )
+
+_SQL_CHUNK_LIMIT = 500
 
 
 class SQLiteSearchUnavailableError(RuntimeError):
@@ -66,6 +70,10 @@ _DDL = (
         indexed            BIGINT NOT NULL,
         PRIMARY KEY (generation, message_ts)
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS taut_search_documents_thread_idx
+        ON taut_search_documents (generation, thread, message_ts)
     """,
     """
     CREATE TABLE IF NOT EXISTS taut_search_segments (
@@ -208,6 +216,96 @@ class SQLiteSearchProvider:
                         revision=effective_revision,
                     )
         return applied
+
+    def reconcile_unchanged_batch(
+        self,
+        checks: Sequence[DocumentCheck],
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        """Advance unchanged documents across writable generations in one batch."""
+
+        if not checks:
+            return frozenset()
+        by_ts = {check.message_ts: check for check in checks}
+        check_ids = tuple(by_ts)
+        with self.sidecar(transaction=True) as session:
+            current_generation, _current_slot, staging = self._state(session)
+            generations = [current_generation]
+            if staging is not None and revision >= staging[2]:
+                generations.append(staging[0])
+            stored = self._load_generation_rows(session, generations, check_ids)
+            bump_by_gen, needs_replace = _classify_reconciliation_batch(
+                by_ts,
+                generations=generations,
+                stored=stored,
+                revision=revision,
+            )
+            for generation, bump_ids in bump_by_gen.items():
+                self._bump_generation_revisions(
+                    session,
+                    generation=generation,
+                    message_ids=bump_ids,
+                    revision=revision,
+                )
+        return frozenset(needs_replace)
+
+    @staticmethod
+    def _load_generation_rows(
+        session: SidecarSession,
+        generations: Sequence[int],
+        check_ids: tuple[int, ...],
+    ) -> dict[int, dict[int, tuple[str, str, int, int, int, bool]]]:
+        stored: dict[int, dict[int, tuple[str, str, int, int, int, bool]]] = {
+            generation: {} for generation in generations
+        }
+        for generation in generations:
+            gen_rows = stored[generation]
+            for start in range(0, len(check_ids), _SQL_CHUNK_LIMIT):
+                chunk = check_ids[start : start + _SQL_CHUNK_LIMIT]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows = session.run(
+                    f"""
+                    SELECT message_ts, thread, text_sha256, text_bytes,
+                           projection_version, latest_revision, indexed
+                    FROM taut_search_documents
+                    WHERE generation = ? AND message_ts IN ({placeholders})
+                    """,
+                    (generation, *chunk),
+                    fetch=True,
+                )
+                for row in rows:
+                    gen_rows[int(row[0])] = (
+                        str(row[1]),
+                        str(row[2]),
+                        int(row[3]),
+                        int(row[4]),
+                        int(row[5]),
+                        bool(row[6]),
+                    )
+        return stored
+
+    @staticmethod
+    def _bump_generation_revisions(
+        session: SidecarSession,
+        *,
+        generation: int,
+        message_ids: Sequence[int],
+        revision: int,
+    ) -> None:
+        for start in range(0, len(message_ids), _SQL_CHUNK_LIMIT):
+            chunk = message_ids[start : start + _SQL_CHUNK_LIMIT]
+            placeholders = ", ".join("?" for _ in chunk)
+            session.run(
+                f"""
+                UPDATE taut_search_documents
+                SET latest_revision = ?
+                WHERE generation = ?
+                  AND latest_revision < ?
+                  AND message_ts IN ({placeholders})
+                """,
+                (revision, generation, revision, *chunk),
+            )
 
     def _replace_in_generation(
         self,
@@ -357,7 +455,7 @@ class SQLiteSearchProvider:
                     INSERT INTO taut_search_documents (
                         generation, message_ts, thread, text_sha256, text_bytes,
                         projection_version, latest_revision, indexed
-                    ) VALUES (?, ?, ?, '', 0, 1, ?, 0)
+                    ) VALUES (?, ?, ?, '', 0, ?, ?, 0)
                     ON CONFLICT (generation, message_ts) DO UPDATE SET
                         thread = excluded.thread,
                         text_sha256 = '',
@@ -369,7 +467,7 @@ class SQLiteSearchProvider:
                           >= taut_search_documents.latest_revision
                     RETURNING message_ts
                     """,
-                (generation, message_ts, thread, revision),
+                (generation, message_ts, thread, SEARCH_PROJECTION_VERSION, revision),
                 fetch=True,
             )
         )
@@ -684,18 +782,38 @@ class SQLiteSearchProvider:
         chunks: tuple[str, ...],
         *,
         before: int | None = None,
+        threads: tuple[str, ...] | None = None,
         limit: int,
     ) -> list[SearchCandidate]:
         """Return candidates containing every supplied safe query chunk."""
 
-        if not chunks or limit < 1:
+        if not chunks or limit < 1 or (threads is not None and not threads):
             return []
+        push_threads = threads is not None and len(threads) <= _SQL_CHUNK_LIMIT
+        thread_set = (
+            frozenset(threads) if threads is not None and not push_threads else None
+        )
+        before_clause = " AND d.message_ts < ?" if before is not None else ""
+        threads_clause = (
+            f" AND d.thread IN ({', '.join('?' for _ in threads)})"
+            if push_threads and threads is not None
+            else ""
+        )
         matches: dict[int, SearchCandidate] | None = None
         with self.sidecar() as session:
             current_generation, current_slot, _staging = self._state(session)
             fts_table = _FTS_TABLES[current_slot]
             for chunk in chunks:
                 expression = f'"{chunk.replace(chr(34), chr(34) * 2)}"'
+                params: tuple[object, ...] = (
+                    expression,
+                    current_generation,
+                    current_slot,
+                )
+                if before is not None:
+                    params = (*params, before)
+                if push_threads and threads is not None:
+                    params = (*params, *threads)
                 rows = session.run(
                     f"""
                     SELECT d.message_ts, d.thread, d.text_sha256, d.text_bytes
@@ -708,9 +826,9 @@ class SQLiteSearchProvider:
                     WHERE {fts_table} MATCH ?
                       AND s.generation = ?
                       AND s.fts_slot = ?
-                      AND d.indexed = 1
+                      AND d.indexed = 1{before_clause}{threads_clause}
                     """,
-                    (expression, current_generation, current_slot),
+                    params,
                     fetch=True,
                 )
                 current = {
@@ -721,6 +839,7 @@ class SQLiteSearchProvider:
                         text_bytes=int(row[3]),
                     )
                     for row in rows
+                    if thread_set is None or str(row[1]) in thread_set
                 }
                 if matches is None:
                     matches = current
@@ -733,13 +852,8 @@ class SQLiteSearchProvider:
                 if not matches:
                     return []
         assert matches is not None
-        candidates = (
-            candidate
-            for candidate in matches.values()
-            if before is None or candidate.message_ts < before
-        )
         return sorted(
-            candidates,
+            matches.values(),
             key=lambda candidate: (-candidate.message_ts, candidate.thread),
         )[:limit]
 
@@ -796,3 +910,43 @@ class SQLiteSearchProvider:
 
     def close(self) -> None:
         """The supplied accessor owns all storage resources."""
+
+
+def _classify_reconciliation_batch(
+    by_ts: dict[int, DocumentCheck],
+    *,
+    generations: Sequence[int],
+    stored: dict[int, dict[int, tuple[str, str, int, int, int, bool]]],
+    revision: int,
+) -> tuple[dict[int, list[int]], set[int]]:
+    bump_by_gen: dict[int, list[int]] = {}
+    needs_replace: set[int] = set()
+    for message_ts, check in by_ts.items():
+        pending_bumps: list[int] = []
+        eligible = True
+        for generation in generations:
+            row = stored[generation].get(message_ts)
+            if row is None:
+                eligible = False
+                break
+            thread, digest, size, proj, prev_rev, indexed = row
+            if prev_rev > revision:
+                continue
+            if (
+                indexed
+                and thread == check.thread
+                and digest == check.text_sha256
+                and size == check.text_bytes
+                and proj == SEARCH_PROJECTION_VERSION
+            ):
+                if prev_rev < revision:
+                    pending_bumps.append(generation)
+                continue
+            eligible = False
+            break
+        if eligible:
+            for generation in pending_bumps:
+                bump_by_gen.setdefault(generation, []).append(message_ts)
+        else:
+            needs_replace.add(message_ts)
+    return bump_by_gen, needs_replace

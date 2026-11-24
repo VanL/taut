@@ -50,6 +50,15 @@ class _CompleteProvider:
     ) -> bool:
         return True
 
+    def reconcile_unchanged_batch(
+        self,
+        checks: object,
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        del checks, revision
+        return frozenset()
+
     def delete_document(self, *, message_ts: int, thread: str, revision: int) -> bool:
         return True
 
@@ -108,8 +117,10 @@ class _CompleteProvider:
         chunks: tuple[str, ...],
         *,
         before: int | None = None,
+        threads: tuple[str, ...] | None = None,
         limit: int,
     ) -> list[object]:
+        del chunks, before, threads, limit
         return []
 
     def close(self) -> None: ...
@@ -250,3 +261,141 @@ def test_provider_missing_schema_version_reports_invalid_provider(
         match=r"taut-pg.*(install|upgrade)",
     ):
         _discovery._validate_provider(_CompleteProvider())
+
+
+class _ValidV2Provider(_CompleteProvider):
+    def reconcile_unchanged_batch(
+        self,
+        checks: object,
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        del checks, revision
+        return frozenset()
+
+    def query(
+        self,
+        chunks: tuple[str, ...],
+        *,
+        before: int | None = None,
+        threads: tuple[str, ...] | None = None,
+        limit: int,
+    ) -> list[object]:
+        del chunks, before, threads, limit
+        return []
+
+
+def test_provider_missing_reconcile_unchanged_batch_is_rejected() -> None:
+    from taut.search import _discovery
+
+    class _MissingBatch(_ValidV2Provider):
+        reconcile_unchanged_batch = None  # type: ignore[assignment]
+
+    with pytest.raises(
+        _discovery.SearchProviderUnavailableError,
+        match=r"taut-pg.*(install|upgrade)",
+    ):
+        _discovery._validate_provider(_MissingBatch())
+
+
+def test_provider_missing_threads_on_query_is_rejected() -> None:
+    from taut.search import _discovery
+
+    class _LegacyQuery(_ValidV2Provider):
+        def query(  # type: ignore[override]
+            self,
+            chunks: tuple[str, ...],
+            *,
+            before: int | None = None,
+            limit: int,
+        ) -> list[object]:
+            del chunks, before, limit
+            return []
+
+    with pytest.raises(
+        _discovery.SearchProviderUnavailableError,
+        match=r"taut-pg.*(install|upgrade)",
+    ):
+        _discovery._validate_provider(_LegacyQuery())
+
+
+@pytest.mark.parametrize(
+    "bad_param",
+    ["revision", "before", "threads", "limit"],
+)
+def test_provider_positional_only_masked_by_var_keyword_is_rejected(
+    bad_param: str,
+) -> None:
+    from taut.search import _discovery
+
+    if bad_param == "revision":
+
+        class _BadRevision(_ValidV2Provider):
+            def reconcile_unchanged_batch(  # type: ignore[override]
+                self,
+                checks: object,
+                revision: int = 1,
+                /,
+                **kwargs: object,
+            ) -> frozenset[int]:
+                del checks, revision, kwargs
+                return frozenset()
+
+        candidate: object = _BadRevision()
+    elif bad_param == "before":
+
+        class _BadBefore(_ValidV2Provider):
+            def query(  # type: ignore[override]
+                self,
+                chunks: tuple[str, ...],
+                before: int | None = None,
+                /,
+                *,
+                threads: tuple[str, ...] | None = None,
+                limit: int = 1,
+                **kwargs: object,
+            ) -> list[object]:
+                del chunks, before, threads, limit, kwargs
+                return []
+
+        candidate = _BadBefore()
+    elif bad_param == "threads":
+
+        class _BadThreads(_ValidV2Provider):
+            def query(  # type: ignore[override]
+                self,
+                chunks: tuple[str, ...],
+                threads: tuple[str, ...] | None = None,
+                /,
+                *,
+                before: int | None = None,
+                limit: int = 1,
+                **kwargs: object,
+            ) -> list[object]:
+                del chunks, threads, before, limit, kwargs
+                return []
+
+        candidate = _BadThreads()
+    else:
+
+        class _BadLimit(_ValidV2Provider):
+            def query(  # type: ignore[override]
+                self,
+                chunks: tuple[str, ...],
+                limit: int = 1,
+                /,
+                *,
+                before: int | None = None,
+                threads: tuple[str, ...] | None = None,
+                **kwargs: object,
+            ) -> list[object]:
+                del chunks, limit, before, threads, kwargs
+                return []
+
+        candidate = _BadLimit()
+
+    with pytest.raises(
+        _discovery.SearchProviderUnavailableError,
+        match=r"taut-pg.*(install|upgrade)",
+    ):
+        _discovery._validate_provider(candidate)

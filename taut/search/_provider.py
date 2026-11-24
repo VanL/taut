@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Protocol
@@ -32,6 +33,16 @@ def validate_search_versions(schema_version: int, projection_version: int) -> in
             f"unsupported search projection version {projection_version}"
         )
     return schema_version
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentCheck:
+    """Fixed-size metadata check for unchanged-document batch reconciliation."""
+
+    message_ts: int
+    thread: str
+    text_sha256: str
+    text_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +97,13 @@ class SearchProvider(Protocol):
         *,
         revision: int | None = None,
     ) -> bool: ...
+
+    def reconcile_unchanged_batch(
+        self,
+        checks: Sequence[DocumentCheck],
+        *,
+        revision: int,
+    ) -> frozenset[int]: ...
 
     def delete_document(
         self,
@@ -142,6 +160,7 @@ class SearchProvider(Protocol):
         chunks: tuple[str, ...],
         *,
         before: int | None = None,
+        threads: tuple[str, ...] | None = None,
         limit: int,
     ) -> list[SearchCandidate]: ...
 

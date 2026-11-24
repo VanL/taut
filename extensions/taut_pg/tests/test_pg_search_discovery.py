@@ -11,7 +11,11 @@ import pytest
 pytestmark = pytest.mark.pg_only
 
 
-def test_postgres_search_manifest_is_lightweight_and_exact() -> None:
+def test_postgres_search_manifest_is_lightweight_and_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "taut_pg.search_manifest", raising=False)
+    monkeypatch.delitem(sys.modules, "taut_pg._search", raising=False)
     from taut_pg.search_manifest import postgres
 
     from taut.search._manifest import (
@@ -36,7 +40,11 @@ def test_postgres_search_manifest_is_lightweight_and_exact() -> None:
     assert "taut_pg._search" not in sys.modules
 
 
-def test_installed_postgres_search_entry_point_loads_the_manifest_only() -> None:
+def test_installed_postgres_search_entry_point_loads_the_manifest_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "taut_pg.search_manifest", raising=False)
+    monkeypatch.delitem(sys.modules, "taut_pg._search", raising=False)
     matches = tuple(
         entry_point
         for entry_point in metadata.entry_points(group="taut.search_backends")

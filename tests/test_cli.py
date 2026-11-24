@@ -2132,6 +2132,7 @@ def test_cli_json_whoami_explain_separates_forced_host_fallback_rule(
     TautClient.init(db_path=db)
     monkeypatch.setattr(identity.sys, "platform", "darwin")
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "fallback-host")
+    monkeypatch.setattr(identity, "_darwin_gethostuuid", lambda: None, raising=False)
 
     def missing_ioreg(*_args: object, **_kwargs: object) -> None:
         raise OSError("missing ioreg")
@@ -4023,3 +4024,101 @@ def test_cli_summon_without_extension_exits_1_with_install_hint(
     assert "taut summon requires the taut-summon extension" in completed.stderr
     assert "pipx inject taut-chat taut-summon" in completed.stderr
     assert completed.stdout == ""
+
+
+def test_human_inbox_lazily_batches_thread_metadata_and_skips_json_or_ineligible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.cli import dispatch
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    alice = TautClient(db_path=db, as_name="alice", persistent=True)
+    bob = TautClient(db_path=db, as_name="bob", persistent=True)
+    try:
+        for ch in ("alpha", "beta", "gamma", "temp"):
+            alice.join(ch)
+            bob.join(ch)
+
+        joined_calls = 0
+        list_threads_calls = 0
+        real_joined = TautClient.joined_thread_names
+        real_list_threads = TautClient.list_threads
+
+        def spy_joined(self: TautClient) -> tuple[str, ...]:
+            nonlocal joined_calls
+            joined_calls += 1
+            return real_joined(self)
+
+        def spy_list_threads(
+            self: TautClient, *args: object, **kwargs: object
+        ) -> object:
+            nonlocal list_threads_calls
+            list_threads_calls += 1
+            return real_list_threads(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(TautClient, "joined_thread_names", spy_joined)
+        monkeypatch.setattr(TautClient, "list_threads", spy_list_threads)
+
+        # (a) 8 joined-channel mentions across 3 channels -> 1 joined lookup, 1 list_threads
+        sent_ids: list[int] = []
+        for idx in range(8):
+            ch = ("alpha", "beta", "gamma")[idx % 3]
+            sent = alice.say(ch, f"ping @bob item {idx}")
+            sent_ids.append(sent.ts)
+        joined_calls = 0
+        list_threads_calls = 0
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(["--db", str(db), "--as", "bob", "inbox"], stdout=out, stderr=err)
+            == 0
+        )
+        assert joined_calls == 1
+        assert list_threads_calls == 1
+        assert f"taut reply alpha {sent_ids[0]}" in out.getvalue()
+
+        # (b) --json inbox -> 0 joined lookups, 0 list_threads
+        alice.say("alpha", "json ping @bob")
+        joined_calls = 0
+        list_threads_calls = 0
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(
+                ["--db", str(db), "--as", "bob", "--json", "inbox"],
+                stdout=out,
+                stderr=err,
+            )
+            == 0
+        )
+        assert joined_calls == 0
+        assert list_threads_calls == 0
+
+        # (c) DM-only mention notification in human mode -> 0 joined lookups, 0 list_threads
+        alice.say("@bob", "hello @bob in dm")
+        joined_calls = 0
+        list_threads_calls = 0
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(["--db", str(db), "--as", "bob", "inbox"], stdout=out, stderr=err)
+            == 0
+        )
+        assert "alice mentioned you in dm." in out.getvalue()
+        assert joined_calls == 0
+        assert list_threads_calls == 0
+
+        # (d) Mention only in a channel bob subsequently left -> 1 joined lookup, 0 list_threads
+        alice.say("temp", "before leave @bob")
+        bob.leave("temp")
+        joined_calls = 0
+        list_threads_calls = 0
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(["--db", str(db), "--as", "bob", "inbox"], stdout=out, stderr=err)
+            == 0
+        )
+        assert joined_calls == 1
+        assert list_threads_calls == 0
+    finally:
+        alice.close()
+        bob.close()

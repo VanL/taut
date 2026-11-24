@@ -5510,3 +5510,444 @@ def test_stale_intent_snapshot_is_not_applied() -> None:
             assert app.visual_state.active_conversation != "stale-target"
 
     asyncio.run(exercise())
+
+
+def _exercise_session_inbox_cap_and_interleaving(
+    cap_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Notification
+    from taut.watcher import BaseReactor
+    from taut_tui.session import TuiSession
+
+    TautClient.init(db_path=cap_db)
+    alice = TautClient(db_path=cap_db, as_name="alice")
+    bob = TautClient(db_path=cap_db, as_name="bob")
+    try:
+        alice.join("general")
+        bob.join("general")
+        alice.read("general", limit=100)
+    finally:
+        alice.close()
+        bob.close()
+
+    watcher_delivered = threading.Event()
+
+    def accept_watcher(_gen: int, item: Any) -> bool:
+        if isinstance(item, Notification) and item.actor_name == "charlie":
+            watcher_delivered.set()
+        return True
+
+    session = TuiSession(
+        db_path=str(cap_db),
+        as_name="alice",
+        continuity_token=None,
+        accept_delivery=accept_watcher,
+    )
+    hold_watcher = threading.Event()
+    hold_watcher.set()
+    watcher_turn_lock = threading.Lock()
+    claimed_event = threading.Event()
+    release_append = threading.Event()
+    orig_process_once = BaseReactor.process_once
+    orig_inbox = TautClient.inbox
+
+    def gated_process_once(self: BaseReactor) -> Any:
+        assert hold_watcher.wait(10.0)
+        with watcher_turn_lock:
+            if not hold_watcher.is_set():
+                return False
+            return orig_process_once(self)
+
+    def barrier_inbox(
+        self: TautClient, *args: Any, **kwargs: Any
+    ) -> list[Notification]:
+        batch = orig_inbox(self, *args, **kwargs)
+        claimed_event.set()
+        assert release_append.wait(10.0)
+        return batch
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(BaseReactor, "process_once", gated_process_once)
+            assert session.open_conversation("general").result(timeout=10.0) is not None
+            with watcher_turn_lock:
+                hold_watcher.clear()
+            seeder = TautClient(db_path=cap_db, as_name="bob")
+            try:
+                for idx in range(250):
+                    seeder.say("general", f"@alice burst {idx:03d}")
+            finally:
+                seeder.close()
+
+            patch.setattr(TautClient, "inbox", barrier_inbox)
+            fut = session.claim_inbox()
+            assert claimed_event.wait(10.0)
+
+            patch.setattr(TautClient, "inbox", orig_inbox)
+            check_alice = TautClient(db_path=cap_db, as_name="alice")
+            try:
+                remaining = check_alice.inbox(limit=100)
+                assert len(remaining) == 50
+            finally:
+                check_alice.close()
+
+            charlie = TautClient(db_path=cap_db, as_name="charlie")
+            try:
+                charlie.join("general")
+                charlie.say("general", "@alice live item 251")
+            finally:
+                charlie.close()
+            hold_watcher.set()
+            assert watcher_delivered.wait(10.0)
+
+            release_append.set()
+            claimed = fut.result(timeout=10.0)
+
+        assert len(claimed) == 200
+        feed = session.notification_feed()
+        assert len(feed) == 200
+        assert feed[-1].actor_name == "charlie"
+        assert claimed[0].ts not in {item.ts for item in feed}
+    finally:
+        hold_watcher.set()
+        release_append.set()
+        session.close()
+
+
+def test_inbox_command_unifies_session_feed_caps_at_200_and_retains_newest_ts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _action_completion import AppliedRequest
+
+    from taut.client import Notification
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+    from taut.watcher import BaseReactor
+    from taut_tui.actions import ActionContext, ActionId, ActionRoute
+    from taut_tui.app import TautApp
+    from taut_tui.models import InspectorKind, LogicalSurface
+
+    _exercise_session_inbox_cap_and_interleaving(tmp_path / "inbox-cap.db", monkeypatch)
+
+    # Subcases (a) and (d): UI :inbox empty state, real watcher unification, and callback freshness.
+    ui_db = tmp_path / "inbox-ui.db"
+    TautClient.init(db_path=ui_db)
+    alice_ui = TautClient(db_path=ui_db, as_name="alice")
+    bob_ui = TautClient(db_path=ui_db, as_name="bob")
+    try:
+        alice_ui.join("general")
+        bob_ui.join("general")
+        alice_ui.read("general", limit=100)
+    finally:
+        alice_ui.close()
+        bob_ui.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(ui_db), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(120, 36)):
+            obs = observed(app)
+            await obs.navigation()
+            assert app._domain is not None
+            assert app._session is not None
+            scope = obs.scope
+            inbox_inv = parse_command_line("inbox", syntax=core_command_syntax())
+
+            ui_hold_watcher = threading.Event()
+            ui_hold_watcher.set()
+            ui_turn_lock = threading.Lock()
+            ui_claimed = threading.Event()
+            ui_release_claim = threading.Event()
+            ui_watcher_done = threading.Event()
+            orig_proc = BaseReactor.process_once
+            orig_client_inbox = TautClient.inbox
+            orig_accept = app._session._accept_delivery
+
+            def ui_gated_proc(self: BaseReactor) -> Any:
+                assert ui_hold_watcher.wait(10.0)
+                with ui_turn_lock:
+                    if not ui_hold_watcher.is_set():
+                        return False
+                    return orig_proc(self)
+
+            def ui_barrier_inbox(
+                self: TautClient, *args: Any, **kwargs: Any
+            ) -> list[Notification]:
+                batch = orig_client_inbox(self, *args, **kwargs)
+                ui_claimed.set()
+                assert ui_release_claim.wait(10.0)
+                return batch
+
+            def track_accept(gen: int, item: Any) -> bool:
+                accepted = orig_accept(gen, item)
+                if isinstance(item, Notification) and item.actor_name == "charlie-live":
+                    ui_watcher_done.set()
+                return accepted
+
+            try:
+                with pytest.MonkeyPatch.context() as gate_patch:
+                    gate_patch.setattr(BaseReactor, "process_once", ui_gated_proc)
+                    gate_patch.setattr(app._session, "_accept_delivery", track_accept)
+
+                    # Open #general with the watcher gate already installed before startup.
+                    intent = app._conversation_intent + 1
+                    conv = obs._conversation_record(intent)
+                    app.visual_state = replace(
+                        app.visual_state,
+                        selected_navigation="general",
+                    )
+                    app._dispatch_tui_action(
+                        ActionId.CONVERSATION_OPEN,
+                        source=ActionRoute.NAVIGATION,
+                        context=ActionContext(
+                            target="general",
+                            target_label="#general",
+                            surface=LogicalSurface.NAVIGATION,
+                        ),
+                    )
+                    await conv.wait(
+                        deadline=scope.now() + 5, description="general opened"
+                    )
+                    await obs.viewport(deadline=scope.now() + 5)
+
+                    # (a) Empty session :inbox shows empty-state copy, not "No results".
+                    with pytest.MonkeyPatch.context() as patch:
+                        req = AppliedRequest(scope, patch, app, app._domain, "inbox")
+                        app._dispatch_command_invocation(inbox_inv)
+                        res = await req.wait(scope.now() + 5)
+                        assert res == []
+                    assert app.visual_state.inspector is not None
+                    assert (
+                        app.visual_state.inspector.kind is InspectorKind.NOTIFICATIONS
+                    )
+                    assert "No notifications claimed this session." in str(
+                        app.query_one("#inspector-body").render()
+                    )
+
+                    # (d) Real watcher delivery while :inbox claim is fenced survives in both feed and inspector!
+                    with pytest.MonkeyPatch.context() as patch:
+                        with ui_turn_lock:
+                            ui_hold_watcher.clear()
+                        sender = TautClient(db_path=ui_db, as_name="bob")
+                        try:
+                            sender.say("general", "@alice manual claim n1")
+                        finally:
+                            sender.close()
+
+                        patch.setattr(TautClient, "inbox", ui_barrier_inbox)
+                        req = AppliedRequest(scope, patch, app, app._domain, "inbox")
+                        app._dispatch_command_invocation(inbox_inv)
+
+                        async def release_sequence() -> None:
+                            assert await asyncio.to_thread(ui_claimed.wait, 10.0)
+                            live_sender = TautClient(
+                                db_path=ui_db, as_name="charlie-live"
+                            )
+                            try:
+                                live_sender.join("general")
+                                live_sender.say("general", "@alice live watcher n2")
+                            finally:
+                                live_sender.close()
+                            ui_hold_watcher.set()
+                            assert await asyncio.to_thread(ui_watcher_done.wait, 10.0)
+                            ui_release_claim.set()
+
+                        releaser = asyncio.create_task(release_sequence())
+                        await req.wait(scope.now() + 10)
+                        await releaser
+            finally:
+                ui_hold_watcher.set()
+                ui_release_claim.set()
+
+            rendered = str(app.query_one("#inspector-body").render())
+            assert "bob" in rendered
+            assert "charlie-live" in rendered
+            assert {n.actor_name for n in app._session.notification_feed()} >= {
+                "bob",
+                "charlie-live",
+            }
+
+            # Re-running :inbox when the broker queue is now empty keeps both visible!
+            with pytest.MonkeyPatch.context() as patch:
+                req = AppliedRequest(scope, patch, app, app._domain, "inbox")
+                app._dispatch_command_invocation(inbox_inv)
+                empty_res = await req.wait(scope.now() + 5)
+                assert empty_res == []
+            rendered_again = str(app.query_one("#inspector-body").render())
+            assert "bob" in rendered_again
+            assert "charlie-live" in rendered_again
+
+    asyncio.run(exercise())
+
+
+def test_transcript_tail_append_skips_clear_options_and_redundant_nav_rerender(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui.actions import ActionContext, ActionId, ActionRoute
+    from taut_tui.app import TautApp
+    from taut_tui.models import LogicalSurface
+    from taut_tui.widgets import TautTranscript
+
+    db_path = tmp_path / "tail-append.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    try:
+        alice.join("general")
+        bob.join("general")
+        for idx in range(30):
+            bob.say("general", f"seed row {idx:02d}")
+        alice.read("general", limit=1000)
+    finally:
+        alice.close()
+        bob.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(120, 34)) as pilot:
+            obs = observed(app)
+            await obs.navigation()
+            deadline = obs.scope.now() + 10
+            intent = app._conversation_intent + 1
+            conv = obs._conversation_record(intent)
+            app.visual_state = replace(
+                app.visual_state,
+                selected_navigation="general",
+            )
+            app._dispatch_tui_action(
+                ActionId.CONVERSATION_OPEN,
+                source=ActionRoute.NAVIGATION,
+                context=ActionContext(
+                    target="general",
+                    target_label="#general",
+                    surface=LogicalSurface.NAVIGATION,
+                ),
+            )
+            await conv.wait(deadline=deadline, description="general opened")
+            await obs.viewport(deadline=deadline)
+
+            transcript = app.query_one("#transcript", TautTranscript)
+            assert transcript.option_count == 32
+
+            # 1) Unchanged reply_threads during _apply_navigation_result in HISTORY mode
+            # skips _render_messages completely, leaving viewport.generation and prompts untouched.
+            from taut_tui.viewport import TranscriptViewport, ViewportMode
+
+            clear_calls = 0
+            prompt_calls = 0
+            render_calls = 0
+            orig_clear = transcript.clear_options
+            orig_prompt = app._message_prompt
+            orig_render = app._render_messages
+
+            def count_clear() -> Any:
+                nonlocal clear_calls
+                clear_calls += 1
+                return orig_clear()
+
+            def count_prompt(msg: Any) -> Any:
+                nonlocal prompt_calls
+                prompt_calls += 1
+                return orig_prompt(msg)
+
+            def count_render(*args: Any, **kwargs: Any) -> None:
+                nonlocal render_calls
+                render_calls += 1
+                orig_render(*args, **kwargs)
+
+            anchor_ts = app._message_rows[5].ts
+            history_gen = app.visual_state.viewport.generation + 1
+            app.visual_state = replace(
+                app.visual_state,
+                viewport=TranscriptViewport.history(
+                    anchor_ts,
+                    offset=0,
+                    generation=history_gen,
+                ),
+            )
+            obs._viewport_owner_changed()
+
+            assert app._session is not None
+            with monkeypatch.context() as patch:
+                patch.setattr(transcript, "clear_options", count_clear)
+                patch.setattr(app, "_message_prompt", count_prompt)
+                patch.setattr(app, "_render_messages", count_render)
+                nav_fut = app._session.refresh_navigation()
+                nav_fut.result(timeout=5.0)
+                app._apply_navigation_result(nav_fut)
+                await pilot.pause()
+            assert render_calls == 0
+            assert clear_calls == 0
+            assert prompt_calls == 0
+            assert app.visual_state.viewport.generation == history_gen
+
+            # Restore TAIL viewport for subcase 2.
+            app.visual_state = replace(
+                app.visual_state,
+                viewport=TranscriptViewport.tail(generation=history_gen + 1),
+            )
+            obs._viewport_owner_changed()
+
+            # 2) Live tail delivery appends 1 Option without clear_options and calls _message_prompt once.
+
+            with monkeypatch.context() as patch:
+                patch.setattr(transcript, "clear_options", count_clear)
+                patch.setattr(app, "_message_prompt", count_prompt)
+                sender = TautClient(db_path=db_path, as_name="bob")
+                try:
+                    live_msg = sender.say("general", "live row 31")
+                finally:
+                    sender.close()
+                gen = app.visual_state.model_generation
+                await obs._delivery_record(gen, live_msg).wait(
+                    deadline=obs.scope.now() + 5,
+                    description="live tail delivered",
+                )
+                await obs.viewport(deadline=obs.scope.now() + 5)
+
+            assert clear_calls == 0
+            assert prompt_calls == 1
+            assert transcript.option_count == 33
+
+            # 3) Tail append in HISTORY mode preserves anchor and pending selection copy timer.
+            anchor_ts = app._message_rows[5].ts
+            app.visual_state = replace(
+                app.visual_state,
+                viewport=TranscriptViewport.history(
+                    anchor_ts,
+                    offset=0,
+                    generation=app.visual_state.viewport.generation + 1,
+                ),
+            )
+            obs._viewport_owner_changed()
+
+            class DummyTimer:
+                stopped = False
+
+                def stop(self) -> None:
+                    self.stopped = True
+
+            dummy_timer = DummyTimer()
+            app._selection_copy_timer = cast(Any, dummy_timer)
+            with monkeypatch.context() as patch:
+                patch.setattr(transcript, "clear_options", count_clear)
+                sender = TautClient(db_path=db_path, as_name="bob")
+                try:
+                    live_msg2 = sender.say("general", "live row 32")
+                finally:
+                    sender.close()
+                gen = app.visual_state.model_generation
+                await obs._delivery_record(gen, live_msg2).wait(
+                    deadline=obs.scope.now() + 5,
+                    description="second live tail delivered",
+                )
+                await obs.viewport(deadline=obs.scope.now() + 5)
+
+            assert clear_calls == 0
+            assert dummy_timer.stopped is False
+            assert app.visual_state.viewport.mode is ViewportMode.HISTORY
+            assert app.visual_state.viewport.message_id == anchor_ts
+            app._selection_copy_timer = None
+
+    asyncio.run(exercise())

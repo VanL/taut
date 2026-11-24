@@ -479,6 +479,9 @@ def emit_notifications(
 
     if quiet:
         return
+    mention_cache = (
+        None if json_output or client is None else _MentionLookupCache(client)
+    )
     for notification in notifications:
         if notification.warning:
             write_human_line(stderr, f"warning: {notification.warning}")
@@ -487,7 +490,7 @@ def emit_notifications(
         elif notification.type == "mention":
             assert notification.message_ts is not None
             inspect_action = _mention_inspect_action(notification)
-            reply_id = _mention_reply_id(client, notification)
+            reply_id = _mention_reply_id(client, notification, cache=mention_cache)
             reply_action = (
                 f"; reply: taut reply {notification.thread} {reply_id}"
                 if reply_id is not None
@@ -866,9 +869,35 @@ def _mention_inspect_action(notification: Notification) -> str:
     return f"taut log {thread}"
 
 
+class _MentionLookupCache:
+    """Lazy per-render cache for human mention reply eligibility."""
+
+    def __init__(self, client: TautClient) -> None:
+        self._client = client
+        self._joined: set[str] | None = None
+        self._threads_by_name: dict[str, Thread] | None = None
+
+    def is_joined(self, thread: str) -> bool:
+        if self._joined is None:
+            self._joined = set(self._client.joined_thread_names())
+        return thread in self._joined
+
+    def thread_row(self, thread: str) -> Thread | None:
+        if self._threads_by_name is None:
+            self._threads_by_name = {
+                candidate.name: candidate
+                for candidate in self._client.list_threads(
+                    all_threads=True, include_unread_counts=False
+                )
+            }
+        return self._threads_by_name.get(thread)
+
+
 def _mention_reply_id(
     client: TautClient | None,
     notification: Notification,
+    *,
+    cache: _MentionLookupCache | None = None,
 ) -> str | None:
     """Return the exact currently usable reply id for a mention pointer."""
 
@@ -878,18 +907,10 @@ def _mention_reply_id(
         return None
     if addressing.DM_SELECTOR_RE.fullmatch(thread) is not None:
         return None
-    if thread not in client.joined_thread_names():
+    lookup = cache if cache is not None else _MentionLookupCache(client)
+    if not lookup.is_joined(thread):
         return None
-    thread_row = next(
-        (
-            candidate
-            for candidate in client.list_threads(
-                all_threads=True, include_unread_counts=False
-            )
-            if candidate.name == thread
-        ),
-        None,
-    )
+    thread_row = lookup.thread_row(thread)
     if (
         thread_row is None
         or thread_row.kind != "channel"

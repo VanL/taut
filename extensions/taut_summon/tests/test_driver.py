@@ -593,6 +593,24 @@ def test_forced_detach_bypasses_interaction_probe() -> None:
     assert interaction.availability_calls == []
 
 
+def test_initial_attach_decline_does_not_advance_owner_phase_after_shutdown() -> None:
+    from taut_summon._driver import _PhaseResult
+
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(attach=False),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    driver._owner_phase = "confirm"
+    driver._pending_setup_recovery_attach = False
+
+    driver._accept_phase_result(_PhaseResult(name="confirm", value=False, error=None))
+
+    assert driver._shutdown.is_set()
+    assert driver._owner_phase != "spawn-ready"
+
+
 def test_driver_rejects_forced_attach_and_detach_before_host_probe() -> None:
     interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
 

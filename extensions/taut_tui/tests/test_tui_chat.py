@@ -141,7 +141,8 @@ class _NotificationRefreshProbe:
         is_target_notification = (
             self.notification_armed
             and isinstance(item, Notification)
-            and item.thread == "quiet"
+            and item.thread is not None
+            and item.thread.startswith("general.")
             and item.actor_name == "bob"
             and item.matched == "@alice"
         )
@@ -947,7 +948,7 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
             )
             probe.notification_armed = True
             deadline = probe.scope.now() + 5
-            ping = bob.say("quiet", "@alice ping")
+            ping = bob.reply("general", str(seeded_history[0].ts), "@alice ping")
             # The exact refresh Future is captured by the delivery callback.
             # Await its retained request handoff before reading the bound phase.
             restored = await probe.notification_requested.wait(

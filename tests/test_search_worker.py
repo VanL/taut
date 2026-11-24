@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,7 +14,12 @@ from taut.search._jobs import (
     MessageJob,
     encode_thread_rename_job,
 )
-from taut.search._provider import IndexedDocument, SearchCandidate, ThreadWatermark
+from taut.search._provider import (
+    DocumentCheck,
+    IndexedDocument,
+    SearchCandidate,
+    ThreadWatermark,
+)
 from taut.search._worker import process_one
 
 pytestmark = pytest.mark.sqlite_only
@@ -51,6 +57,29 @@ class FakeProvider:
         self.revisions[document.message_ts] = revision
         self.live[document.message_ts] = document
         return True
+
+    def reconcile_unchanged_batch(
+        self,
+        checks: Sequence[DocumentCheck],
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        needs: set[int] = set()
+        for check in checks:
+            prev = self.revisions.get(check.message_ts)
+            if prev is not None and prev > revision:
+                continue
+            doc = self.live.get(check.message_ts)
+            if (
+                doc is not None
+                and doc.thread == check.thread
+                and doc.text_sha256 == check.text_sha256
+                and doc.text_bytes == check.text_bytes
+            ):
+                self.revisions[check.message_ts] = revision
+            else:
+                needs.add(check.message_ts)
+        return frozenset(needs)
 
     def delete_document(
         self,
@@ -164,9 +193,10 @@ class FakeProvider:
         chunks: tuple[str, ...],
         *,
         before: int | None = None,
+        threads: tuple[str, ...] | None = None,
         limit: int,
     ) -> list[SearchCandidate]:
-        del chunks, before, limit
+        del chunks, before, threads, limit
         return []
 
     def close(self) -> None:

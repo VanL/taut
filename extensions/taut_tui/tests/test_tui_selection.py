@@ -618,3 +618,128 @@ def test_completed_selection_auto_copy_resets_for_changed_selection(
             ]
 
     asyncio.run(exercise())
+
+
+def test_transcript_get_selection_renders_only_selected_options_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.geometry import Offset
+    from textual.selection import Selection
+    from textual.visual import Visual
+
+    class ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield TautTranscript(
+                *(
+                    Option(
+                        display_text(
+                            f"option {idx:02d} wraps onto a second displayed line here"
+                        )
+                    )
+                    for idx in range(20)
+                ),
+                id="transcript",
+            )
+
+    async def exercise() -> None:
+        app = ProbeApp()
+        async with app.run_test(size=(28, 12)):
+            transcript = app.query_one(TautTranscript)
+            await _plain_transcript_refreshed(transcript)
+            assert transcript.virtual_size.height >= 40
+
+            strip_calls = 0
+            orig_to_strips = Visual.to_strips
+
+            def count_strips(*args: Any, **kwargs: Any) -> Any:
+                nonlocal strip_calls
+                strip_calls += 1
+                return orig_to_strips(*args, **kwargs)
+
+            monkeypatch.setattr(Visual, "to_strips", count_strips)
+            extracted, sep = transcript.get_selection(
+                Selection(Offset(2, 2), Offset(10, 4))
+            )
+            assert sep == "\n"
+            assert extracted
+            assert strip_calls <= 2
+
+    asyncio.run(exercise())
+
+
+def test_transcript_get_selection_boundary_matrix() -> None:
+    from textual.geometry import Offset
+    from textual.selection import Selection
+
+    class ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield TautTranscript(
+                Option(display_text("row zero")),
+                Option(display_text("row one")),
+                Option(display_text("")),
+                id="transcript",
+            )
+
+    async def exercise() -> None:
+        app = ProbeApp()
+        async with app.run_test(size=(24, 8)):
+            transcript = app.query_one(TautTranscript)
+            await _plain_transcript_refreshed(transcript)
+
+            assert transcript.get_selection(Selection(None, None)) == (
+                "row zero\nrow one\n",
+                "\n",
+            )
+            assert transcript.get_selection(Selection(Offset(4, 0), Offset(8, 0))) == (
+                "zero",
+                "\n",
+            )
+            assert transcript.get_selection(Selection(Offset(4, 0), Offset(3, 1))) == (
+                "zero\nrow",
+                "\n",
+            )
+            assert transcript.get_selection(Selection(Offset(4, 1), None)) == (
+                "one\n",
+                "\n",
+            )
+            assert transcript.get_selection(Selection(None, Offset(3, 1))) == (
+                "row zero\nrow",
+                "\n",
+            )
+            assert transcript.get_selection(Selection(Offset(4, 0), Offset(0, 99))) == (
+                "zero\nrow one\n",
+                "\n",
+            )
+            assert transcript.get_selection(
+                Selection(Offset(0, 99), Offset(4, 100))
+            ) == ("", "\n")
+
+    asyncio.run(exercise())
+
+
+def test_transcript_get_selection_preserves_displayed_row_after_unicode_line_separator() -> (
+    None
+):
+    from textual.geometry import Offset
+    from textual.selection import Selection
+
+    class ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield TautTranscript(
+                Option(display_text("alpha\u2028beta")),
+                Option(display_text("gamma")),
+                id="transcript",
+            )
+
+    async def exercise() -> None:
+        app = ProbeApp()
+        async with app.run_test(size=(24, 8)):
+            transcript = app.query_one(TautTranscript)
+            await _plain_transcript_refreshed(transcript)
+
+            assert transcript.get_selection(Selection(Offset(0, 1), Offset(5, 1))) == (
+                "gamma",
+                "\n",
+            )
+
+    asyncio.run(exercise())

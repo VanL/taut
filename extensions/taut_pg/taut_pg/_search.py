@@ -6,6 +6,7 @@ Spec references: docs/specs/06-search.md [SRCH-2.1], [SRCH-3.1],
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from simplebroker.ext import SidecarSession
@@ -13,6 +14,7 @@ from simplebroker.ext import SidecarSession
 from taut.search._provider import (
     SEARCH_PROJECTION_VERSION,
     SEARCH_SCHEMA_VERSION,
+    DocumentCheck,
     IndexedDocument,
     SearchCandidate,
     SidecarAccessor,
@@ -21,6 +23,7 @@ from taut.search._provider import (
 )
 
 _SCHEMA_LOCK_KEY = "taut:search:schema"
+_SQL_CHUNK_LIMIT = 500
 
 _METADATA_DDL = """
     CREATE TABLE IF NOT EXISTS taut_search_metadata (
@@ -54,6 +57,10 @@ _DDL = (
         indexed            BOOLEAN NOT NULL,
         PRIMARY KEY (generation, message_ts)
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS taut_search_documents_thread_idx
+        ON taut_search_documents (generation, thread, message_ts)
     """,
     """
     CREATE TABLE IF NOT EXISTS taut_search_segments (
@@ -181,6 +188,96 @@ class PostgresSearchProvider:
                     revision=effective_revision,
                 )
         return applied
+
+    def reconcile_unchanged_batch(
+        self,
+        checks: Sequence[DocumentCheck],
+        *,
+        revision: int,
+    ) -> frozenset[int]:
+        """Advance unchanged documents across writable generations in one batch."""
+
+        if not checks:
+            return frozenset()
+        by_ts = {check.message_ts: check for check in checks}
+        check_ids = tuple(by_ts)
+        with self.sidecar(transaction=True) as session:
+            current_generation, staging = self._state(session, lock="UPDATE")
+            generations = [current_generation]
+            if staging is not None and revision >= staging[1]:
+                generations.append(staging[0])
+            stored = self._load_generation_rows(session, generations, check_ids)
+            bump_by_gen, needs_replace = _classify_reconciliation_batch(
+                by_ts,
+                generations=generations,
+                stored=stored,
+                revision=revision,
+            )
+            for generation, bump_ids in bump_by_gen.items():
+                self._bump_generation_revisions(
+                    session,
+                    generation=generation,
+                    message_ids=bump_ids,
+                    revision=revision,
+                )
+        return frozenset(needs_replace)
+
+    @staticmethod
+    def _load_generation_rows(
+        session: SidecarSession,
+        generations: Sequence[int],
+        check_ids: tuple[int, ...],
+    ) -> dict[int, dict[int, tuple[str, str, int, int, int, bool]]]:
+        stored: dict[int, dict[int, tuple[str, str, int, int, int, bool]]] = {
+            generation: {} for generation in generations
+        }
+        for generation in generations:
+            gen_rows = stored[generation]
+            for start in range(0, len(check_ids), _SQL_CHUNK_LIMIT):
+                chunk = check_ids[start : start + _SQL_CHUNK_LIMIT]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows = session.run(
+                    f"""
+                    SELECT message_ts, thread, text_sha256, text_bytes,
+                           projection_version, latest_revision, indexed
+                    FROM taut_search_documents
+                    WHERE generation = ? AND message_ts IN ({placeholders})
+                    """,
+                    (generation, *chunk),
+                    fetch=True,
+                )
+                for row in rows:
+                    gen_rows[int(row[0])] = (
+                        str(row[1]),
+                        str(row[2]),
+                        int(row[3]),
+                        int(row[4]),
+                        int(row[5]),
+                        bool(row[6]),
+                    )
+        return stored
+
+    @staticmethod
+    def _bump_generation_revisions(
+        session: SidecarSession,
+        *,
+        generation: int,
+        message_ids: Sequence[int],
+        revision: int,
+    ) -> None:
+        for start in range(0, len(message_ids), _SQL_CHUNK_LIMIT):
+            chunk = message_ids[start : start + _SQL_CHUNK_LIMIT]
+            placeholders = ", ".join("?" for _ in chunk)
+            session.run(
+                f"""
+                UPDATE taut_search_documents
+                SET latest_revision = ?
+                WHERE generation = ?
+                  AND latest_revision < ?
+                  AND message_ts IN ({placeholders})
+                """,
+                (revision, generation, revision, *chunk),
+            )
 
     @staticmethod
     def _replace_in_generation(
@@ -316,7 +413,7 @@ class PostgresSearchProvider:
                 INSERT INTO taut_search_documents AS current (
                     generation, message_ts, thread, text_sha256, text_bytes,
                     projection_version, latest_revision, indexed
-                ) VALUES (?, ?, ?, '', 0, 1, ?, FALSE)
+                ) VALUES (?, ?, ?, '', 0, ?, ?, FALSE)
                 ON CONFLICT (generation, message_ts) DO UPDATE SET
                     thread = excluded.thread,
                     text_sha256 = '',
@@ -327,7 +424,7 @@ class PostgresSearchProvider:
                 WHERE excluded.latest_revision >= current.latest_revision
                 RETURNING message_ts
                 """,
-                (generation, message_ts, thread, revision),
+                (generation, message_ts, thread, SEARCH_PROJECTION_VERSION, revision),
                 fetch=True,
             )
         )
@@ -615,9 +712,10 @@ class PostgresSearchProvider:
         chunks: tuple[str, ...],
         *,
         before: int | None = None,
+        threads: tuple[str, ...] | None = None,
         limit: int,
     ) -> list[SearchCandidate]:
-        if not chunks or limit < 1:
+        if not chunks or limit < 1 or (threads is not None and not threads):
             return []
         required_chunk = """
             EXISTS (
@@ -632,12 +730,18 @@ class PostgresSearchProvider:
         """
         requirements = " AND ".join(required_chunk for _chunk in chunks)
         before_clause = " AND d.message_ts < ?" if before is not None else ""
+        if threads is None:
+            threads_clause = ""
+        elif len(threads) <= _SQL_CHUNK_LIMIT:
+            threads_clause = f" AND d.thread IN ({', '.join('?' for _ in threads)})"
+        else:
+            threads_clause = " AND d.thread = ANY(?)"
         statement = f"""
             SELECT d.message_ts, d.thread, d.text_sha256, d.text_bytes
             FROM taut_search_documents AS d
             WHERE d.generation = ?
               AND d.indexed = TRUE
-              AND {requirements}{before_clause}
+              AND {requirements}{before_clause}{threads_clause}
             ORDER BY d.message_ts DESC, d.thread ASC
             LIMIT ?
         """
@@ -646,6 +750,11 @@ class PostgresSearchProvider:
             params: tuple[object, ...] = (current_generation, *chunks)
             if before is not None:
                 params = (*params, before)
+            if threads is not None:
+                if len(threads) <= _SQL_CHUNK_LIMIT:
+                    params = (*params, *threads)
+                else:
+                    params = (*params, list(threads))
             rows = session.run(statement, (*params, limit), fetch=True)
             return [
                 SearchCandidate(
@@ -701,6 +810,46 @@ class PostgresSearchProvider:
 
     def close(self) -> None:
         """The supplied accessor owns all storage resources."""
+
+
+def _classify_reconciliation_batch(
+    by_ts: dict[int, DocumentCheck],
+    *,
+    generations: Sequence[int],
+    stored: dict[int, dict[int, tuple[str, str, int, int, int, bool]]],
+    revision: int,
+) -> tuple[dict[int, list[int]], set[int]]:
+    bump_by_gen: dict[int, list[int]] = {}
+    needs_replace: set[int] = set()
+    for message_ts, check in by_ts.items():
+        pending_bumps: list[int] = []
+        eligible = True
+        for generation in generations:
+            row = stored[generation].get(message_ts)
+            if row is None:
+                eligible = False
+                break
+            thread, digest, size, proj, prev_rev, indexed = row
+            if prev_rev > revision:
+                continue
+            if (
+                indexed
+                and thread == check.thread
+                and digest == check.text_sha256
+                and size == check.text_bytes
+                and proj == SEARCH_PROJECTION_VERSION
+            ):
+                if prev_rev < revision:
+                    pending_bumps.append(generation)
+                continue
+            eligible = False
+            break
+        if eligible:
+            for generation in pending_bumps:
+                bump_by_gen.setdefault(generation, []).append(message_ts)
+        else:
+            needs_replace.add(message_ts)
+    return bump_by_gen, needs_replace
 
 
 def create_provider(*, sidecar: SidecarAccessor) -> PostgresSearchProvider:

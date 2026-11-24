@@ -18,6 +18,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -147,6 +148,13 @@ def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1]
                     host_rule="linux machine-id",
                 )
     if sys.platform == "darwin":
+        darwin_uuid = _darwin_gethostuuid()
+        if darwin_uuid:
+            return HostIdentity(
+                host_id=f"ioplatformuuid:{darwin_uuid}",
+                host_label=label,
+                host_rule="macOS IOKit platform UUID",
+            )
         try:
             completed = subprocess.run(
                 ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
@@ -162,10 +170,10 @@ def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1]
                 if "IOPlatformUUID" not in line:
                     continue
                 _, _, value = line.partition("=")
-                uuid = value.strip().strip('"')
-                if uuid:
+                parsed_uuid = value.strip().strip('"')
+                if parsed_uuid:
                     return HostIdentity(
-                        host_id=f"ioplatformuuid:{uuid}",
+                        host_id=f"ioplatformuuid:{parsed_uuid}",
                         host_label=label,
                         host_rule="macOS IOKit platform UUID",
                     )
@@ -195,6 +203,31 @@ def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1]
         host_label=label,
         host_rule="hostname fallback",
     )
+
+
+def _darwin_gethostuuid() -> str | None:
+    """Read the macOS IOKit platform UUID in-process via Darwin ``gethostuuid``."""
+
+    try:
+        import ctypes
+
+        class _Timespec(ctypes.Structure):
+            _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        fn = libc.gethostuuid
+        fn.argtypes = [ctypes.c_char * 16, ctypes.POINTER(_Timespec)]
+        fn.restype = ctypes.c_int
+        buf = (ctypes.c_char * 16)()
+        wait = _Timespec(0, 0)
+        if fn(buf, ctypes.byref(wait)) != 0:
+            return None
+        parsed = uuid.UUID(bytes=buf.raw)
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    if parsed.int == 0:
+        return None
+    return str(parsed).upper()
 
 
 def _load_windows_registry() -> Any:

@@ -1058,21 +1058,23 @@ class SummonDriver:
             ) from result.error
         raise result.error
 
+    def _accept_confirm(self, value: object) -> None:
+        if type(value) is not bool:
+            raise DriverError("terminal interaction returned non-boolean confirmation")
+        if not value:
+            if self._pending_setup_recovery_attach and not self._shutdown.is_set():
+                self._owner_attach = _GenerationAttachDecision(
+                    self._owner_attach.wired, False
+                )
+            else:
+                self.request_stop()
+        self._pending_setup_recovery_attach = False
+        if not self._shutdown.is_set():
+            self._owner_phase = "spawn-ready"
+
     def _accept_phase_result(self, result: _PhaseResult) -> None:
         if result.name == "confirm":
-            if type(result.value) is not bool:
-                raise DriverError(
-                    "terminal interaction returned non-boolean confirmation"
-                )
-            if not result.value:
-                if self._pending_setup_recovery_attach and not self._shutdown.is_set():
-                    self._owner_attach = _GenerationAttachDecision(
-                        self._owner_attach.wired, False
-                    )
-                else:
-                    self.request_stop()
-            self._pending_setup_recovery_attach = False
-            self._owner_phase = "spawn-ready"
+            self._accept_confirm(result.value)
         elif result.name == "spawn":
             self._accept_spawn(result.value)
         elif result.name == "attach":

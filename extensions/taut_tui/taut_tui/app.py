@@ -395,6 +395,9 @@ class TautApp(App[None]):
         self._summon_bridge: SummonLogBridge | None = None
         self._summon_interaction: TuiSummonInteraction | None = None
         self._message_rows: tuple[Message, ...] = ()
+        self._rendered_target: str | None = None
+        self._rendered_layout: TranscriptMetadataLayout | None = None
+        self._rendered_reply_keys: frozenset[tuple[str, int]] = frozenset()
         self._selected_search_hit: SearchHit | None = None
         self._pending_g = False
         self._operation_state = "idle"
@@ -814,11 +817,27 @@ class TautApp(App[None]):
         if self._shutting_down or event.resolved.is_set():
             event.resolve(False)
             return
-        try:
+
+        def run_guarded(step: Callable[[], None]) -> None:
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+                event.fail(exc)
+            except BaseException as exc:
+                event.fail(exc)
+                raise
+
+        def start_presentation() -> None:
             offer, prompt = self._attach_confirmation_prompts(event.notice)
-            _present_attach_confirmation(self, event, offer=offer, prompt=prompt)
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
-            event.fail(exc)
+            _present_attach_confirmation(
+                self,
+                event,
+                offer=offer,
+                prompt=prompt,
+                run_guarded=run_guarded,
+            )
+
+        run_guarded(start_presentation)
 
     @staticmethod
     def _attach_confirmation_prompts(
@@ -1536,7 +1555,7 @@ class TautApp(App[None]):
                 domain.read_messages(cast(str | None, values.get("thread")))
             )
         elif invocation.path == ("inbox",):
-            self._run_action(domain.inbox())
+            self._run_inbox_action(domain.inbox())
         elif invocation.path == ("log",):
             self._run_action(
                 domain.log_messages(
@@ -2588,6 +2607,7 @@ class TautApp(App[None]):
         future: Future[_ResultT],
         *,
         refresh_navigation: bool = False,
+        render_notifications: bool = False,
     ) -> None:
         self._operation_state = "working"
         self._update_status()
@@ -2596,7 +2616,15 @@ class TautApp(App[None]):
             lambda done: self._apply_action_result(
                 done,
                 refresh_navigation=refresh_navigation,
+                render_notifications=render_notifications,
             ),
+        )
+
+    def _run_inbox_action(self, future: Future[list[Notification]]) -> None:
+        self._run_action(
+            future,
+            refresh_navigation=True,
+            render_notifications=True,
         )
 
     def _run_form_action(
@@ -2751,6 +2779,7 @@ class TautApp(App[None]):
             )
             for target in self._navigation_targets
         ]
+        self._rendered_target = None
 
     def _apply_form_action_result(
         self,
@@ -2788,6 +2817,7 @@ class TautApp(App[None]):
         future: Future[_ResultT],
         *,
         refresh_navigation: bool,
+        render_notifications: bool = False,
     ) -> None:
         self._operation_state = "idle"
         try:
@@ -2796,15 +2826,20 @@ class TautApp(App[None]):
             self._show_error(str(exc) or type(exc).__name__)
             self._update_status()
             return
-        if isinstance(result, Message):
-            snapshot = (
-                self._session.commit_returned_message(result)
-                if self._session is not None
-                else None
+        if render_notifications:
+            self._render_notifications(
+                self._session.notification_feed() if self._session is not None else ()
             )
-            if snapshot is not None:
-                self._apply_conversation(snapshot)
-        self._render_domain_result(result)
+        else:
+            if isinstance(result, Message):
+                snapshot = (
+                    self._session.commit_returned_message(result)
+                    if self._session is not None
+                    else None
+                )
+                if snapshot is not None:
+                    self._apply_conversation(snapshot)
+            self._render_domain_result(result)
         if refresh_navigation and self._session is not None:
             self._watch_future(
                 self._session.refresh_navigation(),
@@ -2812,17 +2847,125 @@ class TautApp(App[None]):
             )
         self._update_status()
 
+    def _inspector_target_label(
+        self,
+        name: str,
+        *,
+        kind: str | None = None,
+        display_name: str | None = None,
+    ) -> str:
+        known = self._target_labels.get(name)
+        if known:
+            return known
+        if display_name:
+            return display_name
+        effective_kind = kind or self._target_kinds.get(name)
+        if effective_kind == "dm" or name.startswith("dm."):
+            return "Direct message"
+        if effective_kind == "channel":
+            return f"#{name}"
+        return name
+
+    def _format_domain_item(
+        self,
+        item: object,
+    ) -> tuple[tuple[str | tuple[str, Any], ...], bool]:
+        if isinstance(item, Message):
+            return (
+                (
+                    (
+                        escape_inline_text(self._inspector_target_label(item.thread)),
+                        "dim",
+                    ),
+                    "  ",
+                    (escape_inline_text(item.from_name), "bold"),
+                    f"  {format_message_time(item.ts)}\n",
+                    escape_message_body(item.text),
+                ),
+                True,
+            )
+        if isinstance(item, SearchHit):
+            return (
+                (
+                    (
+                        escape_inline_text(
+                            self._inspector_target_label(
+                                item.thread, kind=item.thread_kind
+                            )
+                        ),
+                        "dim",
+                    ),
+                    "  ",
+                    (escape_inline_text(item.from_name), "bold"),
+                    f"  {format_message_time(item.ts)}\n",
+                    escape_message_body(item.text),
+                ),
+                True,
+            )
+        if isinstance(item, Member):
+            persona_suffix = (
+                f"  ({escape_inline_text(item.persona)})" if item.persona else ""
+            )
+            return (
+                (
+                    (escape_inline_text(item.name), "bold"),
+                    (
+                        f"  {escape_inline_text(item.presence)}  "
+                        f"{escape_inline_text(item.kind)}{persona_suffix}"
+                    ),
+                ),
+                False,
+            )
+        if isinstance(item, Thread):
+            label = escape_inline_text(
+                self._inspector_target_label(
+                    item.name,
+                    kind=item.kind,
+                    display_name=item.display_name,
+                )
+            )
+            unread = f" ({item.unread_count})" if item.unread_count else ""
+            topic = f"  {escape_inline_text(item.topic)}" if item.topic else ""
+            return ((label, f"{unread}{topic}"), False)
+        return ((escape_display_text(_safe_projection(item)),), False)
+
     def _render_domain_result(self, result: object) -> None:
+        if isinstance(result, Thread):
+            self._render_inspector(
+                display_text(
+                    "Conversation\n",
+                    escape_inline_text(
+                        self._inspector_target_label(
+                            result.name,
+                            kind=result.kind,
+                            display_name=result.display_name,
+                        )
+                    ),
+                )
+            )
+            return
+        if isinstance(result, (Message, SearchHit)):
+            item_parts, _multiline = self._format_domain_item(result)
+            self._render_inspector(display_text(*item_parts))
+            return
         formatter = _RESULT_FORMATTERS.get(type(result))
         if formatter is not None:
             self._render_inspector(formatter(result))
         elif isinstance(result, (list, tuple)):
-            text = (
-                "No results" if not result else "\n".join(map(_safe_projection, result))
-            )
-            self._render_inspector(text)
+            if not result:
+                self._render_inspector("No results")
+                return
+            parts: list[str | tuple[str, Any]] = []
+            for index, item in enumerate(result):
+                item_parts, multiline = self._format_domain_item(item)
+                if index:
+                    parts.append("\n\n" if multiline else "\n")
+                parts.extend(item_parts)
+            self._render_inspector(display_text(*parts))
         else:
-            self._render_inspector(_safe_projection(result))
+            self._render_inspector(
+                display_text(escape_display_text(_safe_projection(result)))
+            )
 
     def _run_deletion(
         self,
@@ -2922,13 +3065,41 @@ class TautApp(App[None]):
                 kind=InspectorKind.NOTIFICATIONS,
             )
             return
-        lines = ["Claimed notification pointers"]
+        parts: list[str | tuple[str, Any]] = [("Notifications", "bold")]
         for notification in notifications:
-            lines.append(
-                f"{notification.type}  {notification.actor_name or 'unknown'}  "
-                f"{notification.thread or ''}"
+            ntype = escape_inline_text(notification.type)
+            actor = escape_inline_text(notification.actor_name or "unknown")
+            target = (
+                f"  {escape_inline_text(self._inspector_target_label(notification.thread))}"
+                if notification.thread
+                else ""
             )
-        self._render_inspector("\n".join(lines), kind=InspectorKind.NOTIFICATIONS)
+            reaction = (
+                f"  [{escape_inline_text(notification.reaction)}]"
+                if notification.reaction
+                else ""
+            )
+            matched = (
+                f"  ({escape_inline_text(notification.matched)})"
+                if notification.matched
+                else ""
+            )
+            timestamp = (
+                f"  {format_message_time(notification.ts)}"
+                if notification.ts is not None
+                else ""
+            )
+            parts.extend(
+                (
+                    "\n",
+                    (actor, "bold"),
+                    f"  {ntype}{target}{reaction}{matched}{timestamp}",
+                )
+            )
+        self._render_inspector(
+            display_text(*parts),
+            kind=InspectorKind.NOTIFICATIONS,
+        )
 
     def _open_selected_search_result(self) -> None:
         domain = self._domain
@@ -3136,11 +3307,12 @@ class TautApp(App[None]):
                 ActionId.DIRECT_MESSAGE_START,
             )
         )
+        previous_reply_threads = self._reply_threads
         self._target_labels = target_labels
         self._target_kinds = target_kinds
         self._reply_threads = reply_threads
         self._set_navigation_actions(tuple(targets), tuple(labels))
-        if self._message_rows:
+        if self._message_rows and reply_threads != previous_reply_threads:
             self._render_messages(self._message_rows)
 
     def _set_navigation_actions(
@@ -3285,6 +3457,7 @@ class TautApp(App[None]):
         try:
             base_screen.query_one("#workspace")
             base_screen.query_one("#transcript", TautTranscript)
+            base_screen.query_one("#composer-send", TautButton)
         except NoMatches:
             return False
         return True
@@ -3388,48 +3561,50 @@ class TautApp(App[None]):
         snapshot = session.conversation_snapshot() if session is not None else None
         if snapshot is None:
             return False
-        self._render_messages(snapshot.messages)
+        self._render_messages(snapshot.messages, allow_incremental=True)
         if snapshot.reply_thread is not None:
             self._render_reply_inspector(snapshot)
         return True
 
-    def _render_messages(
+    def _classify_transcript_sync(
         self,
+        transcript: TautTranscript,
+        prev: tuple[Message, ...],
         messages: tuple[Message, ...],
         *,
-        restore_owner_intent: int | None = None,
-    ) -> None:
-        self._cancel_pending_selection_copy()
-        transcript = self._query_base("#transcript", TautTranscript)
-        self._message_rows = messages
-        pending = transcript.pending_selection
-        pending_index = (
-            self._transcript_message_index(pending)
-            if pending is not None and not self.visual_state.viewport.search_owned
-            else None
+        allow_incremental: bool,
+    ) -> tuple[bool, bool]:
+        target = self.visual_state.active_conversation
+        layout = transcript_metadata_layout(self.layout_mode)
+        reply_keys = (
+            frozenset(key for key in self._reply_threads if key[0] == target)
+            if target is not None
+            else frozenset()
         )
-        # Reflow projects selection; it is not a new selection producer. A
-        # render may run while genuine input still bubbles to the app owner.
-        with transcript.prevent(TautOptionList.OptionHighlighted):
-            transcript.clear_options()
-            for message in messages:
-                transcript.add_option(
-                    Option(
-                        self._message_prompt(message),
-                        id=f"{message.thread}:{message.ts}",
-                    )
-                )
-            highlighted = next(
-                (
-                    index
-                    for index, message in enumerate(messages)
-                    if message.ts == self.visual_state.selected_message_id
-                ),
-                len(messages) - 1 if messages else None,
-            )
-            if pending_index is not None:
-                highlighted = pending_index
-            transcript.highlighted = highlighted
+        same_context = (
+            allow_incremental
+            and bool(prev)
+            and transcript.option_count == len(prev)
+            and target == self._rendered_target
+            and layout == self._rendered_layout
+            and reply_keys == self._rendered_reply_keys
+        )
+        is_unchanged = same_context and messages == prev
+        can_append_tail = (
+            same_context and len(messages) > len(prev) and messages[: len(prev)] == prev
+        )
+        self._rendered_target = target
+        self._rendered_layout = layout
+        self._rendered_reply_keys = reply_keys
+        return is_unchanged, can_append_tail
+
+    def _finish_message_render(
+        self,
+        messages: tuple[Message, ...],
+        highlighted: int | None,
+        *,
+        restore_owner_intent: int | None,
+    ) -> None:
         if not self.visual_state.viewport.search_owned:
             self.visual_state = replace(
                 self.visual_state,
@@ -3445,6 +3620,81 @@ class TautApp(App[None]):
             if effect is not None:
                 self.call_after_refresh(self._apply_viewport_effect, effect, messages)
         self._update_context_affordances()
+
+    def _render_messages(
+        self,
+        messages: tuple[Message, ...],
+        *,
+        restore_owner_intent: int | None = None,
+        allow_incremental: bool = False,
+    ) -> None:
+        transcript = self._query_base("#transcript", TautTranscript)
+        prev = self._message_rows
+        pending = transcript.pending_selection
+        is_unchanged, can_append_tail = self._classify_transcript_sync(
+            transcript,
+            prev,
+            messages,
+            allow_incremental=allow_incremental,
+        )
+        if not (is_unchanged or can_append_tail):
+            self._cancel_pending_selection_copy()
+        self._message_rows = messages
+        pending_index = (
+            self._transcript_message_index(pending)
+            if pending is not None and not self.visual_state.viewport.search_owned
+            else None
+        )
+        default_highlighted = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.ts == self.visual_state.selected_message_id
+            ),
+            len(messages) - 1 if messages else None,
+        )
+        if is_unchanged or can_append_tail:
+            highlighted = (
+                pending_index if pending_index is not None else default_highlighted
+            )
+            with transcript.prevent(TautOptionList.OptionHighlighted):
+                if can_append_tail:
+                    transcript.add_options(
+                        [
+                            Option(
+                                self._message_prompt(message),
+                                id=f"{message.thread}:{message.ts}",
+                            )
+                            for message in messages[len(prev) :]
+                        ]
+                    )
+                transcript.highlighted = highlighted
+            self._finish_message_render(
+                messages,
+                highlighted,
+                restore_owner_intent=restore_owner_intent,
+            )
+            return
+        # Reflow projects selection; it is not a new selection producer. A
+        # render may run while genuine input still bubbles to the app owner.
+        with transcript.prevent(TautOptionList.OptionHighlighted):
+            transcript.clear_options()
+            for message in messages:
+                transcript.add_option(
+                    Option(
+                        self._message_prompt(message),
+                        id=f"{message.thread}:{message.ts}",
+                    )
+                )
+            highlighted = default_highlighted
+            if pending_index is not None:
+                highlighted = pending_index
+            transcript.highlighted = highlighted
+        self._finish_message_render(
+            messages,
+            highlighted,
+            restore_owner_intent=restore_owner_intent,
+        )
 
     def _on_transcript_user_viewport_intent(self) -> None:
         viewport = self.visual_state.viewport.user_intent_started()
@@ -3709,6 +3959,7 @@ def _present_attach_confirmation(
     *,
     offer: str | None,
     prompt: str,
+    run_guarded: Callable[[Callable[[], None]], None],
 ) -> None:
     """Present one attach decision as one or two sequential confirmations.
 
@@ -3738,7 +3989,7 @@ def _present_attach_confirmation(
 
     def decide_offer(decision: object) -> None:
         if decision:
-            present(prompt, decide_acknowledgement)
+            run_guarded(lambda: present(prompt, decide_acknowledgement))
             return
         event.resolve(False)
 
@@ -3813,56 +4064,74 @@ def _surface_for_widget(widget_id: str | None) -> LogicalSurface | None:
     return None
 
 
-def _format_member(value: object) -> str:
+def _format_member(value: object) -> DisplayText:
     assert isinstance(value, Member)
-    return f"Identity\n{value.name}\n{value.presence}\n{value.persona or 'no persona'}"
-
-
-def _format_channel(value: object) -> str:
-    assert isinstance(value, Channel)
-    return f"#{value.name}\nTopic: {value.topic or '(not set)'}"
-
-
-def _format_thread(value: object) -> str:
-    assert isinstance(value, Thread)
-    return f"Conversation\n{value.display_name or value.name}"
-
-
-def _format_doctor(value: object) -> str:
-    assert isinstance(value, DoctorReport)
-    lines = ["System doctor", "healthy" if value.healthy else "findings"]
-    lines.extend(
-        f"{check.status.upper()}  {check.name}: {check.detail}"
-        for check in value.checks
+    return display_text(
+        "Identity\n",
+        (escape_inline_text(value.name), "bold"),
+        f"\n{escape_inline_text(value.presence)} · {escape_inline_text(value.kind)}\n",
+        escape_inline_text(value.persona or "no persona"),
     )
-    return "\n".join(lines)
 
 
-def _format_dump(value: object) -> str:
+def _format_channel(value: object) -> DisplayText:
+    assert isinstance(value, Channel)
+    return display_text(
+        f"#{escape_inline_text(value.name)}\nTopic: ",
+        escape_inline_text(value.topic or "(not set)"),
+    )
+
+
+def _format_thread(value: object) -> DisplayText:
+    assert isinstance(value, Thread)
+    return display_text(
+        "Conversation\n",
+        escape_inline_text(value.display_name or value.name),
+    )
+
+
+def _format_doctor(value: object) -> DisplayText:
+    assert isinstance(value, DoctorReport)
+    parts: list[str | tuple[str, Any]] = [
+        "System doctor\n",
+        "healthy" if value.healthy else "findings",
+    ]
+    for check in value.checks:
+        parts.append(
+            f"\n{escape_inline_text(check.status.upper())}  "
+            f"{escape_inline_text(check.name)}: "
+            f"{escape_inline_text(check.detail)}"
+        )
+    return display_text(*parts)
+
+
+def _format_dump(value: object) -> DisplayText:
     assert isinstance(value, DumpReport)
-    return (
-        f"Dump complete\n{value.path}\n"
+    return display_text(
+        f"Dump complete\n{escape_inline_text(value.path)}\n"
         f"{value.queues} queues · {value.messages} messages"
     )
 
 
-def _format_init(value: object) -> str:
+def _format_init(value: object) -> DisplayText:
     assert isinstance(value, InitResult)
     state = "created" if value.created else "already exists"
-    return f"Workspace {state}\n{value.db}"
+    return display_text(f"Workspace {state}\n{escape_inline_text(value.db)}")
 
 
-def _format_reaction(value: object) -> str:
+def _format_reaction(value: object) -> DisplayText:
     assert isinstance(value, MessageReaction)
-    return f"Reaction {value.reaction} added to {value.message_ts}"
+    return display_text(
+        f"Reaction {escape_inline_text(value.reaction)} added to {value.message_ts}"
+    )
 
 
-def _format_deletion(value: object) -> str:
+def _format_deletion(value: object) -> DisplayText:
     assert isinstance(value, MessageDeletion)
-    return f"Deleted message {value.ts}"
+    return display_text(f"Deleted message {value.ts}")
 
 
-_RESULT_FORMATTERS: dict[type[object], Callable[[object], str]] = {
+_RESULT_FORMATTERS: dict[type[object], Callable[[object], DisplayText]] = {
     Member: _format_member,
     Channel: _format_channel,
     Thread: _format_thread,

@@ -14,6 +14,7 @@ Spec references:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -281,6 +282,11 @@ class SqlSidecarTautState:
 
     def list_member_aliases(self, member_id: str) -> list[str]:
         return list_member_aliases(self.queue, member_id)
+
+    def list_aliases_for_members(
+        self, member_ids: Sequence[str]
+    ) -> dict[str, tuple[str, ...]]:
+        return list_aliases_for_members(self.queue, member_ids)
 
     def get_member(self, member_id: str) -> MemberRow | None:
         return get_member(self.queue, member_id)
@@ -875,6 +881,34 @@ def list_member_aliases(queue: Queue, member_id: str) -> list[str]:
             (member_id,),
         )
     return [cast(str, row[0]) for row in rows]
+
+
+def list_aliases_for_members(
+    queue: Queue, member_ids: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    unique_ids = tuple(dict.fromkeys(member_ids))
+    if not unique_ids:
+        return {}
+    grouped: dict[str, list[str]] = {}
+    with queue.sidecar() as session:
+        for offset in range(0, len(unique_ids), 500):
+            chunk = unique_ids[offset : offset + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = _all(
+                session,
+                f"""
+                SELECT member_id, alias_key
+                FROM taut_member_aliases
+                WHERE member_id IN ({placeholders})
+                ORDER BY member_id, alias_key
+                """,
+                chunk,
+            )
+            for raw_member_id, raw_alias in rows:
+                grouped.setdefault(cast(str, raw_member_id), []).append(
+                    cast(str, raw_alias)
+                )
+    return {member_id: tuple(aliases) for member_id, aliases in grouped.items()}
 
 
 def get_member(queue: Queue, member_id: str) -> MemberRow | None:

@@ -2760,3 +2760,236 @@ def test_host_shutdown_during_offer_spawns_nothing_further(
         assert not any(event["event"] == "chat_ready" for event in _gate_events(log))
     finally:
         terminal.close()
+
+
+def test_stop_owned_and_wait_stops_handle_arriving_at_on_ready() -> None:
+    from taut_tui.summon import TuiSummonOperations
+
+    entered_foreground = Event()
+    allow_on_ready = Event()
+    handle = _Handle("arriving-member")
+
+    class LateReadyController(_Controller):
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del request, interaction, install_signal_handlers
+            entered_foreground.set()
+            assert allow_on_ready.wait(5.0)
+            assert callable(on_ready)
+            on_ready(handle)
+            assert handle.stop_requested.wait(1.0)
+
+    controller = LateReadyController()
+    operations = TuiSummonOperations(controller=controller)
+    try:
+        token, worker = operations.start(object(), object())
+        assert entered_foreground.wait(5.0)
+        record = operations._owned[token]
+        orig_set = record.cancel.set
+        cancelled = Event()
+
+        def notify_cancel() -> None:
+            orig_set()
+            cancelled.set()
+
+        record.cancel.set = notify_cancel  # type: ignore[method-assign]
+        shutdown_future = operations.stop_owned_and_wait(timeout=5.0)
+        assert cancelled.wait(5.0)
+        allow_on_ready.set()
+
+        shutdown = shutdown_future.result(timeout=5.0)
+        assert handle.stop_requests == 1
+        assert shutdown.completed_tokens == (token,)
+        assert shutdown.unresolved == ()
+        assert worker.result(timeout=5.0) is None
+    finally:
+        allow_on_ready.set()
+        handle.request_stop()
+        operations.close()
+
+
+def test_stop_owned_and_request_owned_stops_linearize_with_on_ready_under_lock() -> (
+    None
+):
+    from threading import get_ident
+    from types import TracebackType
+
+    from taut_tui.summon import TuiSummonOperations
+
+    entered_foreground = Event()
+    allow_on_ready = Event()
+    cancel_checked = Event()
+    wake_on_ready = Event()
+    handle = _Handle("locked-member")
+    on_ready_tid: list[int] = []
+
+    class NotifyingLock:
+        def __init__(self) -> None:
+            self._inner = Lock()
+
+        def __enter__(self) -> bool:
+            if on_ready_tid and get_ident() != on_ready_tid[0]:
+                wake_on_ready.set()
+            return self._inner.__enter__()
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> None:
+            self._inner.__exit__(exc_type, exc, tb)
+
+    class LockedReadyController(_Controller):
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del request, interaction, install_signal_handlers
+            entered_foreground.set()
+            assert allow_on_ready.wait(5.0)
+            on_ready_tid.append(get_ident())
+            assert callable(on_ready)
+            on_ready(handle)
+            assert handle.stop_requested.wait(1.0)
+
+    controller = LockedReadyController()
+    operations = TuiSummonOperations(controller=controller)
+    operations._lock = cast(Any, NotifyingLock())
+    stop_thread: Thread | None = None
+    try:
+        token, worker = operations.start(object(), object())
+        assert entered_foreground.wait(5.0)
+        record = operations._owned[token]
+        orig_is_set = record.cancel.is_set
+
+        def hooked_is_set() -> bool:
+            val = orig_is_set()
+            cancel_checked.set()
+            assert wake_on_ready.wait(5.0)
+            return val
+
+        record.cancel.is_set = hooked_is_set  # type: ignore[method-assign]
+
+        def run_stop() -> None:
+            try:
+                assert cancel_checked.wait(5.0)
+                operations.request_owned_stops()
+            finally:
+                wake_on_ready.set()
+
+        stop_thread = Thread(target=run_stop, daemon=True)
+        stop_thread.start()
+        allow_on_ready.set()
+        stop_thread.join(timeout=5.0)
+        assert not stop_thread.is_alive()
+        assert handle.stop_requests == 1
+        assert worker.result(timeout=5.0) is None
+    finally:
+        wake_on_ready.set()
+        allow_on_ready.set()
+        handle.request_stop()
+        if stop_thread is not None:
+            stop_thread.join(timeout=2.0)
+        operations.close()
+
+
+def test_setup_recovery_offer_second_modal_push_failure_fails_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            request = TerminalAttachConfirmationRequest(
+                TerminalAttachNotice(
+                    member="kimi",
+                    provider="kimi",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                    screen_excerpt=_GATE_EXCERPT,
+                )
+            )
+            deadline = time.monotonic() + 5
+            app.post_message(request)
+            offer = await _pushed_confirmation(pilot, app, deadline=deadline)
+
+            def fail_second_push(*args: Any, **kwargs: Any) -> Any:
+                del args, kwargs
+                raise RuntimeError("second modal push failed")
+
+            monkeypatch.setattr(app, "push_screen", fail_second_push)
+            offer.action_confirm()
+            probe: SummonObservations = cast(Any, app)._summon_test_observations
+            await probe.screens.retired(offer).wait(
+                deadline=deadline, description="offer retired after second push error"
+            )
+            assert request.resolved.is_set()
+            assert isinstance(request.error, RuntimeError)
+            assert str(request.error) == "second modal push failed"
+
+    asyncio.run(exercise())
+
+
+def test_setup_recovery_offer_second_modal_push_propagates_control_flow_after_failing_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)):
+            request = TerminalAttachConfirmationRequest(
+                TerminalAttachNotice(
+                    member="kimi",
+                    provider="kimi",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                    screen_excerpt=_GATE_EXCERPT,
+                )
+            )
+            captured_callbacks: list[Callable[[object], None]] = []
+            orig_push = app.push_screen
+
+            def capture_or_cancel(
+                screen: Any,
+                callback: Any = None,
+                *args: Any,
+                **kwargs: Any,
+            ) -> Any:
+                if not captured_callbacks:
+                    assert callable(callback)
+                    captured_callbacks.append(callback)
+                    return orig_push(screen, callback, *args, **kwargs)
+                raise asyncio.CancelledError("loop cancelled")
+
+            monkeypatch.setattr(app, "push_screen", capture_or_cancel)
+            app.on_terminal_attach_confirmation_request(request)
+            assert len(captured_callbacks) == 1
+
+            with pytest.raises(asyncio.CancelledError):
+                captured_callbacks[0](True)
+
+            assert request.resolved.is_set()
+            assert isinstance(request.error, asyncio.CancelledError)
+
+    asyncio.run(exercise())

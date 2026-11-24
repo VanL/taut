@@ -1164,7 +1164,7 @@ config context; debug action execution still reads its live environment.
 | `taut/_watch_runtime.py` | Internal watcher runtime protocol and watched-thread value object |
 | `taut/envelope.py` | Envelope encode/decode, `from_id`/`from` snapshot handling, and foreign fallback |
 | `taut/state/` | Internal state interface, row types, dialect marker, sidecar DDL, version gate, member, claim, alias, thread, membership, cursor, and rename-state queries |
-| `taut/identity.py` | Process-chain capture, claim hashing, identity resolution evidence, presence |
+| `taut/identity.py` | Process-chain capture, Darwin in-process `gethostuuid` host UUID lookup with `ioreg`/`hostname` fallback, claim hashing, identity resolution evidence, presence |
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |

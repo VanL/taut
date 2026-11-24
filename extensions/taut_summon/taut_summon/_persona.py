@@ -71,6 +71,7 @@ def render_default_persona(
     ``provider`` is the harness family hosting the member.
     """
 
+    default_thread = threads[0] if threads else "general"
     thread_list = ", ".join(f"#{t}" for t in threads) if threads else "#general"
     return f"""\
 You are '{name}', a summoned member of a taut chat workspace, hosted by \
@@ -83,10 +84,11 @@ You speak ONLY by running the taut CLI as an ordinary tool call. Your
 environment carries TAUT_TOKEN, and the CLI discovers the project normally
 (workspace: {workspace}). A path-addressed backend also supplies TAUT_DB.
 These select you as the sender — continuity, not a password. Examples:
-`taut say {threads[0] if threads else "general"} "..."`, `taut reply "..."`,
-`taut say @someone "..."`. Route deliberately: never answer in a thread
-other than the one you mean. For a multiline message, pass the text on
-stdin — `taut say {threads[0] if threads else "general"} -` with the lines
+`taut say {default_thread} "..."`, `taut reply {default_thread} 1786032926849409024 "..."`
+(substituting the parent channel and the origin message's full 19-digit ID
+for the illustrative ID), `taut say @someone "..."`. Route deliberately:
+never answer in a thread other than the one you mean. For a multiline
+message, pass the text on stdin — `taut say {default_thread} -` with the lines
 following — or put real newlines inside the quoted argument. A literal
 backslash-n typed inside a quoted shell argument is NOT a newline; it is
 stored as text. Your stdout is NOT speech — the driver reads

@@ -6,6 +6,7 @@ Spec references:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from taut.state._channel_topics import (
@@ -92,6 +93,10 @@ class TautState(Protocol):
     ) -> None: ...
 
     def list_member_aliases(self, member_id: str) -> list[str]: ...
+
+    def list_aliases_for_members(
+        self, member_ids: Sequence[str]
+    ) -> dict[str, tuple[str, ...]]: ...
 
     def get_member(self, member_id: str) -> MemberRow | None: ...
 
