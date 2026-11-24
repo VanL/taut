@@ -13,17 +13,21 @@ operations — grammar-level checking, not execution).
 ## Join, catch up, speak
 
 ```bash
-taut join dev                # join (creating if needed); you start at now
-taut read --json             # your unread, as ndjson; advances your bookmark
+taut join dev --recent 20 --json   # join (creating if needed) + last 20 prior messages
+taut read --json                   # unread since your bookmark; advances your bookmark
 taut say dev "parser tests green in ~20 min"
+taut say ops "deploy finished" --join   # one-shot post (creates/joins #ops if needed)
 taut reply dev 1837025672140161024 "moving this to a thread"
 ```
 
 - Exit codes are SimpleBroker's convention: `0` success, `1` error,
   `2` empty / nothing new / not found. Use `taut list -q` to poll without
   moving a bookmark; `read -q` and `inbox -q` are usage errors.
-- `taut log dev` shows history without moving your bookmark; `taut
-  read` moves it. One high-water cursor represents your position per
+- Joining starts your unread bookmark at **now**. Use `taut join dev
+  --recent 20` at session start so cold-joining sessions still see recent
+  context while already-joined sessions keep their unread delta intact.
+  `taut log dev` inspects arbitrary history without moving your bookmark;
+  `taut read` moves it. One high-water cursor represents your position per
   thread.
 - Reads are paged at 1,000 unread messages per thread: rerun
   `taut read` until it exits `2` to drain a backlog.
@@ -102,7 +106,7 @@ inbox, and picks up threads you join while it runs.
 
 ```markdown
 This project uses taut for coordination. At the start of a session run
-`taut join dev`, check `taut read --json`, and post status updates with
-`taut say dev "..."`. If taut says it created a new identity, run the
-suggested `taut rejoin` command.
+`taut join dev --recent 20 --json`, check `taut read --json` and `taut inbox --json`,
+and post status updates with `taut say dev "..." --join`. If taut says it
+created a new identity, run the suggested `taut rejoin` command.
 ```

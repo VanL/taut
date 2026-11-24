@@ -32,6 +32,11 @@ def _spec(
 
 BUILTIN_SPECS = (
     _spec("init", "Initialize the resolved Taut storage."),
+    _spec(
+        "onboard",
+        "Bootstrap storage, agent instructions, and ignore entries.",
+        globals_=_SYSTEM_GLOBALS,
+    ),
     _spec("join", "Join a channel, creating it when needed."),
     _spec("leave", "Leave a joined thread without deleting history."),
     _spec("set", "Change a property of the acting member."),

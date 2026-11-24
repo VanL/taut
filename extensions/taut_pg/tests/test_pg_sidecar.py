@@ -85,13 +85,15 @@ def test_direct_taut_backend_settings_select_postgres_without_project_file(
 
     try:
         result = TautClient.init()
+        second = TautClient.init()
         client = TautClient(as_name="van")
         try:
             client.join("general")
             assert client.joined_thread_names() == ("general",)
         finally:
             client.close()
-        assert result.created is False
+        assert result.created is True
+        assert second.created is False
         assert result.db.startswith("postgresql://")
         assert not (tmp_path / ".taut.toml").exists()
     finally:
@@ -581,6 +583,62 @@ def test_postgres_concurrent_empty_schema_initializers_converge(
     finally:
         for queue in queues:
             queue.close()
+
+
+def test_postgres_concurrent_taut_client_init_reports_single_creator(
+    tmp_path: Path,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from conftest import unique_schema
+
+    race_schema = unique_schema("taut_pg_init_race")
+    project_dir = tmp_path / "pg-init-race"
+    project_dir.mkdir()
+    (project_dir / ".taut.toml").write_text(
+        "\n".join(
+            [
+                "version = 1",
+                'backend = "postgres"',
+                f'target = "{pg_dsn}"',
+                "",
+                "[backend_options]",
+                f'schema = "{race_schema}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project_dir)
+    import taut.state._sql as sql_mod
+
+    workers = 4
+    post_preread = threading.Barrier(workers)
+    real_check = sql_mod._current_schema_is_installed
+
+    def gated_check(queue: Queue, *, allow_load_guard: bool = False) -> bool:
+        installed = real_check(queue, allow_load_guard=allow_load_guard)
+        if not installed:
+            post_preread.wait(timeout=15)
+        return installed
+
+    monkeypatch.setattr(sql_mod, "_current_schema_is_installed", gated_check)
+
+    def run_init(_idx: int) -> Any:
+        return TautClient.init(directory=project_dir)
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(run_init, range(workers)))
+        created_flags = [res.created for res in results]
+        assert created_flags.count(True) == 1
+        assert created_flags.count(False) == workers - 1
+        assert TautClient.init(directory=project_dir).created is False
+    finally:
+        get_backend_plugin("postgres").cleanup_target(
+            pg_dsn,
+            backend_options={"schema": race_schema},
+        )
 
 
 def test_summon_driver_claim_race_has_one_exact_postgres_owner(

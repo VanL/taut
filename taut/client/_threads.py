@@ -14,6 +14,7 @@ from taut._exceptions import (
 )
 from taut.state import (
     ChannelRenameRow,
+    MemberRow,
     MembershipRow,
     ThreadRow,
     decode_channel_topic,
@@ -22,7 +23,8 @@ from taut.state import (
 )
 
 from ._base import _ClientBase, _incomplete_channel_rename_message
-from ._models import Channel, Message, Thread
+from ._codec import message_from_body
+from ._models import Channel, JoinResult, Message, Thread
 
 
 class ThreadsMixin(_ClientBase):
@@ -81,66 +83,48 @@ class ThreadsMixin(_ClientBase):
             row["thread"] for row in self._state.list_memberships(member["member_id"])
         )
 
-    def join(
+    def _ensure_channel_membership(
         self,
         thread: str,
+        member: MemberRow,
         *,
         persona: str | None = None,
-        new: bool = False,
-    ) -> Message | None:
-        """Join a channel, creating it if needed."""
-
-        thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
-        self._ensure_no_incomplete_channel_rename()
-        resolved = self._resolve_member(create=True, force_new=new, persona=persona)
-        member = self._require_member(resolved)
+    ) -> tuple[Queue, Message | None]:
         queue = self.queue(thread)
         ts = queue.generate_timestamp()
         existing_membership = self._state.get_membership(
             thread=thread,
             member_id=member["member_id"],
         )
-        prior_cursor = (
-            ts if existing_membership is None else existing_membership["last_seen_ts"]
-        )
-        existing_thread = self._state.get_thread(thread)
-        created_thread = existing_thread is None
         if existing_membership is not None:
+            existing_thread = self._state.get_thread(thread)
             if existing_thread is None or existing_thread["kind"] != "channel":
                 raise ThreadNameError(f"not a channel: {thread}")
             if persona is not None:
                 self._state.update_member_persona(member["member_id"], persona)
-            return None
-        if created_thread:
-            current_thread = self._state.upsert_thread(
-                name=thread,
-                kind="channel",
-                parent=None,
-                origin_ts=None,
-                created_by=member["member_id"],
-                meta={},
-                created_ts=ts,
+            return queue, None
+        _thread_row, membership, created_thread, inserted_membership = (
+            self._state.ensure_channel_membership(
+                thread=thread,
+                member_id=member["member_id"],
+                ts=ts,
             )
-            notice_text = f"{member['display_name']} created #{thread}"
-        else:
-            assert existing_thread is not None
-            current_thread = existing_thread
-            if existing_thread["kind"] != "channel":
-                raise ThreadNameError(f"not a channel: {thread}")
-            notice_text = f"{member['display_name']} joined"
-        self._state.add_membership(
-            thread=thread,
-            member_id=member["member_id"],
-            joined_ts=ts,
-            last_seen_ts=ts,
-            expected_thread_created_ts=current_thread["created_ts"],
+        )
+        if not inserted_membership:
+            if persona is not None:
+                self._state.update_member_persona(member["member_id"], persona)
+            return queue, None
+        notice_text = (
+            f"{member['display_name']} created #{thread}"
+            if created_thread
+            else f"{member['display_name']} joined"
         )
         self._publish_cache_stale("membership")
         if persona is not None:
             updated = self._state.update_member_persona(member["member_id"], persona)
             if updated is not None:
                 member = updated
-        message = self._write_message(
+        notice = self._write_message(
             queue=queue,
             thread=thread,
             from_id=member["member_id"],
@@ -153,10 +137,57 @@ class ThreadsMixin(_ClientBase):
             queue=queue,
             thread=thread,
             member_id=member["member_id"],
-            prior_cursor=prior_cursor,
-            own_message_ts=message.ts,
+            prior_cursor=membership["last_seen_ts"],
+            own_message_ts=notice.ts,
         )
-        return message
+        return queue, notice
+
+    def join_channel(
+        self,
+        thread: str,
+        *,
+        persona: str | None = None,
+        new: bool = False,
+        recent: int = 0,
+    ) -> JoinResult:
+        """Join a channel, optionally returning bounded prior history."""
+
+        if isinstance(recent, bool) or not isinstance(recent, int):
+            raise TypeError("recent must be an integer")
+        if not 0 <= recent <= 1000:
+            raise ValueError("recent must be between 0 and 1000")
+        thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=True, force_new=new, persona=persona)
+        member = self._require_member(resolved)
+        queue, notice = self._ensure_channel_membership(
+            thread,
+            member,
+            persona=persona,
+        )
+        recent_messages: tuple[Message, ...] = ()
+        if recent > 0:
+            raw_recent = queue.peek_many(
+                recent,
+                with_timestamps=True,
+                before_timestamp=notice.ts if notice is not None else None,
+                order="newest",
+            )
+            recent_messages = tuple(
+                message_from_body(thread, body, ts) for body, ts in reversed(raw_recent)
+            )
+        return JoinResult(thread=thread, notice=notice, recent=recent_messages)
+
+    def join(
+        self,
+        thread: str,
+        *,
+        persona: str | None = None,
+        new: bool = False,
+    ) -> Message | None:
+        """Join a channel, creating it if needed."""
+
+        return self.join_channel(thread, persona=persona, new=new, recent=0).notice
 
     def leave(self, thread: str) -> Message:
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)

@@ -165,9 +165,15 @@ class TuiDomainActions:
             lambda client: client.rename_channel(old_name, new_name)
         )
 
-    def send_message(self, target: str, text: str) -> Future[Message]:
+    def send_message(
+        self,
+        target: str,
+        text: str,
+        *,
+        join: bool = False,
+    ) -> Future[Message]:
         return self._session.submit_client_operation(
-            lambda client: client.say(target, text)
+            lambda client: client.say(target, text, join=join)
         )
 
     def show_message(self, message_id: str) -> Future[Message]:

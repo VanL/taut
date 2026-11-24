@@ -167,10 +167,27 @@ class MessagingMixin(_ClientBase):
             audience_count=len(queue_names),
         )
 
-    def say(self, target: str, text: str) -> Message:
+    def _say_joined_channel(
+        self,
+        address: addressing.TargetAddress,
+        text: str,
+    ) -> Message:
+        if address.kind != "channel" or address.thread is None or "." in address.thread:
+            raise ThreadNameError("--join is only supported for top-level channels")
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=True)
+        member = self._require_member(resolved)
+        self._ensure_channel_membership(address.thread, member)
+        return self._say_chat_thread(address.thread, member, text)
+
+    def say(self, target: str, text: str, *, join: bool = False) -> Message:
+        if type(join) is not bool:
+            raise TypeError("join must be a bool")
         if is_blank_message_text(text):
             raise BlankMessageError("blank message")
         address = addressing.parse_target(target, allow_dm=True)
+        if join:
+            return self._say_joined_channel(address, text)
         self._ensure_no_incomplete_channel_rename()
         if address.kind == "dm":
             if address.thread is not None:

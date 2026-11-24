@@ -281,6 +281,7 @@ def test_sdist_rebuild_installs_terminal_policy_outside_checkout(
     with tarfile.open(sdists[0], "r:gz") as archive:
         members = archive.getmembers()
         assert any(member.name.endswith("/taut/defaults.toml") for member in members)
+        assert any(member.name.endswith("/taut/agent-kernel.md") for member in members)
         for member in members:
             destination = (extracted / member.name).resolve()
             assert extracted.resolve() in destination.parents
@@ -313,6 +314,7 @@ def test_sdist_rebuild_installs_terminal_policy_outside_checkout(
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as archive:
         assert "taut/defaults.toml" in archive.namelist()
+        assert "taut/agent-kernel.md" in archive.namelist()
         assert "taut/_scripts.py" not in archive.namelist()
 
     environment = tmp_path / "environment"
@@ -366,8 +368,10 @@ def test_sdist_rebuild_installs_terminal_policy_outside_checkout(
             "-I",
             "-c",
             (
-                "from pathlib import Path; import taut; "
+                "from importlib import resources; from pathlib import Path; import taut; "
                 "assert Path(taut.__file__).resolve().is_relative_to(Path.cwd().parent); "
+                "kernel = resources.files('taut').joinpath('agent-kernel.md').read_text('utf-8'); "
+                "assert '--recent 20' in kernel; "
                 "assert taut.escape_terminal_text('PROJECT\\x1b') == "
                 "'\\\\x50\\\\x52\\\\x4f\\\\x4a\\\\x45\\\\x43"
                 "\\\\x54\\\\x1b'"
@@ -484,3 +488,85 @@ def test_installed_core_selection_skips_unrelated_manifest_but_help_and_reserved
         "assert 'taut_command_plugin.manifest' in sys.modules"
     )
     assert reserved.returncode == 0, reserved.stderr
+
+
+def test_installed_wheel_onboard_and_cold_join_recipe_end_to_end(
+    installed_command_fixture: Any,
+    tmp_path: Path,
+) -> None:
+    expected_kernel = (PROJECT_ROOT / "docs" / "agent-kernel.md").read_text(
+        encoding="utf-8"
+    )
+    kernel_check = installed_command_fixture.run_python(
+        "from taut.client import TautClient; print(TautClient.agent_kernel(), end='')"
+    )
+    assert kernel_check.returncode == 0, kernel_check.stderr
+    assert kernel_check.stdout == expected_kernel
+
+    work_dir = tmp_path / "fresh_project"
+    work_dir.mkdir()
+    executable = installed_command_fixture.python.parent / (
+        "taut.exe" if os.name == "nt" else "taut"
+    )
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    for key in list(env):
+        if key.startswith(("TAUT_", "BROKER_")):
+            env.pop(key, None)
+
+    def run_installed(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(executable), *args],
+            cwd=work_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+    onboard_res = run_installed("onboard", "--channel", "dev", "--json")
+    assert onboard_res.returncode == 0, onboard_res.stderr
+    assert (work_dir / ".taut.db").is_file()
+    assert (work_dir / "AGENTS.md").is_file()
+    assert not (work_dir / ".gitignore").exists()
+    assert not (work_dir / ".dockerignore").exists()
+
+    print_kernel_res = run_installed("onboard", "--print-kernel")
+    assert print_kernel_res.returncode == 0, print_kernel_res.stderr
+    assert print_kernel_res.stdout == expected_kernel
+
+    # Actor 1 (van) posts kickoff with say --join before claude arrives.
+    kickoff = run_installed("--as", "van", "say", "dev", "kickoff", "--join", "--json")
+    assert kickoff.returncode == 0, kickoff.stderr
+
+    # Actor 2 (claude) executes the cold-join recipe:
+    # 1) join dev --recent 20 --json sees kickoff
+    join_res = run_installed(
+        "--as", "claude", "join", "dev", "--recent", "20", "--json"
+    )
+    assert join_res.returncode == 0, join_res.stderr
+    join_lines = [json.loads(line) for line in join_res.stdout.splitlines() if line]
+    assert any(
+        item.get("kind") == "message" and item.get("text") == "kickoff"
+        for item in join_lines
+    )
+
+    # 2) immediate read --json exits 2 (cursor started caught up at join!)
+    read_empty = run_installed("--as", "claude", "read", "--json")
+    assert read_empty.returncode == 2
+    assert read_empty.stdout == ""
+
+    # 3) van posts followup -> claude's read --json exits 0 returning followup!
+    followup = run_installed("--as", "van", "say", "dev", "followup", "--json")
+    assert followup.returncode == 0, followup.stderr
+    read_next = run_installed("--as", "claude", "read", "--json")
+    assert read_next.returncode == 0, read_next.stderr
+    read_lines = [json.loads(line) for line in read_next.stdout.splitlines() if line]
+    assert [item["text"] for item in read_lines] == ["followup"]
+
+    # 4) claude replies in channel with say dev "ack"
+    ack = run_installed("--as", "claude", "say", "dev", "ack", "--json")
+    assert ack.returncode == 0, ack.stderr

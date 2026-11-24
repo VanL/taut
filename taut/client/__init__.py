@@ -50,12 +50,15 @@ from ._models import (
     DoctorReport,
     DumpReport,
     InitResult,
+    JoinResult,
     LoadReport,
     Member,
     Message,
     MessageDeletion,
     MessageReaction,
     Notification,
+    OnboardFileStep,
+    OnboardReport,
     PersistenceComponentReport,
     SearchHit,
     Thread,
@@ -90,11 +93,11 @@ def _ensure_initialized_schema(
     queue: Queue,
     target: BrokerTarget | str,
     db_file: Path | None,
-) -> None:
+) -> bool:
     """Install Taut state while retaining SQLite target context in errors."""
 
     try:
-        SqlSidecarTautState(
+        return SqlSidecarTautState(
             queue,
             dialect_for_taut_target(target),
         ).ensure_schema()
@@ -110,12 +113,15 @@ __all__ = [
     "DoctorReport",
     "DumpReport",
     "InitResult",
+    "JoinResult",
     "LoadReport",
     "Member",
     "Message",
     "MessageDeletion",
     "MessageReaction",
     "Notification",
+    "OnboardFileStep",
+    "OnboardReport",
     "PersistenceComponentReport",
     "SearchHit",
     "TautClient",
@@ -206,10 +212,45 @@ class TautClient(
         )
 
     @classmethod
+    def onboard(
+        cls,
+        *,
+        root: str | Path | None = None,
+        db_path: str | Path | None = None,
+        channel: str = "general",
+        mcp: bool = False,
+        init_storage: bool = True,
+        update_agents: bool = True,
+        update_ignore: bool = True,
+    ) -> OnboardReport:
+        """Preflight and apply actor-free project onboarding."""
+
+        from taut._onboard import onboard_workspace
+
+        return onboard_workspace(
+            root=root,
+            db_path=db_path,
+            channel=channel,
+            mcp=mcp,
+            init_storage=init_storage,
+            update_agents=update_agents,
+            update_ignore=update_ignore,
+        )
+
+    @classmethod
+    def agent_kernel(cls) -> str:
+        """Return the packaged agent kernel protocol document."""
+
+        from taut._onboard import read_agent_kernel
+
+        return read_agent_kernel()
+
+    @classmethod
     def init(
         cls,
         *,
         db_path: str | Path | None = None,
+        directory: str | Path | None = None,
     ) -> InitResult:
         """Create a taut database and install sidecar tables."""
 
@@ -218,11 +259,16 @@ class TautClient(
         db_file: Path | None
         if explicit is not None:
             path = Path(explicit).expanduser()
+            if directory is not None and not path.is_absolute():
+                path = Path(directory).expanduser() / path
             target: BrokerTarget | str = str(path)
             db_file = path
         else:
+            search_dir = (
+                Path.cwd() if directory is None else Path(directory).expanduser()
+            )
             try:
-                target_obj = target_for_directory(Path.cwd(), config=config)
+                target_obj = target_for_directory(search_dir, config=config)
             except (tomllib.TOMLDecodeError, ValueError) as exc:
                 _raise_invalid_project_config(
                     exc,
@@ -239,8 +285,7 @@ class TautClient(
             )
         if db_file is not None:
             _validate_sqlite_path(db_file)
-        created = False if db_file is None else not db_file.exists()
-        if db_file is not None and created:
+        if db_file is not None and not db_file.exists():
             # Fail fast with a one-line diagnostic: without this check an
             # unwritable target stalls for the full SimpleBroker setup
             # phase-lock timeout (~60s) before surfacing a lock-centric
@@ -252,7 +297,7 @@ class TautClient(
                 raise TautError(f"cannot create {db_file}: {parent} is not writable")
         queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
         try:
-            _ensure_initialized_schema(queue, target, db_file)
+            created = _ensure_initialized_schema(queue, target, db_file)
         finally:
             queue.close()
         display_target = (

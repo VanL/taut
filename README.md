@@ -23,16 +23,14 @@ config, no accounts. One SQLite file by default; Postgres when you need it.*
 > and search in [`docs/specs/06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md).
 
 ```bash
-$ taut init
-$ taut join general
-$ taut say general "kicking off the refactor. claude, take the parser."
+$ taut onboard
+$ taut say general "kicking off the refactor. claude, take the parser." --join
 ```
 
 …and in the terminal where your agent is working:
 
 ```bash
-$ taut join general
-$ taut log general           # joining starts you at now — log rewinds
+$ taut join general --recent 20   # bookmark starts at now; --recent shows prior context
 ── general ──────────────────────────────────────
   09:13 · van created #general
   09:14 van     kicking off the refactor. claude, take the parser.
@@ -335,12 +333,15 @@ design rationale lives in
 ## Quick Start
 
 ```bash
-# One-time, per project (like git init)
+# One-time, per project: initializes .taut.db, writes or updates AGENTS.md /
+# CLAUDE.md, and appends .taut.db* to existing .gitignore / .dockerignore files
+# (never creating ignore files that do not already exist). Or run `taut init`
+# for storage-only initialization.
 $ cd ~/myproject
-$ taut init
+$ taut onboard
 
-# Channels are created by joining them
-$ taut join general
+# Channels are created by joining them (or inline with `say ... --join`)
+$ taut join general --recent 20
 $ taut channel topic general "General project coordination"
 $ taut say general "anyone awake?"
 
@@ -570,11 +571,12 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 
 | Command | Description |
 |---------|-------------|
-| `taut init` | Create `.taut.db` in the current directory |
-| `taut join THREAD [--as NAME] [--persona TEXT] [--new]` | Join (creating if needed) a channel; you start at now |
+| `taut init` | Create `.taut.db` (or initialize the configured backend target) in the current directory |
+| `taut onboard [--channel CHANNEL] [--mcp] [--no-init] [--no-agents] [--no-ignore]` / `taut onboard --print-kernel` | Bootstrap storage, write/update the fenced Taut section in `AGENTS.md`/`CLAUDE.md`, append default SQLite/lock entries to **existing** `.gitignore`/`.dockerignore` files (never creating absent ignore files), optionally register `taut mcp` in `.mcp.json`, or print the packaged agent-kernel guide |
+| `taut join THREAD [--as NAME] [--persona TEXT] [--new] [--recent N]` | Join (creating if needed) a channel; your unread bookmark starts at now, and `--recent N` (`1..1000`) shows up to `N` chronological prior messages without moving any cursor |
 | `taut leave THREAD` | Leave a thread; history stays |
 | `taut set name NAME` | Change your current display/routing name; old messages keep the old name |
-| `taut say THREAD\|@NAME\|DM_HANDLE [TEXT\|-]` | Post to a channel, sub-thread, person-addressed DM, or existing stable DM (stdin with `-` or a pipe); only `@NAME` may create a DM |
+| `taut say THREAD\|@NAME\|DM_HANDLE [TEXT\|-] [--join]` | Post to a channel, sub-thread, person-addressed DM, or existing stable DM (stdin with `-` or a pipe); `--join` auto-joins/creates a top-level channel before posting; only `@NAME` may create a DM |
 | `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
@@ -605,7 +607,7 @@ Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 Ambient `BROKER_*` values do not affect Taut. Reaction policy lives in the
 Taut-selected storage project file; terminal-rendering policy retains its
 separate current-directory `.taut.toml` contract. The actor-free `system`
-namespace accepts only `--db`, `--json`, and `--quiet`; actor selectors and
+and `onboard` commands accept only `--db`, `--json`, and `--quiet` (`onboard --print-kernel` accepts no root globals other than `--help`); actor selectors and
 timestamps are usage errors.
 
 **Exit codes** (SimpleBroker's convention): `0` success, `1` error, `2`
@@ -685,13 +687,26 @@ no second query language or cross-backend ranking promise.
 
 ## Working With Agents
 
+Run `taut onboard` once in a repository to initialize storage, write or update
+a fenced coordination block in `AGENTS.md` / `CLAUDE.md`, and append default
+SQLite/lock lines to existing `.gitignore` / `.dockerignore` files (without
+creating absent ignore files). Pass `taut onboard --mcp` to add `"taut":
+{"command": "taut", "args": ["mcp"]}` to `.mcp.json` (the `taut-mcp` package is
+installed separately or via `taut-chat[all]`, and current MCP tool calls pass
+explicit `workspace` and continuity `token` inputs per
+[spec 05](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md)).
+Any agent can print the full protocol reference directly from an installed
+wheel without an initialized workspace via `taut onboard --print-kernel`.
+
 For shell-based agents, the record-oriented CLI with `--json` (ndjson) is the
-fast path: an agent joins, catches up, and replies with three shell commands
-and zero setup, keying on `from_id` for stable identity. The recipes —
+fast path: an agent joins and catches up with `taut join general --recent 20 --json`,
+drains new traffic with `taut read --json`, and posts with `taut say general "..." --join`,
+keying on `from_id` for stable identity. The recipes —
 join/catch-up/say, identity selection, DM handles, the notification
 and vanilla-`broker read` hazards, exit codes, and a session-start
 pattern for `CLAUDE.md` / `AGENTS.md` — live in one place, the
-[agent kernel](https://github.com/VanL/taut/blob/main/docs/agent-kernel.md).
+[agent kernel](https://github.com/VanL/taut/blob/main/docs/agent-kernel.md)
+(packaged identically as `taut/agent-kernel.md` and `TautClient.agent_kernel()`).
 
 ## Python Library
 

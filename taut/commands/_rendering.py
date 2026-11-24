@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         MessageDeletion,
         MessageReaction,
         Notification,
+        OnboardReport,
         SearchHit,
         TautClient,
         Thread,
@@ -186,6 +187,44 @@ def emit_init(
     else:
         status = "created" if result.created else "exists"
         write_human_line(stdout, f"{status}: {result.db}")
+
+
+def emit_onboard(
+    report: OnboardReport,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one completed project onboarding receipt."""
+
+    if quiet:
+        return
+    if json_output:
+        write_json(
+            stdout,
+            {
+                "root": report.root,
+                "channel": report.channel,
+                "init": (
+                    {"db": report.init.db, "created": report.init.created}
+                    if report.init is not None
+                    else None
+                ),
+                "files": [
+                    {"path": item.path, "action": item.action} for item in report.files
+                ],
+            },
+        )
+        return
+    if report.init is not None:
+        init_status = "created" if report.init.created else "exists"
+        write_human_line(stdout, f"db ({init_status}): {report.init.db}")
+    for item in report.files:
+        if item.action == "skipped_disabled":
+            continue
+        label = "skipped (absent)" if item.action == "skipped_absent" else item.action
+        write_human_line(stdout, f"{item.path}: {label}")
 
 
 def read_text_argument(text: str | None, stdin: TextIO) -> str:

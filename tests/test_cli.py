@@ -4122,3 +4122,180 @@ def test_human_inbox_lazily_batches_thread_metadata_and_skips_json_or_ineligible
     finally:
         alice.close()
         bob.close()
+
+
+def test_cli_join_recent_and_say_join_contracts(tmp_path: Path) -> None:
+    from taut.commands._dispatch import dispatch
+
+    db = tmp_path / "cli-phase1.db"
+    assert (
+        dispatch(["--db", str(db), "init"], stdout=StringIO(), stderr=StringIO()) == 0
+    )
+
+    # Invalid --recent values exit 1 before creating member or channel.
+    for bad in ("0", "-1", "1001", "nope"):
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(
+                ["--db", str(db), "--as", "ghost", "join", "never", "--recent", bad],
+                stdout=out,
+                stderr=err,
+            )
+            == 1
+        )
+    check = TautClient(db_path=db)
+    try:
+        assert check.who() == []
+    finally:
+        check.close()
+
+    # Blank say --join exits 2 silently with zero side effects.
+    out, err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "ghost", "say", "never", "   ", "--join"],
+            stdout=out,
+            stderr=err,
+        )
+        == 2
+    )
+    assert out.getvalue() == "" and err.getvalue() == ""
+
+    # Non-channel say --join exits 1.
+    for bad_target in (
+        "@ghost",
+        "ops.1837025672140161024",
+        "dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ):
+        out, err = StringIO(), StringIO()
+        assert (
+            dispatch(
+                ["--db", str(db), "--as", "ghost", "say", bad_target, "hi", "--join"],
+                stdout=out,
+                stderr=err,
+            )
+            == 1
+        )
+
+    # First-contact say --join --json emits 2 lines: created member (with token, no ts) + sent message (with ts).
+    out, err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "freshbot",
+                "say",
+                "#ops",
+                "deploy green",
+                "--join",
+                "--json",
+            ],
+            stdout=out,
+            stderr=err,
+        )
+        == 0
+    )
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["name"] == "freshbot"
+    assert lines[0]["token"].startswith("taut-")
+    assert "ts" not in lines[0]
+    assert [row["ts"] for row in lines if "ts" in row] == [lines[1]["ts"]]
+    assert lines[1]["text"] == "deploy green"
+
+    # Repeat say --join --json emits 1 line (no duplicate member creation or notice).
+    out2, err2 = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "freshbot",
+                "say",
+                "ops",
+                "second",
+                "--join",
+                "--json",
+            ],
+            stdout=out2,
+            stderr=err2,
+        )
+        == 0
+    )
+    lines2 = [json.loads(line) for line in out2.getvalue().splitlines()]
+    assert len(lines2) == 1
+    assert lines2[0]["text"] == "second"
+
+    # Cold join --recent 2 --json sees prior 2 messages + join notice!
+    out3, err3 = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "claude",
+                "join",
+                "ops",
+                "--recent",
+                "2",
+                "--json",
+            ],
+            stdout=out3,
+            stderr=err3,
+        )
+        == 0
+    )
+    lines3 = [json.loads(line) for line in out3.getvalue().splitlines()]
+    assert lines3[0]["name"] == "claude"
+    assert [row["text"] for row in lines3[1:]] == [
+        "deploy green",
+        "second",
+        "claude joined",
+    ]
+
+    # Empty channel repeat join --recent 5 prints heading in human mode and exits 0.
+    empty_client = TautClient(db_path=db, as_name="cleaner")
+    try:
+        created_notice = empty_client.join("emptych")
+        assert created_notice is not None
+        q = empty_client.queue("emptych")
+        try:
+            q.delete(message_id=created_notice.ts)
+        finally:
+            q.close()
+    finally:
+        empty_client.close()
+    out_h, err_h = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "cleaner", "join", "emptych", "--recent", "5"],
+            stdout=out_h,
+            stderr=err_h,
+        )
+        == 0
+    )
+    assert "emptych" in out_h.getvalue()
+    out_j, err_j = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "cleaner",
+                "join",
+                "emptych",
+                "--recent",
+                "5",
+                "--json",
+            ],
+            stdout=out_j,
+            stderr=err_j,
+        )
+        == 0
+    )
+    assert out_j.getvalue() == ""

@@ -81,6 +81,7 @@ taut-tui = { path = "./extensions/taut_tui", editable = true }
 include = [
     "/taut/**/*.py",
     "/taut/defaults.toml",
+    "/taut/agent-kernel.md",
     "/taut/py.typed",
     "/README.md",
     "/LICENSE",

@@ -29,6 +29,7 @@ def test_taut_init_and_messages_use_configured_postgres_project(
     monkeypatch.chdir(taut_pg_project)
 
     result = TautClient.init()
+    second = TautClient.init()
     van = TautClient(as_name="van")
     bob = TautClient(as_name="bob")
 
@@ -36,7 +37,8 @@ def test_taut_init_and_messages_use_configured_postgres_project(
     bob.join("general")
     message = van.say("general", "hello from pg")
 
-    assert result.created is False
+    assert result.created is True
+    assert second.created is False
     assert result.db.startswith("postgresql://")
     assert message.text == "hello from pg"
     assert bob.read("general")[-1].text == "hello from pg"
@@ -68,8 +70,12 @@ def test_taut_cli_uses_postgres_project_config(
     rc, out, err = taut_cli("init", "--json", cwd=taut_pg_project)
     assert rc == 0, err
     init_result = json.loads(out)
-    assert init_result["created"] is False
+    assert init_result["created"] is True
     assert init_result["db"].startswith("postgresql://")
+
+    rc2, out2, err2 = taut_cli("init", "--json", cwd=taut_pg_project)
+    assert rc2 == 0, err2
+    assert json.loads(out2)["created"] is False
 
     rc, out, err = taut_cli(
         "--as",

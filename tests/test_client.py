@@ -6414,3 +6414,315 @@ def test_persistent_client_writes_reuse_one_session(
         client.close()
 
     assert connects == 0, f"persistent client writes opened {connects} connections"
+
+
+def test_init_reports_sidecar_creation_on_raw_broker_db_and_explicit_directory(
+    tmp_path: Path,
+) -> None:
+    raw_db = tmp_path / "raw-broker.db"
+    raw_queue = Queue("raw_only", db_path=str(raw_db))
+    try:
+        raw_queue.write("pre-existing broker message")
+    finally:
+        raw_queue.close()
+    assert raw_db.exists()
+
+    first = TautClient.init(db_path=raw_db)
+    second = TautClient.init(db_path=raw_db)
+    assert first.created is True
+    assert second.created is False
+
+    sub_dir = tmp_path / "explicit-project"
+    sub_dir.mkdir()
+    first_dir = TautClient.init(directory=sub_dir)
+    second_dir = TautClient.init(directory=sub_dir)
+    assert first_dir.db == str(sub_dir / ".taut.db")
+    assert first_dir.created is True
+    assert second_dir.created is False
+
+
+def test_join_channel_recent_validates_uses_indexed_peek_and_preserves_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    bad_client = TautClient(db_path=tmp_path / ".taut.db", as_name="validator")
+    try:
+        for bad_type in (True, False, "5", 1.5):
+            with pytest.raises(TypeError, match="recent must be an integer"):
+                bad_client.join_channel("nevercreated", recent=bad_type)  # type: ignore[arg-type]
+        for bad_val in (-1, 1001):
+            with pytest.raises(ValueError, match="recent must be between 0 and 1000"):
+                bad_client.join_channel("nevercreated", recent=bad_val)
+        assert bad_client.who() == []
+    finally:
+        bad_client.close()
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    sent = [van.say("general", f"msg-{idx:02d}") for idx in range(50)]
+
+    peek_calls: list[dict[str, Any]] = []
+    real_peek_many = Queue.peek_many
+    real_peek_gen = Queue.peek_generator
+
+    def spy_peek_many(self: Queue, limit: int = 1000, **kwargs: Any) -> Any:
+        peek_calls.append({"queue": self.name, "limit": limit, **kwargs})
+        return real_peek_many(self, limit, **kwargs)
+
+    def forbid_peek_gen(self: Queue, *args: Any, **kwargs: Any) -> Any:
+        if self.name == "general":
+            raise AssertionError("join_channel must not scan via peek_generator")
+        return real_peek_gen(self, *args, **kwargs)
+
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(Queue, "peek_many", spy_peek_many)
+            patch.setattr(Queue, "peek_generator", forbid_peek_gen)
+            result = bob.join_channel("general", recent=2)
+        assert result.thread == "general"
+        assert result.notice is not None
+        assert result.notice.text == "bob joined"
+        assert [m.text for m in result.recent] == [sent[-2].text, sent[-1].text]
+        newest_calls = [c for c in peek_calls if c.get("order") == "newest"]
+        assert len(newest_calls) == 1
+        assert newest_calls[0]["limit"] == 2
+        assert newest_calls[0]["with_timestamps"] is True
+        assert newest_calls[0]["before_timestamp"] == result.notice.ts
+        with pytest.raises(EmptyResultError):
+            bob.read("general")
+
+        # Repeat join with 3 unread messages preserves cursor!
+        unread_msgs = [van.say("general", f"unread-{i}") for i in range(3)]
+        repeat = bob.join_channel("general", recent=2)
+        assert repeat.notice is None
+        assert [m.text for m in repeat.recent] == ["unread-1", "unread-2"]
+        assert [m.text for m in bob.read("general")] == [m.text for m in unread_msgs]
+
+        # Post-commit fault on order=="newest" leaves membership and join notice durable!
+        def fault_newest(self: Queue, limit: int = 1000, **kwargs: Any) -> Any:
+            if kwargs.get("order") == "newest":
+                raise RuntimeError("simulated post-commit peek failure")
+            return real_peek_many(self, limit, **kwargs)
+
+        charlie = TautClient(db_path=tmp_path / ".taut.db", as_name="charlie")
+        try:
+            with (
+                monkeypatch.context() as patch,
+                pytest.raises(RuntimeError, match="simulated post-commit peek failure"),
+            ):
+                patch.setattr(Queue, "peek_many", fault_newest)
+                charlie.join_channel("general", recent=3)
+            assert "general" in charlie.joined_thread_names()
+            assert van.log("general")[-1].text == "charlie joined"
+        finally:
+            charlie.close()
+    finally:
+        van.close()
+        bob.close()
+
+
+def test_join_channel_recent_interleaving_between_membership_and_notice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.say("general", "before-join")
+    bob = existing_client(tmp_path, "bob")
+    real_write = Queue.write
+    inserted = False
+
+    def write_with_gate(queue: Queue, message: str) -> int:
+        nonlocal inserted
+        if queue.name == "general" and not inserted:
+            inserted = True
+            van.say("general", "between membership and notice")
+        return real_write(queue, message)
+
+    monkeypatch.setattr(Queue, "write", write_with_gate)
+    result = bob.join_channel("general", recent=5)
+    assert result.notice is not None
+    assert [m.text for m in result.recent][-2:] == [
+        "before-join",
+        "between membership and notice",
+    ]
+    assert [m.text for m in bob.read("general")] == [
+        "between membership and notice",
+        result.notice.text,
+    ]
+    van.close()
+    bob.close()
+
+
+def test_say_join_validates_filters_blank_rejects_non_channel_and_preserves_token(
+    tmp_path: Path,
+) -> None:
+    from taut import BlankMessageError, ThreadNameError
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    caller = TautClient(db_path=db, as_name="freshbot")
+    try:
+        with pytest.raises(TypeError, match="join must be a bool"):
+            caller.say("ops", "hi", join="yes")  # type: ignore[arg-type]
+        with pytest.raises(BlankMessageError):
+            caller.say("nevercreated", "   ", join=True)
+        with pytest.raises(BlankMessageError):
+            caller.say("@nobody", "   \u200b", join=True)
+        with pytest.raises(BlankMessageError):
+            caller.say("not a valid channel!", "   ", join=True)
+        assert caller.who() == []
+
+        for non_channel in (
+            "@nobody",
+            "dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ops.1837025672140161024",
+        ):
+            with pytest.raises(ThreadNameError, match="top-level channels"):
+                caller.say(non_channel, "hello", join=True)
+        assert caller.who() == []
+
+        sent = caller.say("#ops", "deploy green", join=True)
+        assert sent.thread == "ops"
+        assert sent.text == "deploy green"
+        created = caller.last_created_member
+        assert created is not None
+        assert created.name == "freshbot"
+        assert created.token is not None
+
+        sent2 = caller.say("ops", "second message", join=True)
+        assert sent2.text == "second message"
+        assert [m.text for m in caller.log("ops")] == [
+            "freshbot created #ops",
+            "deploy green",
+            "second message",
+        ]
+    finally:
+        caller.close()
+
+
+def test_sqlite_concurrent_taut_client_init_forces_locked_loser_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    import taut.state._sql as sql_mod
+
+    db = tmp_path / "race.db"
+    real_check = sql_mod._current_schema_is_installed
+    barrier = threading.Barrier(2)
+
+    def gated_check(queue: Queue, *, allow_load_guard: bool = False) -> bool:
+        installed = real_check(queue, allow_load_guard=allow_load_guard)
+        if not installed:
+            barrier.wait(timeout=10)
+        return installed
+
+    monkeypatch.setattr(sql_mod, "_current_schema_is_installed", gated_check)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: TautClient.init(db_path=db), range(2)))
+    flags = [r.created for r in results]
+    assert sorted(flags) == [False, True]
+    assert TautClient.init(db_path=db).created is False
+
+
+def test_concurrent_join_loser_does_not_write_duplicate_notice_or_skip_unread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob_winner = client(tmp_path, "bob")
+    bob_loser = existing_client(tmp_path, "bob")
+    try:
+        # Resolve bob's member row once before the join race.
+        bob_winner.join("warmup")
+
+        real_get_membership = SqlSidecarTautState.get_membership
+        interleaved = False
+
+        def losing_get_membership(
+            state_self: SqlSidecarTautState,
+            *,
+            thread: str,
+            member_id: str,
+        ) -> MembershipRow | None:
+            nonlocal interleaved
+            existing = real_get_membership(
+                state_self, thread=thread, member_id=member_id
+            )
+            if (
+                state_self is bob_loser._state
+                and thread == "general"
+                and existing is None
+                and not interleaved
+            ):
+                interleaved = True
+                win_res = bob_winner.join_channel("general")
+                assert win_res.notice is not None
+                van.say("general", "intervening unread after winner join")
+            return existing
+
+        monkeypatch.setattr(
+            SqlSidecarTautState, "get_membership", losing_get_membership
+        )
+        lose_res = bob_loser.join_channel("general", recent=5)
+        assert lose_res.notice is None
+        assert [m.text for m in van.log("general")].count("bob joined") == 1
+        assert [m.text for m in bob_winner.read("general")] == [
+            "intervening unread after winner join"
+        ]
+    finally:
+        van.close()
+        bob_winner.close()
+        bob_loser.close()
+
+
+def test_concurrent_same_member_first_channel_creation_emits_created_notice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    setup = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    setup.join("warmup")
+    setup.close()
+
+    barrier = threading.Barrier(2)
+    real_get_membership = SqlSidecarTautState.get_membership
+
+    def gated_get_membership(
+        state_self: SqlSidecarTautState,
+        *,
+        thread: str,
+        member_id: str,
+    ) -> MembershipRow | None:
+        existing = real_get_membership(state_self, thread=thread, member_id=member_id)
+        if thread == "brandnew" and existing is None:
+            barrier.wait(timeout=10)
+        return existing
+
+    monkeypatch.setattr(SqlSidecarTautState, "get_membership", gated_get_membership)
+
+    def join_new(_idx: int) -> Message | None:
+        c = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+        try:
+            return c.join("brandnew")
+        finally:
+            c.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        notices = list(pool.map(join_new, range(2)))
+
+    non_none = [n for n in notices if n is not None]
+    assert len(non_none) == 1
+    assert non_none[0].text == "van created #brandnew"
+    obs = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    try:
+        assert [m.text for m in obs.log("brandnew")] == ["van created #brandnew"]
+    finally:
+        obs.close()

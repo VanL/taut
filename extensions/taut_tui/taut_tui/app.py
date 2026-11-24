@@ -1466,6 +1466,9 @@ class TautApp(App[None]):
     ) -> bool:
         values = invocation.values
         if invocation.path == ("join",):
+            if values.get("recent") is not None:
+                self._show_error("--recent is CLI-only in the TUI.")
+                return True
             self._run_action(
                 domain.join_channel(
                     str(values["thread"]),
@@ -1514,7 +1517,11 @@ class TautApp(App[None]):
                 "CLI-only in TUI: " + " ".join(invocation.path) + " with stdin"
             )
         elif invocation.path == ("say",):
-            self._run_action(domain.send_message(str(values["target"]), text))
+            join = bool(values.get("join"))
+            self._run_action(
+                domain.send_message(str(values["target"]), text, join=join),
+                refresh_navigation=join,
+            )
         else:
             self._run_action(
                 domain.reply_message(str(values["thread"]), str(values["msg_id"]), text)

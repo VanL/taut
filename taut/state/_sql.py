@@ -27,6 +27,7 @@ from taut._exceptions import (
     NotFoundError,
     SchemaVersionError,
     TautError,
+    ThreadNameError,
 )
 from taut.state._channel_topics import decode_channel_topic
 from taut.state._dialect import SqlDialect
@@ -178,8 +179,8 @@ class SqlSidecarTautState:
     queue: Queue
     dialect: SqlDialect
 
-    def ensure_schema(self, *, allow_load_guard: bool = False) -> None:
-        ensure_schema(
+    def ensure_schema(self, *, allow_load_guard: bool = False) -> bool:
+        return ensure_schema(
             self.queue,
             dialect=self.dialect,
             allow_load_guard=allow_load_guard,
@@ -401,6 +402,40 @@ class SqlSidecarTautState:
             expected_thread_created_ts=expected_thread_created_ts,
         )
 
+    def add_membership_with_status(
+        self,
+        *,
+        thread: str,
+        member_id: str,
+        joined_ts: int,
+        last_seen_ts: int,
+        expected_thread_created_ts: int | None = None,
+    ) -> tuple[MembershipRow, bool]:
+        return add_membership_with_status(
+            self.queue,
+            dialect=self.dialect,
+            thread=thread,
+            member_id=member_id,
+            joined_ts=joined_ts,
+            last_seen_ts=last_seen_ts,
+            expected_thread_created_ts=expected_thread_created_ts,
+        )
+
+    def ensure_channel_membership(
+        self,
+        *,
+        thread: str,
+        member_id: str,
+        ts: int,
+    ) -> tuple[ThreadRow, MembershipRow, bool, bool]:
+        return ensure_channel_membership(
+            self.queue,
+            dialect=self.dialect,
+            thread=thread,
+            member_id=member_id,
+            ts=ts,
+        )
+
     def remove_membership(self, *, thread: str, member_id: str) -> bool:
         return remove_membership(self.queue, thread=thread, member_id=member_id)
 
@@ -508,7 +543,7 @@ def ensure_schema(
     *,
     dialect: SqlDialect,
     allow_load_guard: bool = False,
-) -> None:
+) -> bool:
     """Install or validate the current sidecar schema.
 
     The steady state is a read. Every client construction calls this, so a
@@ -517,10 +552,11 @@ def ensure_schema(
     session decides current, load-guarded, or version-mismatched. Only an
     absent metadata table or version row enters the installing transaction,
     which re-checks the version under the lock before installing anything.
+    Returns ``True`` iff this call inserted ``SCHEMA_VERSION_KEY``.
     """
 
     if _current_schema_is_installed(queue, allow_load_guard=allow_load_guard):
-        return
+        return False
     with queue.sidecar(transaction=True) as session:
         _acquire_advisory_lock(session, dialect, "taut:schema")
         session.run(META_DDL)
@@ -534,13 +570,14 @@ def ensure_schema(
             for statement in DDL:
                 session.run(statement)
             _refuse_load_guard(session, allow_load_guard=allow_load_guard)
-            return
+            return False
         for statement in DDL:
             session.run(statement)
         session.run(
             "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
             (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
         )
+        return True
 
 
 def _current_schema_is_installed(queue: Queue, *, allow_load_guard: bool) -> bool:
@@ -1243,7 +1280,102 @@ def set_channel_topic(
         return thread, True
 
 
-def add_membership(
+def ensure_channel_membership(
+    queue: Queue,
+    *,
+    dialect: SqlDialect,
+    thread: str,
+    member_id: str,
+    ts: int,
+) -> tuple[ThreadRow, MembershipRow, bool, bool]:
+    with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, _CHAT_TOPOLOGY_LOCK_KEY)
+        _raise_if_incomplete_channel_rename(session)
+        existing_row = _one(
+            session,
+            """
+            SELECT name, kind, parent, origin_ts, created_by, meta, created_ts
+            FROM taut_threads
+            WHERE name = ?
+            """,
+            (thread,),
+        )
+        existing_thread = _thread_row(existing_row)
+        if existing_thread is None:
+            session.run(
+                """
+                INSERT INTO taut_threads (
+                    name, kind, parent, origin_ts, created_by, meta, created_ts
+                )
+                VALUES (?, 'channel', NULL, NULL, ?, '{}', ?)
+                """,
+                (thread, member_id, ts),
+            )
+            thread_row = ThreadRow(
+                name=thread,
+                kind="channel",
+                parent=None,
+                origin_ts=None,
+                created_by=member_id,
+                meta={},
+                created_ts=ts,
+            )
+            created_thread = True
+        else:
+            if existing_thread["kind"] != "channel":
+                raise ThreadNameError(f"not a channel: {thread}")
+            thread_row = existing_thread
+            created_thread = False
+
+        inserted = _one(
+            session,
+            """
+            INSERT INTO taut_membership (
+                thread, member_id, joined_ts, last_seen_ts
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(thread, member_id) DO NOTHING
+            RETURNING thread, member_id, joined_ts, last_seen_ts
+            """,
+            (thread, member_id, ts, ts),
+        )
+        if inserted is not None:
+            return (
+                thread_row,
+                MembershipRow(
+                    thread=str(inserted[0]),
+                    member_id=str(inserted[1]),
+                    joined_ts=int(inserted[2]),
+                    last_seen_ts=int(inserted[3]),
+                ),
+                created_thread,
+                True,
+            )
+        existing_mem = _one(
+            session,
+            """
+            SELECT thread, member_id, joined_ts, last_seen_ts
+            FROM taut_membership
+            WHERE thread = ? AND member_id = ?
+            """,
+            (thread, member_id),
+        )
+    if existing_mem is None:
+        raise RuntimeError("membership could not be read back")
+    return (
+        thread_row,
+        MembershipRow(
+            thread=str(existing_mem[0]),
+            member_id=str(existing_mem[1]),
+            joined_ts=int(existing_mem[2]),
+            last_seen_ts=int(existing_mem[3]),
+        ),
+        created_thread,
+        False,
+    )
+
+
+def add_membership_with_status(
     queue: Queue,
     *,
     dialect: SqlDialect,
@@ -1252,7 +1384,7 @@ def add_membership(
     joined_ts: int,
     last_seen_ts: int,
     expected_thread_created_ts: int | None = None,
-) -> MembershipRow:
+) -> tuple[MembershipRow, bool]:
     with queue.sidecar(transaction=True) as session:
         _acquire_advisory_lock(session, dialect, _CHAT_TOPOLOGY_LOCK_KEY)
         _raise_if_incomplete_channel_rename(session)
@@ -1266,19 +1398,69 @@ def add_membership(
             and target[0] != expected_thread_created_ts
         ):
             raise TautError("thread changed during membership creation; retry")
-        session.run(
+        inserted = _one(
+            session,
             """
             INSERT INTO taut_membership (
                 thread, member_id, joined_ts, last_seen_ts
             )
             VALUES (?, ?, ?, ?)
             ON CONFLICT(thread, member_id) DO NOTHING
+            RETURNING thread, member_id, joined_ts, last_seen_ts
             """,
             (thread, member_id, joined_ts, last_seen_ts),
         )
-    membership = get_membership(queue, thread=thread, member_id=member_id)
-    if membership is None:
+        if inserted is not None:
+            return (
+                MembershipRow(
+                    thread=str(inserted[0]),
+                    member_id=str(inserted[1]),
+                    joined_ts=int(inserted[2]),
+                    last_seen_ts=int(inserted[3]),
+                ),
+                True,
+            )
+        existing = _one(
+            session,
+            """
+            SELECT thread, member_id, joined_ts, last_seen_ts
+            FROM taut_membership
+            WHERE thread = ? AND member_id = ?
+            """,
+            (thread, member_id),
+        )
+    if existing is None:
         raise RuntimeError("membership could not be read back")
+    return (
+        MembershipRow(
+            thread=str(existing[0]),
+            member_id=str(existing[1]),
+            joined_ts=int(existing[2]),
+            last_seen_ts=int(existing[3]),
+        ),
+        False,
+    )
+
+
+def add_membership(
+    queue: Queue,
+    *,
+    dialect: SqlDialect,
+    thread: str,
+    member_id: str,
+    joined_ts: int,
+    last_seen_ts: int,
+    expected_thread_created_ts: int | None = None,
+) -> MembershipRow:
+    membership, _inserted = add_membership_with_status(
+        queue,
+        dialect=dialect,
+        thread=thread,
+        member_id=member_id,
+        joined_ts=joined_ts,
+        last_seen_ts=last_seen_ts,
+        expected_thread_created_ts=expected_thread_created_ts,
+    )
     return membership
 
 

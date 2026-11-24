@@ -24,6 +24,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "DumpReport",
     "EmptyResultError",
     "IdentityError",
+    "JoinResult",
     "UnrecognizedCallerError",
     "LoadReport",
     "Member",
@@ -36,6 +37,8 @@ EXPECTED_PUBLIC_EXPORTS = [
     "NotInitializedError",
     "NotFoundError",
     "Notification",
+    "OnboardFileStep",
+    "OnboardReport",
     "PersistenceComponentReport",
     "ReactionConfigurationError",
     "SchemaVersionError",
@@ -334,6 +337,93 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.escape_terminal_text is escape_terminal_text
     assert "database_path_from_target" not in client_api.__all__
     assert not hasattr(client_api, "database_path_from_target")
+
+
+def test_join_result_and_join_channel_and_say_join_signatures() -> None:
+    from taut.client import JoinResult
+
+    assert taut.JoinResult is JoinResult
+    assert JoinResult.__module__ == "taut.client"
+    assert [field.name for field in fields(JoinResult)] == [
+        "thread",
+        "notice",
+        "recent",
+    ]
+    sample = JoinResult(thread="general", notice=None, recent=())
+    assert not hasattr(sample, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        sample.thread = "changed"  # type: ignore[misc]
+
+    join_params = inspect.signature(taut.TautClient.join_channel).parameters
+    assert list(join_params) == ["self", "thread", "persona", "new", "recent"]
+    assert join_params["recent"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert join_params["recent"].default == 0
+
+    say_params = inspect.signature(taut.TautClient.say).parameters
+    assert list(say_params) == ["self", "target", "text", "join"]
+    assert say_params["join"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert say_params["join"].default is False
+
+
+def test_onboard_reports_and_signatures_are_exact_frozen_slotted_public_values() -> (
+    None
+):
+    from taut.client import InitResult, OnboardFileStep, OnboardReport
+
+    assert taut.OnboardFileStep is OnboardFileStep
+    assert taut.OnboardReport is OnboardReport
+    assert OnboardFileStep.__module__ == "taut.client"
+    assert OnboardReport.__module__ == "taut.client"
+    assert [field.name for field in fields(OnboardFileStep)] == ["path", "action"]
+    assert [field.name for field in fields(OnboardReport)] == [
+        "root",
+        "channel",
+        "init",
+        "files",
+    ]
+    step = OnboardFileStep(path="AGENTS.md", action="created")
+    report = OnboardReport(
+        root="/tmp/workspace",
+        channel="general",
+        init=InitResult(db="/tmp/workspace/.taut.db", created=True),
+        files=(step,),
+    )
+    assert not hasattr(step, "__dict__")
+    assert not hasattr(report, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        step.path = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        report.channel = "changed"  # type: ignore[misc]
+
+    onboard_params = inspect.signature(taut.TautClient.onboard).parameters
+    assert list(onboard_params) == [
+        "root",
+        "db_path",
+        "channel",
+        "mcp",
+        "init_storage",
+        "update_agents",
+        "update_ignore",
+    ]
+    for name, expected_default in (
+        ("root", None),
+        ("db_path", None),
+        ("channel", "general"),
+        ("mcp", False),
+        ("init_storage", True),
+        ("update_agents", True),
+        ("update_ignore", True),
+    ):
+        assert onboard_params[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert onboard_params[name].default == expected_default
+
+    kernel_params = inspect.signature(taut.TautClient.agent_kernel).parameters
+    assert list(kernel_params) == []
+
+    init_params = inspect.signature(taut.TautClient.init).parameters
+    assert list(init_params) == ["db_path", "directory"]
+    assert init_params["directory"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert init_params["directory"].default is None
 
 
 def test_static_typing_rejects_unknown_public_export(tmp_path: Path) -> None:

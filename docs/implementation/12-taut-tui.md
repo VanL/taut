@@ -420,7 +420,11 @@ substitute for the layout and pilot assertions.
 Doctor and dump call actor-free public class operations. Dump is single-flight
 and blocks normal quit while active. Its snapshot/watermark behavior comes
 only from the active persistence contract; no quiescence or point-in-time
-algorithm lives in the TUI extension. Load stays CLI-only. The native help form
+algorithm lives in the TUI extension. Load and project-file `onboard` stay
+CLI-only (`command_bindings.py`); `:join --recent` is rejected pre-action in the
+TUI because opening a channel already loads bounded history natively, while
+`:say ... --join` routes through `TuiDomainActions.send_message(..., join=True)` and
+triggers a navigation refresh. The native help form
 quotes the selected paths into an exact command but never invokes load or a
 subprocess.
 
@@ -707,6 +711,14 @@ neither diagnose historical S4 nor close its release gate without the plan's
 separate causal proof or explicit owner disposition.
 
 ## Related Plans
+
+- `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` — records the
+  [TUI-7.1] command-mirror dispositions for `onboard`, `join --recent`, and
+  `say --join`.
+
+- `docs/plans/2026-11-23-phase-0-bug-and-performance-remediation-plan.md` —
+  batches TUI navigation refresh into two sidecar queries plus indexed latest
+  broker timestamps.
 
 - `docs/plans/2026-09-24-windows-tui-determinism-root-cause-plan.md` — exact
   owner completion, split budgets, causal elicitation, native diagnostics and

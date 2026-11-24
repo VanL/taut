@@ -907,17 +907,19 @@ a best-effort chat-input guard, not an exhaustive renderer-visibility or
 Unicode `Default_Ignorable_Code_Point` contract. Its edge membership may
 change when Taut's supported Python runtime changes.
 
-`TautClient.say()` and `TautClient.reply()` filter blank text as their first
-operation and raise public `BlankMessageError`, a subclass of
-`EmptyResultError`. The check precedes target parsing, incomplete-rename
-checks, identity/activity work, queue/timestamp work, and all thread,
-membership, message, notification, and cursor mutation. Blank filtering thus
-wins over later target, parent-message, membership, and rename failures.
-Parsing, text acquisition, storage/schema bootstrap, and client construction
-that occur before the method call keep their existing priority. For human
-CLI output, terminal-policy preflight occurs before command execution; an
-unavailable policy therefore retains its existing diagnostic exit 1 and
-wins over blank filtering.
+`TautClient.say()` validates `type(join) is bool` (`TypeError("join must be a bool")`)
+and then `TautClient.say()` and `TautClient.reply()` filter blank text before any
+domain work, raising public `BlankMessageError`, a subclass of
+`EmptyResultError`. The blank check precedes target parsing, `--join`
+top-level-channel validation, incomplete-rename checks, identity/activity work,
+queue/timestamp work, and all thread, membership, message, notification, and
+cursor mutation. Blank filtering thus wins over later target, parent-message,
+membership, and rename failures, and `say(..., join=True)` on blank text creates
+no member, channel, membership, or join notice. Parsing, text acquisition,
+storage/schema bootstrap, and client construction that occur before the method
+call keep their existing priority. For human CLI output, terminal-policy
+preflight occurs before command execution; an unavailable policy therefore
+retains its existing diagnostic exit 1 and wins over blank filtering.
 
 If any character is outside the predicate, Taut stores the complete original
 string exactly, including surrounding whitespace and `Cf` characters. It
@@ -1028,11 +1030,19 @@ provisional timestamp taken immediately before the join (or creation) notice.
 After that notice commits, the bounded interval probe catches the cursor up to
 the notice only when no intervening chat row exists. Thus a new member normally
 begins caught up, while a concurrent row remains unread; older history is a
-deliberate rewind away via `log`. One carve-out: implicit sub-thread join *by
-reading it* ([TAUT-4.3])
-initializes the cursor to 0, because reading the thread is exactly what
-was asked; implicit join by replying starts at now like any join.
-`leave` notices have no cursor effect.
+deliberate rewind away via `log` or inline at join time via `join --recent N`
+(`TautClient.join_channel(..., recent=N)`). `recent` (`0` default; `1..1000`
+when requested) uses SimpleBroker's indexed `Queue.peek_many(recent,
+with_timestamps=True, before_timestamp=..., order="newest")` query to return up
+to `N` most recent surviving messages strictly prior to any notice written by
+the current join (or up to `N` most recent surviving messages in the channel
+when no notice is written) in ascending message-id order without moving any
+cursor. A row committed between membership creation and the join notice may
+appear in `recent` and still remain unread under the interval probe above, while
+already-joined callers preserve their unread delta for `read`. One carve-out:
+implicit sub-thread join *by reading it* ([TAUT-4.3]) initializes the cursor to
+0, because reading the thread is exactly what was asked; implicit join by
+replying starts at now like any join. `leave` notices have no cursor effect.
 
 The bounded probe and advance run **after the message insert succeeds**, never
 before. Cursor movement is not part of the pre-write sidecar state in the
@@ -1248,12 +1258,13 @@ later token is command-local. `--version` is a root action before the verb.
 | Verb | Behavior | Exit codes |
 |---|---|---|
 | `init` | Create the resolved SQLite `.taut.db` or initialize the configured backend target plus sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
-| `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. When the acting member already belongs to THREAD, `join` succeeds, applies `--persona` if given, and writes no notice, no membership row, and no cursor change; it prints the thread header so callers see the same shape either way. `--persona` sets/updates the member's persona. | 0; 1 error |
+| `onboard [--channel CHANNEL] [--mcp] [--no-init] [--no-agents] [--no-ignore]` / `onboard --print-kernel` | Actor-free current-directory onboarding (`--db`, `--json`, `--quiet` root globals; `--as`, `--token`, and `-t/--timestamps` are usage errors in any position). Preflights channel syntax, root-directory containment, path and hard-link alias collisions (`os.path.samefile`) between enabled write targets and SQLite target/sidecar files (even under `--no-init`) or **any** managed onboarding filename including disabled roles (`CLAUDE.md` ↔ `AGENTS.md` deduplicates only when `Path.resolve()` is identical; distinct hard-linked `CLAUDE.md` and `AGENTS.md` paths fail closed), UTF-8 validity, balanced `<!-- taut:onboard:start -->` … `<!-- taut:onboard:end -->` markers, and `.mcp.json` shape before mutating storage or files. Initializes resolved storage unless `--no-init`; writes or updates the fenced section in existing `AGENTS.md`/`CLAUDE.md` files (creates `AGENTS.md` when neither exists; skipped with `--no-agents`); appends any missing exact lines (`splitlines()`, without whitespace stripping) among `.taut.db`, `.taut.db.lock`, `.taut.lock`, `.taut.db-wal`, and `.taut.db-shm` in place (`O_WRONLY \| O_APPEND`, never `O_CREAT`) to `.gitignore` and `.dockerignore` **strictly only when each ignore file already exists** (never creating an absent ignore file, never rewriting negation rules, and leaving custom `--db` paths operator-managed; skipped with `--no-ignore`); and with `--mcp` adds `"taut": {"command": "taut", "args": ["mcp"]}` to `.mcp.json`'s `mcpServers` object while failing closed if a differing `mcpServers.taut` entry already exists. `--print-kernel` rejects `--db`, `--json`, `-q`, and all other command-local flags, touches no storage or files, and splits `taut/agent-kernel.md` strictly on structural LF `"\n"` through [TAUT-6.4]'s human-output escape policy. | 0 completed or printed; 1 usage, collision/alias, containment, invalid channel/JSON/UTF-8/marker, existing differing `mcpServers.taut`, terminal-policy, or storage/I/O error |
+| `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new] [--recent N]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. When the acting member already belongs to THREAD, `join` succeeds, applies `--persona` if given, and writes no notice, no membership row, and no cursor change; it prints the thread header (or the requested `--recent` messages, or the thread header when `--recent` finds an empty channel) so callers see a consistent shape. `--persona` sets/updates the member's persona. `--recent N` (`1..1000`) includes up to `N` most recent prior messages chronologically without moving any cursor. | 0; 1 error (including `N < 1` or `N > 1000`) |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
 | `channel show CHANNEL` | Return current metadata for one registered top-level channel. Resolves no actor and changes no activity, membership, queue, message, notification, or cursor state. | 0 showed; 1 invalid name, corrupt metadata, or error; 2 no such top-level channel |
 | `channel topic CHANNEL TEXT` / `channel topic CHANNEL --clear` | Set one exact one-line topic or explicitly clear it. Requires an existing acting member and current channel membership. A same-value set and absent clear are successful no-ops. No stdin form. | 0 changed or no-op; 1 usage, invalid topic, corruption, or error; 2 no such channel / unrecognized member / not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
-| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` retains every [IAN-5.1] channel/sub-thread form, including quoted `#channel`, and also accepts `@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle. Channel and sub-thread targets require membership. `@route` may create the deterministic conversation; `dm.d_*` requires an existing fully valid actor-accessible conversation and never creates or heals one. Prints message id with `-t` only when a message is written. | 0 wrote; 1 malformed syntax on a nonblank attempt or error; 2 blank filtered / not a member / no such member / inaccessible or invalid stable DM |
+| `say TARGET [TEXT\|-] [--join]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` retains every [IAN-5.1] channel/sub-thread form, including quoted `#channel`, and also accepts `@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle. Without `--join`, channel and sub-thread targets require existing membership. With `--join`, `TARGET` must be a top-level channel (sub-threads and DM targets exit 1); Taut resolves or creates the acting member once and joins/creates the channel (writing the standard creation/join notice to the queue when not already a member) before posting; if the later message write fails, any committed member/channel/join state remains durable. `@route` may create the deterministic conversation; `dm.d_*` requires an existing fully valid actor-accessible conversation and never creates or heals one. Prints message id with `-t` only when a message is written. | 0 wrote; 1 malformed syntax on a nonblank attempt, `--join` on non-channel target, or error; 2 blank filtered / not a member / no such member / inaccessible or invalid stable DM |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. MSG_ID is the exact 19-digit message id, as for `message show`, `message delete`, and `message react`; there is no short form. Any other value is a malformed argument. | 0 wrote; 1 error, including a malformed MSG_ID; 2 blank filtered / no such message / unrecognized member |
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
@@ -1309,7 +1320,10 @@ from the owning subcommand, and root help names exit-code classes. The
 requires `show`, `topic`, or `rename`. A missing nested subcommand follows the
 same stderr usage and exit-1 rule as a missing top-level subcommand.
 The `system` noun requires `dump`, `load`, or `doctor`, is core-owned, and
-accepts only `--db`, `--json`, and `--quiet` from the root-global vocabulary.
+accepts only `--db`, `--json`, and `--quiet` from the root-global vocabulary;
+`onboard` is likewise actor-free and accepts only `--db`, `--json`, and
+`--quiet` from the root-global vocabulary (`--print-kernel` accepts no root
+globals other than `--help`).
 Doctor has no command-local flags and follows spec 09. It does not add a
 `status` operation. An uninitialized dump or doctor source retains
 [TAUT-3.2]'s exit 1 and `taut init` hint.
@@ -1342,7 +1356,9 @@ exit classes apply equally to built-in and extension command adapters.
     and facet semantics defined by [SRCH-5.3]. They always contain hydrated
     source text and never a provider score or snippet-only substitute;
   - writing verbs (`say`, `reply`) echo the message object they wrote, with the
-    same fields as read messages. A blank attempt filtered under [TAUT-6.5]
+    same fields as read messages (including `say --join`, which records any
+    channel creation/join notice in the queue without echoing a second `ts`
+    object to stdout). A blank attempt filtered under [TAUT-6.5]
     writes no message, emits no human or JSON record, and exits 2. For a
     successful write, the robust id-capture idiom remains
     `taut say t "x" --json | jq -r 'select(has("ts")).ts'`, because a first-ever
@@ -1365,7 +1381,10 @@ exit classes apply equally to built-in and extension command adapters.
     `topic_updated_by_name`. The last four fields are null when no topic
     exists. The author name is the stable author's current display name when
     available, otherwise null;
-  - `join` and `leave` echo their notice's message object;
+  - `join` and `leave` echo their notice's message object (`join` when already a
+    member emits no notice object; `join --recent N` emits up to `N`
+    chronological prior message objects followed by the join notice object when
+    a notice was written);
   - thread objects (`list`, `channel rename`, and MCP `channel_rename`):
     `thread`,
     `kind`, `parent`, `unread` (bool), `last_ts`. Every top-level channel
@@ -1390,8 +1409,20 @@ exit classes apply equally to built-in and extension command adapters.
     appears in output again. Scripts must therefore select by field, not by line
     position, on paths that can create;
   - `init`: `db` (backend display target; a filesystem path for SQLite),
-    `created` (bool). For Postgres, `created` is `false` because Taut has no
-    public backend API for a reliable database-created signal.
+    `created` (bool: `true` iff this call committed the `taut_meta`
+    `schema_version` insert inside SQLite's sidecar writer transaction or under
+    PostgreSQL's `taut:schema` advisory lock, and `false` when Taut's sidecar
+    schema was already present on SQLite or PostgreSQL, including for the loser
+    of a concurrent initialization race).
+  - `onboard`: `root` (resolved directory path string), `channel` (canonical
+    channel name), `init` (`{"db": ..., "created": ...}` or `null` when
+    `--no-init`), and `files` (ordered array of `{"path": str, "action":
+    "created" | "updated" | "unchanged" | "skipped_absent" |
+    "skipped_disabled"}` covering the target agent instruction file(s),
+    `.gitignore`, `.dockerignore`, and `.mcp.json`). `onboard --print-kernel`
+    splits packaged `taut/agent-kernel.md` strictly on structural LF `"\n"` and
+    writes each line through [TAUT-6.4]'s human-output escape policy, rejecting
+    `--db`, `--json`, and `-q`.
   - `system dump` emits the exact `system_dump` record defined by [PIO-3.3].
     `system load` emits the exact `system_load` record defined there. The dump
     body never uses stdout. Dry-run emits a normal success record with
@@ -1423,14 +1454,16 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`,
+`MessageDeletion`, `MessageReaction`, `JoinResult`, `OnboardFileStep`,
+`OnboardReport`, `SearchHit`, `Channel`, `Thread`, `Member`,
 `PersistenceComponentReport`, `DumpReport`, `LoadReport`, `DoctorCheck`,
 `DoctorReport`, `WatcherRejected`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `MessageIdResolutionError`, and its not-found subtype
 `MessageIdNotFoundError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
-(`py.typed`).
+(`py.typed`) and includes `taut/defaults.toml` and `taut/agent-kernel.md` in
+both source and wheel distributions.
 
 `SearchHit` and the exact
 `TautClient.search(...) -> list[SearchHit]` signature are defined by
@@ -1478,10 +1511,56 @@ threads=list[str] | None)` canonicalizes explicit DM selectors before creating
 adapters and the future TUI must not derive DM queue names or inspect private
 state.
 
-`TautClient.say(target: str, text: str) -> Message` retains every [IAN-5.1]
-channel/sub-thread form and also accepts `@name-or-alias` or an exact
-`dm.d_<26-lowercase-base32-chars>` stable handle. `@route` may create the
-deterministic conversation. A stable handle requires an existing fully valid
+`JoinResult` is a frozen, slotted public value object with exact fields
+`thread: str`, `notice: Message | None`, and `recent: tuple[Message, ...]`.
+`TautClient.join_channel(thread: str, *, persona: str | None = None, new: bool =
+False, recent: int = 0) -> JoinResult` validates `recent` (`bool`/non-`int`
+raises `TypeError("recent must be an integer")`; `< 0` or `> 1000` raises
+`ValueError("recent must be between 0 and 1000")` on the Python method, while
+CLI `--recent N` requires `1..1000`) before identity, thread, membership, or
+queue mutation. If the post-join `peek_many` read raises after membership/notice
+commit, the committed join state remains durable. `TautClient.join(thread: str,
+*, persona: str | None = None, new: bool = False) -> Message | None` delegates
+to `join_channel(..., recent=0).notice`.
+
+`OnboardFileStep` (`path: str`, `action: Literal["created", "updated",
+"unchanged", "skipped_absent", "skipped_disabled"]`) and `OnboardReport`
+(`root: str`, `channel: str`, `init: InitResult | None`,
+`files: tuple[OnboardFileStep, ...]`) are frozen, slotted public values. The
+actor-free class methods are `TautClient.onboard(*, root: str | Path | None =
+None, db_path: str | Path | None = None, channel: str = "general", mcp: bool =
+False, init_storage: bool = True, update_agents: bool = True, update_ignore:
+bool = True) -> OnboardReport` and `TautClient.agent_kernel() -> str` (plus
+optional `directory: str | Path | None = None` on `TautClient.init`). `onboard`
+enforces strict `root` containment on every managed path and symlink target,
+rejects path and hard-link alias collisions (`os.path.samefile`) between any
+enabled write target and resolved SQLite target/sidecar files (including when
+`init_storage=False`) or **any** managed onboarding filename including disabled
+roles (`CLAUDE.md` ↔ `AGENTS.md` deduplicates only when `Path.resolve()` is
+identical; distinct hard-linked `CLAUDE.md` and `AGENTS.md` paths fail closed),
+appends missing exact default ignore lines (`splitlines()`) in place via
+`O_WRONLY | O_APPEND` without `O_CREAT` (never creating `.gitignore` or
+`.dockerignore` and preserving existing inode, owner, mode, and ACLs), creates
+absent `AGENTS.md`/`.mcp.json` via same-directory `0o666` exclusive staging
+([PIO-6.2]), and updates existing `AGENTS.md`/`CLAUDE.md`/`.mcp.json` via
+same-directory atomic replacement on the resolved target (`copymode` preserves
+mode bits; the replacement inode is owned by the invoking OS user without
+copying extended ACLs, matching [PIO-6.2]). Storage initialization, atomic
+replacements, and complete ignore-line appends are idempotent on retry; an
+interrupted short `O_APPEND` write can leave a partial trailing line requiring
+manual trim before retry.
+
+`TautClient.say(target: str, text: str, *, join: bool = False) -> Message`
+retains every [IAN-5.1] channel/sub-thread form and also accepts
+`@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle.
+When `join=True`, a nonblank call requires a top-level channel target (raising
+`ThreadNameError("--join is only supported for top-level channels")` on
+sub-threads and DM selectors), resolves or creates the acting member once
+(preserving `last_created_member`), ensures the channel and membership exist
+(writing the creation/join notice to the queue when newly joined), and then
+writes and returns the sent `Message`; if the message write fails, any committed
+member/channel/join state remains durable. `@route` may create the deterministic
+conversation when `join=False`. A stable handle requires an existing fully valid
 actor-accessible conversation under [IAN-5.3] and never creates or heals one.
 Malformed syntax on a nonblank attempt is a validation error. A well-formed
 inaccessible or invalid stable handle raises the ordinary content-free
@@ -3156,6 +3235,14 @@ expression behavior.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
   stable actor per CLI read and uses broker timestamp metadata for count-free
   thread listings; also revises watch failure and debug contracts.
+
+- `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` — adds
+  actor-free `onboard` (with `root`-contained preflight, `O_APPEND`
+  existing-only `.gitignore`/`.dockerignore` updates, non-overwriting
+  `.mcp.json` registration, and wheel-packaged `taut/agent-kernel.md`),
+  indexed cursor-neutral `join --recent N` (`TautClient.join_channel`),
+  single-resolution top-level channel `say --join`, and sidecar-backed
+  `TautClient.init().created` across SQLite and PostgreSQL.
 
 - `docs/plans/2026-09-24-tui-participation-loop-plan.md` — publishes the
   existing human message-time formatter for shared CLI/TUI rendering.

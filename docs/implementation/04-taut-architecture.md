@@ -75,7 +75,31 @@ SimpleBroker wraps a connection or database failure in `RuntimeError`. The
 public Taut boundary prefixes that path without parsing upstream error text,
 retrying the operation, or changing errors for PostgreSQL targets. This keeps
 corrupt-file diagnostics actionable while leaving backend policy with
-SimpleBroker.
+SimpleBroker. `SqlSidecarTautState.ensure_schema()` returns `True` solely when
+its sidecar transaction (or PostgreSQL `taut:schema` advisory-locked DDL block)
+commits the `taut_meta.schema_version` insert, giving `TautClient.init().created`
+one race-exact meaning across fresh SQLite files, pre-existing raw SimpleBroker
+SQLite files, and fresh PostgreSQL schemas.
+
+Actor-free project onboarding lives in `taut/_onboard.py` behind
+`TautClient.onboard()` and `TautClient.agent_kernel()`. Before initializing
+storage or touching disk, preflight validates channel syntax, `root` symlink
+containment (`Path.resolve().is_relative_to(resolved_root)`), path and
+hard-link alias collisions (`_same_path_or_file`) against SQLite target/sidecar
+paths (even under `--no-init`) and all five managed onboarding filenames
+including disabled roles (`CLAUDE.md` ↔ `AGENTS.md` deduplicating only on
+identical `Path.resolve()`), UTF-8 validity, balanced `taut:onboard` markers,
+and `.mcp.json` shape (failing closed if `mcpServers.taut` already exists with
+a different configuration). Updates to `.gitignore` and `.dockerignore` check
+exact `splitlines()` membership without stripping whitespace and append missing
+default lines via `os.open(..., os.O_WRONLY | os.O_APPEND)` without `O_CREAT`,
+preserving existing inode/owner/mode/ACLs and making absent-ignore-file
+creation mechanically impossible. `TautClient.join_channel(..., recent=N)` uses
+SimpleBroker's indexed `Queue.peek_many(..., order="newest")` query reversed to
+chronological order without moving any cursor, and `TautClient.say(...,
+join=True)` resolves the acting member once before sharing
+`_ensure_channel_membership()` with `_say_chat_thread()` so first-contact
+continuity-token output is preserved.
 
 The current SimpleBroker minimum is `simplebroker>=8.8.1`, aligned with the
 current `simplebroker-pg>=4.8.1` minimum and their owning lock selections.
@@ -1158,6 +1182,7 @@ config context; debug action execution still reads its live environment.
 | `taut/_constants.py` | Version, name rules, and identity constants |
 | `taut/_message_text.py` | Built-in Unicode blank classifier for user-authored message entry points |
 | `taut/addressing.py` | Target parsing, channel/sub-thread validation, and internal queue naming |
+| `taut/_onboard.py`, `taut/agent-kernel.md` | Actor-free workspace onboarding preflight/apply and wheel-packaged agent kernel resource |
 | `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
 | `taut/_cleanup.py` | First-failure retention for independent resource cleanup |
 | `taut/_exceptions.py` | Public exception hierarchy |
@@ -1235,6 +1260,8 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md`
+- `docs/plans/2026-11-23-phase-0-bug-and-performance-remediation-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
 - retired: 2026-08-24-concurrency-and-schema-contract-alignment-plan — source `6e8c3da`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-08-14-review-findings-remediation-plan — source `76b1ec4`; see the ledger in `docs/plans/README.md`.

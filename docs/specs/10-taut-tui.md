@@ -545,9 +545,11 @@ report that TUI identity is fixed for the session; and `--json`, `-t`,
 `--timestamps`, and `-q` report that CLI output modes are unavailable in the
 native result surface. These options are not silently ignored.
 
-The CLI's omitted-text and `-` stdin forms for `say` and `reply` are
-syntax-recognized but CLI-only in the TUI. The TUI has no process-stdin command
-source; users enter explicit text in the command line or composer.
+The CLI's omitted-text and `-` stdin forms for `say` and `reply`, project-file
+`onboard`, and `join --recent` are syntax-recognized but CLI-only in the TUI.
+The TUI has no process-stdin command source and already opens full channel
+history natively; explicit `say ... --join` executes through the native send
+binding and refreshes navigation.
 
 ### [TUI-7.2] Forms and validation
 
@@ -1106,6 +1108,10 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` — records the
+  [TUI-7.1] command-mirror dispositions for `onboard` and `join --recent`
+  (explicit CLI-only) and `say --join` (native send + navigation refresh).
 
 - `docs/plans/2026-09-24-tui-text-selection-and-clipboard-plan.md` — enables
   framework text selection in the transcript, adds `y` and timed auto-copy

@@ -39,6 +39,7 @@ def _cli_only(path: CommandPath) -> TuiCommandBinding:
 
 _BINDINGS = (
     _native(("init",)),
+    _cli_only(("onboard",)),
     _native(("join",)),
     _native(("leave",)),
     _native(("set", "name")),

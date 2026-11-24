@@ -835,12 +835,31 @@ def core_command_syntax() -> RootCommandSyntax:
     commands = (
         _node(("init",), "Initialize resolved Taut storage.", post_verb_globals=common),
         _node(
+            ("onboard",),
+            "Bootstrap storage, agent instructions, and ignore entries.",
+            options=(
+                _option("channel", "--channel", takes_value=True),
+                _option("mcp", "--mcp"),
+                _option("no_init", "--no-init"),
+                _option("no_agents", "--no-agents"),
+                _option("no_ignore", "--no-ignore"),
+                _option("print_kernel", "--print-kernel"),
+            ),
+            post_verb_globals=system_globals,
+        ),
+        _node(
             ("join",),
             "Join a channel.",
             positionals=(_pos("thread"),),
             options=(
                 _option("persona", "--persona", takes_value=True),
                 _option("new", "--new"),
+                _option(
+                    "recent",
+                    "--recent",
+                    takes_value=True,
+                    value_kind=ValueKind.INTEGER,
+                ),
             ),
             post_verb_globals=common,
         ),
@@ -867,6 +886,7 @@ def core_command_syntax() -> RootCommandSyntax:
             ("say",),
             "Post text to a target.",
             positionals=(_pos("target"), _pos("text", required=False)),
+            options=(_option("join", "--join"),),
             post_verb_globals=common,
         ),
         _node(

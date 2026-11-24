@@ -1644,3 +1644,78 @@ def test_inspector_formats_domain_records_and_escapes_hostile_metadata(
                 assert r"\x1b[31mline2" in hostile_text
 
     asyncio.run(exercise())
+
+
+def test_tui_colon_join_recent_is_cli_only_and_say_join_refreshes_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+
+    db_path = tmp_path / "tui-phase1.db"
+    TautClient.init(db_path=db_path)
+    alice_capture, _bob_capture = _deterministic_alice_bob_captures()
+    alice = TautClient(db_path=db_path, as_name="alice", identity_capture=alice_capture)
+    try:
+        alice.join("general")
+    finally:
+        alice.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        with CompletionScope() as scope, monkeypatch.context() as patch:
+            async with app.run_test(size=(120, 36)):
+                assert app._domain is not None
+                assert app._session is not None
+                # 1) :join newchan --recent 5 fails pre-action without creating/joining newchan!
+                inv_recent = parse_command_line(
+                    "join neverjoined --recent 5",
+                    syntax=core_command_syntax(),
+                )
+                app._dispatch_command_invocation(inv_recent)
+                assert "--recent is CLI-only in the TUI." in str(
+                    app.query_one("#inspector-body").render()
+                )
+                joined_after = await asyncio.wrap_future(
+                    app._session.submit_client_operation(
+                        lambda c: c.joined_thread_names()
+                    )
+                )
+                assert "neverjoined" not in joined_after
+
+                # 2) :say ops "from tui" --join joins ops, posts message, and refreshes navigation!
+                nav_done = scope.expect(CompletionKey(app, "say.join.nav", request=app))
+                orig_nav = app._apply_navigation_result
+
+                def track_nav(fut: Any) -> None:
+                    orig_nav(fut)
+                    if "ops" in app._navigation_targets and nav_done.snapshot() is None:
+                        nav_done.succeed(nav_done.key, None)
+
+                patch.setattr(app, "_apply_navigation_result", track_nav)
+                req = AppliedRequest(scope, patch, app, app._domain, "send_message")
+                inv_say = parse_command_line(
+                    'say ops "from tui" --join',
+                    syntax=core_command_syntax(),
+                )
+                app._dispatch_command_invocation(inv_say)
+                sent = await req.wait(scope.now() + 5)
+                assert sent.thread == "ops"
+                assert sent.text == "from tui"
+                await nav_done.wait(
+                    deadline=scope.now() + 5, description="ops in navigation"
+                )
+                assert "ops" in app._navigation_targets
+
+                # 3) :onboard reports CLI-only in TUI and leaves workspace files untouched!
+                inv_onboard = parse_command_line(
+                    "onboard",
+                    syntax=core_command_syntax(),
+                )
+                app._dispatch_command_invocation(inv_onboard)
+                assert "CLI-only in TUI: onboard" in str(
+                    app.query_one("#inspector-body").render()
+                )
+                assert not (tmp_path / "AGENTS.md").exists()
+
+    asyncio.run(exercise())

@@ -493,3 +493,9 @@ def test_markdown_path_sources_cover_maintained_governance_docs() -> None:
     sources = {path.relative_to(REPO_ROOT) for path in _markdown_path_sources()}
     assert Path("docs/coalescing.md") in sources
     assert Path("docs/plans/README.md") in sources
+
+
+def test_packaged_agent_kernel_matches_docs_agent_kernel() -> None:
+    canonical = (REPO_ROOT / "docs" / "agent-kernel.md").read_text(encoding="utf-8")
+    packaged = (REPO_ROOT / "taut" / "agent-kernel.md").read_text(encoding="utf-8")
+    assert packaged == canonical

@@ -121,6 +121,15 @@ class InitResult:
 
 
 @dataclass(frozen=True, slots=True)
+class JoinResult:
+    """Result of joining a channel with optional cursor-neutral recent context."""
+
+    thread: str
+    notice: Message | None
+    recent: tuple[Message, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PersistenceComponentReport:
     """Record count for one composite persistence component."""
 
@@ -157,6 +166,33 @@ class LoadReport:
     applied: bool
 
 
+OnboardAction = Literal[
+    "created",
+    "updated",
+    "unchanged",
+    "skipped_absent",
+    "skipped_disabled",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class OnboardFileStep:
+    """Result of one onboarding file check or mutation."""
+
+    path: str
+    action: OnboardAction
+
+
+@dataclass(frozen=True, slots=True)
+class OnboardReport:
+    """Structured receipt from actor-free workspace onboarding."""
+
+    root: str
+    channel: str
+    init: InitResult | None
+    files: tuple[OnboardFileStep, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class DoctorCheck:
     """One fixed passive system-doctor observation."""
@@ -186,6 +222,9 @@ MessageReaction.__module__ = "taut.client"
 SearchHit.__module__ = "taut.client"
 Notification.__module__ = "taut.client"
 InitResult.__module__ = "taut.client"
+JoinResult.__module__ = "taut.client"
+OnboardFileStep.__module__ = "taut.client"
+OnboardReport.__module__ = "taut.client"
 PersistenceComponentReport.__module__ = "taut.client"
 DumpReport.__module__ = "taut.client"
 LoadReport.__module__ = "taut.client"

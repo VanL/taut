@@ -43,7 +43,7 @@ from taut.state._types import (
 class TautState(Protocol):
     """Internal state interface crossed by client and watcher code."""
 
-    def ensure_schema(self) -> None: ...
+    def ensure_schema(self) -> bool: ...
 
     def get_schema_version(self) -> int | None: ...
 
@@ -161,6 +161,24 @@ class TautState(Protocol):
         last_seen_ts: int,
         expected_thread_created_ts: int | None = None,
     ) -> MembershipRow: ...
+
+    def add_membership_with_status(
+        self,
+        *,
+        thread: str,
+        member_id: str,
+        joined_ts: int,
+        last_seen_ts: int,
+        expected_thread_created_ts: int | None = None,
+    ) -> tuple[MembershipRow, bool]: ...
+
+    def ensure_channel_membership(
+        self,
+        *,
+        thread: str,
+        member_id: str,
+        ts: int,
+    ) -> tuple[ThreadRow, MembershipRow, bool, bool]: ...
 
     def remove_membership(self, *, thread: str, member_id: str) -> bool: ...
 

@@ -34,10 +34,26 @@ class JoinCommand:
                 "existing one."
             ),
         )
+        parser.add_argument(
+            "--recent",
+            metavar="N",
+            type=int,
+            help=(
+                "Include up to N (1..1000) most recent prior messages in "
+                "chronological order without moving any cursor."
+            ),
+        )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
+        if args.recent is not None and not 1 <= args.recent <= 1000:
+            raise ValueError("recent must be between 1 and 1000")
         client = context.client()
-        message = client.join(args.thread, persona=args.persona, new=args.new)
+        result = client.join_channel(
+            args.thread,
+            persona=args.persona,
+            new=args.new,
+            recent=args.recent or 0,
+        )
         emit_created_member(
             client,
             json_output=context.json,
@@ -45,15 +61,19 @@ class JoinCommand:
             stdout=context.stdout,
             stderr=context.stderr,
         )
-        if message is None:
+        to_emit = [
+            *result.recent,
+            *([result.notice] if result.notice is not None else []),
+        ]
+        if not to_emit:
             if not context.json and not context.quiet:
                 write_human_line(
                     context.stdout,
-                    thread_heading(args.thread, stream=context.stdout),
+                    thread_heading(result.thread, stream=context.stdout),
                 )
         else:
             emit_messages(
-                [message],
+                to_emit,
                 json_output=context.json,
                 timestamps=context.timestamps,
                 quiet=context.quiet,

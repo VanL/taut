@@ -32,12 +32,21 @@ class SayCommand:
             nargs="?",
             help="Message text, '-' for stdin, or omit when stdin is piped.",
         )
+        parser.add_argument(
+            "--join",
+            action="store_true",
+            help=(
+                "Create/join a top-level channel and acting identity if needed "
+                "before posting."
+            ),
+        )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
         client = context.client()
         message = client.say(
             args.target,
             read_text_argument(args.text, context.stdin),
+            join=bool(args.join),
         )
         emit_sent_message(
             client,

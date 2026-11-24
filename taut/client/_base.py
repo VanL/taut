@@ -478,3 +478,12 @@ class _ClientBase(ABC):
 
     @abstractmethod
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def _ensure_channel_membership(
+        self,
+        thread: str,
+        member: MemberRow,
+        *,
+        persona: str | None = None,
+    ) -> tuple[Queue, Message | None]: ...

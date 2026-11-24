@@ -114,6 +114,8 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | Reviewed implementation plan for one SDK v2 server serving both MCP wire eras through explicit workspace-and-token continuity, shared ensure, and independent notification adapters |
 | retired: 2026-07-28-summon-terminal-retirement-plan (source `cf72638`; see the ledger in docs/plans/README.md) | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
 | `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` | Reviewed implementation plan for the `taut-chat` core distribution rename, exact-artifact Trusted Publishing, draft-first immutable GitHub finalization, and explicit migration boundary |
+| `docs/plans/2026-11-23-phase-0-bug-and-performance-remediation-plan.md` | Completed bug-fix and hot-path performance remediation plan across TUI navigation, Darwin `gethostuuid`, summon status, PostgreSQL search, and `BaseReactor` |
+| `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` | Reviewed Class 5 onboarding plan for `taut onboard`, `join --recent N`, `say --join`, wheel-packaged `taut/agent-kernel.md`, and cross-backend `TautClient.init().created` |
 | retired: 2026-08-14-pypi-finalizer-consistency-plan (source `73b56a0`; see the ledger in docs/plans/README.md) | Completed Class 5 correction for independent-runner PyPI visibility before immutable GitHub finalization |
 | retired: 2026-07-14-terminal-output-safety-plan (source `281f04fa`; see the ledger in docs/plans/README.md) | Retired reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | retired: 2026-07-14-blank-message-no-op-plan (source `b2da819`; see the ledger in docs/plans/README.md) | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
@@ -139,6 +141,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/_message_text.py` | Small built-in Unicode classifier for user-authored `say` and `reply` text |
 | `taut/_redact.py` | Private lazy-compiled rule manifest and value-only final-text credential redaction helper for debug payloads |
 | `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free seven-check passive diagnostic orchestrator |
+| `taut/_onboard.py`, `taut/agent-kernel.md` | Actor-free workspace onboarding preflight/apply (`root` containment, path/hard-link alias checks, `O_APPEND` existing-only ignore updates, `0o666` atomic `AGENTS.md`/`CLAUDE.md`/`.mcp.json` writes) and wheel-packaged agent kernel resource |
 | `taut/debug.py` | Deep best-effort failure capture owner: setting read, bounded and redacted event construction, local retention-scoped deduplication, and no-shell action transport |
 | `taut/terminal.py`, `taut/defaults.toml` | Lightweight public terminal-text display transform, CWD `.taut.toml` presentation discovery, and packaged baseline regex policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
