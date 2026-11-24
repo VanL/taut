@@ -1816,3 +1816,1244 @@ def test_failed_submit_can_already_be_running_without_workspace_authority(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(20)
+def test_fifo_terminal_settlement_and_detach_after_queued_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5] Terminal child failure settles active + all queued commands; detach checks uncancelled queued slots."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    hold_cmd = threading.Event()
+    started_cmd = threading.Event()
+    crash_cmd = threading.Event()
+    real_execute = workspace_reactor.execute_command
+
+    def controlled_execute(client: TautClient, name: str, arguments: Any) -> Any:
+        started_cmd.set()
+        assert hold_cmd.wait(timeout=10)
+        if crash_cmd.is_set():
+            raise RuntimeError("boom inside child command")
+        return real_execute(client, name, arguments)
+
+    monkeypatch.setattr(workspace_reactor, "execute_command", controlled_execute)
+
+    async def scenario() -> None:
+        diagnostics: list[str] = []
+        reactor = ProcessReactor(
+            asyncio.get_running_loop(), diagnostic=diagnostics.append
+        )
+        try:
+            canonical = str(
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
+            )
+
+            # Active + 1 queued -> detach fails; cancel queued + finish active -> detach succeeds!
+            active1 = asyncio.create_task(
+                reactor._execute_ready_tool(canonical, "whoami", {})
+            )
+            assert await asyncio.to_thread(started_cmd.wait, 5)
+            queued1 = asyncio.create_task(
+                reactor._execute_ready_tool(canonical, "inbox", {"limit": 1})
+            )
+            await asyncio.sleep(0)
+            with _tool_error("workspace busy; retry after backoff"):
+                await reactor.detach_workspace(canonical)
+            queued1.cancel()
+            hold_cmd.set()
+            await active1
+            with pytest.raises(asyncio.CancelledError):
+                await queued1
+            detached = await reactor.detach_workspace(canonical)
+            assert detached["records"][0]["status"] == "detached"
+
+            # Reattach, saturate active + 3 queued, trigger child crash -> all 4 settle with reactor_failed!
+            hold_cmd.clear()
+            started_cmd.clear()
+            crash_cmd.set()
+            canonical = str(
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
+            )
+            active2 = asyncio.create_task(
+                reactor._execute_ready_tool(canonical, "whoami", {})
+            )
+            assert await asyncio.to_thread(started_cmd.wait, 5)
+            queued_crash = [
+                asyncio.create_task(
+                    reactor._execute_ready_tool(canonical, "inbox", {"limit": idx})
+                )
+                for idx in range(1, 4)
+            ]
+            await asyncio.sleep(0)
+            hold_cmd.set()
+
+            for task in (active2, *queued_crash):
+                with _tool_error("workspace reactor failed; detach and reattach"):
+                    await task
+            assert diagnostics
+        finally:
+            hold_cmd.set()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+def _instrument_grant_reactor(
+    monkeypatch: pytest.MonkeyPatch,
+    defaults: Any,
+    grants: list[int],
+) -> ProcessReactor:
+    r = ProcessReactor(asyncio.get_running_loop(), defaults=defaults)
+    orig_r_new_owner = r._new_owner
+
+    def wrapped_new_owner(generation: int) -> Any:
+        owner = orig_r_new_owner(generation)
+        orig_put = owner.inbound.put_nowait
+
+        def tracked_put(control: Any) -> None:
+            if isinstance(control, workspace_reactor.GrantValidation):
+                grants.append(control.generation)
+            orig_put(control)
+
+        monkeypatch.setattr(owner.inbound, "put_nowait", tracked_put)
+        return owner
+
+    monkeypatch.setattr(r, "_new_owner", wrapped_new_owner)
+    return r
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_as_selector_and_symlink_retarget_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-3]/[MCP-4]/[MCP-6] --as selector (R3.2), resident symlink retarget (R2.3), and empty-string guards."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    bob_client_a = TautClient(db_path=ws_a / ".taut.db", as_name="bob")
+    try:
+        bob_client_a.join("general")
+        assert bob_client_a.last_created_member is not None
+        assert bob_client_a.last_created_member.token is not None
+        bob_tok_a = bob_client_a.last_created_member.token
+    finally:
+        bob_client_a.close()
+
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    b_admin = TautClient(db_path=ws_b / ".taut.db", as_name="claude")
+    try:
+        with b_admin._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = ? WHERE name_key = 'claude'",
+                (claude_tok_a,),
+            )
+    finally:
+        b_admin.close()
+    bob_client_b = TautClient(db_path=ws_b / ".taut.db", as_name="bob_b")
+    try:
+        bob_client_b.join("general")
+        assert bob_client_b.last_created_member is not None
+        assert bob_client_b.last_created_member.token is not None
+        bob_tok_b = bob_client_b.last_created_member.token
+    finally:
+        bob_client_b.close()
+
+    symlink = tmp_path / "default_link"
+    symlink.symlink_to(ws_a)
+    grants: list[int] = []
+
+    async def scenario() -> None:
+        r_as = _instrument_grant_reactor(
+            monkeypatch, McpLaunchDefaults(as_name="claude"), grants
+        )
+        try:
+            att1 = await r_as.attach_workspace(str(ws_a), claude_tok_a)
+            assert len(grants) == 1
+            assert (await r_as.attach_workspace(canonical_of(att1), None)) == att1
+            assert (await r_as.attach_workspace(str(symlink), None)) == att1
+            assert len(grants) == 1
+            await async_eventually(
+                lambda: not r_as._candidates,
+                timeout=5.0,
+                interval=0.01,
+                description="alias candidate reaped after symlink attach",
+            )
+
+            with _tool_error("workspace already attached; detach to replace token"):
+                await r_as.attach_workspace(canonical_of(att1), bob_tok_a)
+            with _tool_error("workspace already attached; detach to replace token"):
+                await r_as.attach_workspace(str(symlink), bob_tok_a)
+            assert len(grants) == 1
+            await async_eventually(
+                lambda: not r_as._candidates,
+                timeout=5.0,
+                interval=0.01,
+                description="alias candidate reaped after rejected symlink attach",
+            )
+
+            await r_as.detach_workspace(canonical_of(att1))
+            await r_as.attach_workspace(str(ws_a), bob_tok_a)
+            assert len(grants) == 2
+            with _tool_error("workspace already attached; detach to replace token"):
+                await r_as.attach_workspace(canonical_of(att1), None)
+            with _tool_error("workspace already attached; detach to replace token"):
+                await r_as.attach_workspace(str(symlink), None)
+            assert len(grants) == 2
+            await async_eventually(
+                lambda: not r_as._candidates,
+                timeout=5.0,
+                interval=0.01,
+                description="alias candidate reaped before close",
+            )
+        finally:
+            await r_as.aclose()
+
+        grants.clear()
+        r_res = _instrument_grant_reactor(
+            monkeypatch,
+            McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            grants,
+        )
+        try:
+            att_a = await r_res.attach_workspace(str(ws_a), claude_tok_a)
+            canon_a = canonical_of(att_a)
+            assert len(grants) == 1
+            assert (await r_res.attach_workspace(None, None)) == att_a
+            assert (await r_res.attach_workspace(canon_a, None)) == att_a
+            assert len(grants) == 1
+
+            with _tool_error(
+                "workspace path must be absolute; provide an absolute workspace directory"
+            ):
+                await r_res.attach_workspace("", None)
+            with _tool_error(
+                "workspace identity invalid; provide a valid existing continuity token"
+            ):
+                await r_res.attach_workspace(None, "")
+            assert await r_res.detach_workspace("") == {"records": []}
+            assert canon_a in r_res._entries
+            assert len(grants) == 1
+
+            symlink.unlink()
+            symlink.symlink_to(ws_b)
+            with _tool_error(
+                "workspace token required for non-default workspace; supply token or use the configured default workspace"
+            ):
+                await r_res.attach_workspace(str(ws_b), None)
+            assert len(grants) == 1
+            await async_eventually(
+                lambda: not r_res._candidates,
+                timeout=5.0,
+                interval=0.01,
+                description="rejected ws_b candidate reaped",
+            )
+
+            att_b2 = await r_res.attach_workspace(str(ws_b), bob_tok_b)
+            assert r_res._entries[canonical_of(att_b2)].is_default_workspace is False
+            assert (await r_res.execute_tool(None, None, "whoami", {}))["records"][0][
+                "name"
+            ] == "claude"
+
+            det_a = await r_res.detach_workspace(None)
+            assert det_a["records"][0]["workspace"] == canon_a
+            await r_res.detach_workspace(canonical_of(att_b2))
+            att_b_default = await r_res.attach_workspace(None, None)
+            assert canonical_of(att_b_default) == str(ws_b.resolve())
+        finally:
+            await r_res.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_overlapping_validation_and_resolution_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-3]/[MCP-4] Overlapping validation and resolution races across symlink retarget (R3.1) plus timeout tombstone detach."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    sub_a = ws_a / "subdir"
+    sub_a.mkdir()
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    b_admin = TautClient(db_path=ws_b / ".taut.db", as_name="claude")
+    try:
+        with b_admin._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = ? WHERE name_key = 'claude'",
+                (claude_tok_a,),
+            )
+    finally:
+        b_admin.close()
+    bob_client_b = TautClient(db_path=ws_b / ".taut.db", as_name="bob_b")
+    try:
+        bob_client_b.join("general")
+        assert bob_client_b.last_created_member is not None
+        assert bob_client_b.last_created_member.token is not None
+        bob_tok_b = bob_client_b.last_created_member.token
+    finally:
+        bob_client_b.close()
+
+    symlink = tmp_path / "default_link"
+    symlink.symlink_to(ws_a)
+    grants: list[int] = []
+
+    async def exercise_overlapping_validation() -> None:
+        hold_val_a = threading.Event()
+        entered_val_a = threading.Event()
+        real_validate = workspace_reactor._validate_candidate
+
+        def gated_validate(token: str | None, *args: Any, **kwargs: Any) -> Any:
+            target = kwargs["target"]
+            if Path(str(target.target)).resolve() == (ws_a / ".taut.db").resolve():
+                entered_val_a.set()
+                assert hold_val_a.wait(timeout=10)
+            return real_validate(token, *args, **kwargs)
+
+        with monkeypatch.context() as vpatch:
+            vpatch.setattr(workspace_reactor, "_validate_candidate", gated_validate)
+            r_ov = _instrument_grant_reactor(
+                vpatch,
+                McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+                grants,
+            )
+            try:
+                task_a = asyncio.create_task(
+                    r_ov.attach_workspace(str(sub_a), claude_tok_a)
+                )
+                assert await asyncio.to_thread(entered_val_a.wait, 5)
+                assert len(grants) == 1
+
+                symlink.unlink()
+                symlink.symlink_to(ws_b)
+
+                with _tool_error("workspace busy; retry after backoff"):
+                    await r_ov.attach_workspace(None, None)
+                with _tool_error("workspace busy; retry after backoff"):
+                    await r_ov.execute_tool(None, None, "whoami", {})
+                with _tool_error("workspace busy; retry after backoff"):
+                    await r_ov.detach_workspace(None)
+                assert len(grants) == 1
+
+                with _tool_error(
+                    "workspace token required for non-default workspace; supply token or use the configured default workspace"
+                ):
+                    await r_ov.attach_workspace(str(ws_b), None)
+                assert len(grants) == 1
+                await async_eventually(
+                    lambda: set(r_ov._candidates) == {1},
+                    timeout=5.0,
+                    interval=0.01,
+                    description="rejected ws_b candidate reaped",
+                )
+
+                att_b = await r_ov.attach_workspace(str(ws_b), bob_tok_b)
+                assert r_ov._entries[canonical_of(att_b)].is_default_workspace is False
+                assert len(grants) == 2
+
+                r_ov._candidate_timeout(1, "validation")
+                with _tool_error(
+                    "workspace attach timed out; use list_workspaces then detach"
+                ):
+                    await task_a
+                hold_val_a.set()
+                await async_eventually(
+                    lambda: not r_ov._entries[str(ws_a.resolve())].owner.alive(),
+                    timeout=5.0,
+                    interval=0.01,
+                    description="timed out A owner exited",
+                )
+                detached_tombstone = await r_ov.detach_workspace(None)
+                assert detached_tombstone["records"][0]["workspace"] == str(
+                    ws_a.resolve()
+                )
+            finally:
+                hold_val_a.set()
+                await r_ov.aclose()
+
+    async def exercise_resolution_race() -> None:
+        grants.clear()
+        symlink.unlink()
+        symlink.symlink_to(ws_a)
+        hold_res_link = threading.Event()
+        entered_res_link = threading.Event()
+        real_res_ws = workspace_reactor._resolve_workspace
+        link_calls = 0
+        link_lock = threading.Lock()
+
+        def gated_res(locator: str) -> Any:
+            nonlocal link_calls
+            if locator == str(symlink):
+                with link_lock:
+                    link_calls += 1
+                    call_num = link_calls
+                if call_num == 1:
+                    entered_res_link.set()
+                    assert hold_res_link.wait(timeout=10)
+            return real_res_ws(locator)
+
+        with monkeypatch.context() as rpatch:
+            rpatch.setattr(workspace_reactor, "_resolve_workspace", gated_res)
+            r_race = _instrument_grant_reactor(
+                rpatch,
+                McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+                grants,
+            )
+            try:
+                omitted_call = asyncio.create_task(r_race.attach_workspace(None, None))
+                assert await asyncio.to_thread(entered_res_link.wait, 5)
+                att_a_race = await r_race.attach_workspace(str(ws_a), claude_tok_a)
+                assert len(grants) == 1
+                symlink.unlink()
+                symlink.symlink_to(ws_b)
+                hold_res_link.set()
+                with _tool_error("workspace busy; retry after backoff"):
+                    await omitted_call
+                assert len(grants) == 1
+                assert (await r_race.attach_workspace(None, None)) == att_a_race
+            finally:
+                hold_res_link.set()
+                await r_race.aclose()
+
+    async def scenario() -> None:
+        await exercise_overlapping_validation()
+        await exercise_resolution_race()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(20)
+def test_launch_defaults_uninitialized_and_older_broker_non_mutation(
+    tmp_path: Path,
+) -> None:
+    """[MCP-4] 0-byte and older-version broker-only SQLite targets are never mutated under --as or --token (R2.4)."""
+
+    import sqlite3
+
+    from simplebroker import Queue
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    zero_dir = tmp_path / "zero_ws"
+    zero_dir.mkdir()
+    zero_db = zero_dir / ".taut.db"
+    zero_db.write_bytes(b"")
+
+    old_dir = tmp_path / "old_broker_ws"
+    old_dir.mkdir()
+    old_db = old_dir / ".taut.db"
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value BLOB NOT NULL)")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')")
+        conn.commit()
+    old_bytes_before = old_db.read_bytes()
+
+    cur_broker_dir = tmp_path / "cur_broker_ws"
+    cur_broker_dir.mkdir()
+    cur_broker_db = cur_broker_dir / ".taut.db"
+    q = Queue("plain", db_path=str(cur_broker_db))
+    try:
+        q.write("item")
+    finally:
+        q.close()
+    cur_bytes_before = cur_broker_db.read_bytes()
+
+    async def scenario() -> None:
+        for defaults in (
+            McpLaunchDefaults(as_name="claude"),
+            McpLaunchDefaults(workspace=str(old_dir), token="tok_any"),
+        ):
+            r_ro = ProcessReactor(asyncio.get_running_loop(), defaults=defaults)
+
+            def candidates_reaped(reactor: ProcessReactor = r_ro) -> bool:
+                return not reactor._candidates
+
+            try:
+                tok_arg = None if defaults.as_name else "tok_any"
+                for ws_dir in (zero_dir, old_dir, cur_broker_dir):
+                    with _tool_error(
+                        "workspace project not found; initialize Taut there or choose another directory"
+                    ):
+                        await r_ro.execute_tool(str(ws_dir), tok_arg, "whoami", {})
+                    await async_eventually(
+                        candidates_reaped,
+                        timeout=5.0,
+                        interval=0.01,
+                        description="failed candidate reaped",
+                    )
+                    with _tool_error(
+                        "workspace project not found; initialize Taut there or choose another directory"
+                    ):
+                        await r_ro.execute_tool(
+                            str(ws_dir),
+                            tok_arg,
+                            "channel_show",
+                            {"channel": "general"},
+                        )
+                    await async_eventually(
+                        candidates_reaped,
+                        timeout=5.0,
+                        interval=0.01,
+                        description="failed candidate reaped",
+                    )
+            finally:
+                await r_ro.aclose()
+
+        assert zero_db.read_bytes() == b""
+        assert old_db.read_bytes() == old_bytes_before
+        assert cur_broker_db.read_bytes() == cur_bytes_before
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_resident_handoff_slow_default_isolation_cold_as_and_utf8_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] Regression coverage for F1 (resident default handoff), F2 (cold --as broker metadata), F5 (slow default isolation), and F6 (UTF-8 check order)."""
+
+    import sqlite3
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    (tmp_path / "proj_c").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    ws_c, claude_tok_c, _ = _create_workspace(tmp_path / "proj_c", "claude")
+    b_admin = TautClient(db_path=ws_b / ".taut.db", as_name="claude")
+    try:
+        with b_admin._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = ? WHERE name_key = 'claude'",
+                (claude_tok_a,),
+            )
+    finally:
+        b_admin.close()
+
+    # Cold initialized workspace with zero members joined and forced stale proof cookie (F2).
+    cold_ws = tmp_path / "cold_init_ws"
+    cold_ws.mkdir()
+    cold_db = cold_ws / ".taut.db"
+    TautClient.init(db_path=cold_db)
+    with sqlite3.connect(cold_db) as conn:
+        init_meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        init_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+        assert int(init_meta["schema_proof_cookie"]) == init_cookie
+        conn.execute("UPDATE meta SET value = 6 WHERE key = 'schema_proof_cookie'")
+        conn.commit()
+        cold_meta_before = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+
+    symlink = tmp_path / "default_link"
+    symlink.symlink_to(ws_a)
+    grants: list[int] = []
+
+    async def exercise_resident_default_handoff(defaults: McpLaunchDefaults) -> None:
+        grants.clear()
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        reactor = _instrument_grant_reactor(monkeypatch, defaults, grants)
+        try:
+            # Attach B explicitly while symlink points to A (no default owner resident).
+            att_b = await reactor.attach_workspace(str(ws_b), claude_tok_a)
+            canon_b = canonical_of(att_b)
+            assert reactor._entries[canon_b].is_default_workspace is False
+            assert len(grants) == 1
+
+            # Retarget symlink to already-resident B with no default owner remaining (F1).
+            symlink.unlink()
+            symlink.symlink_to(ws_b)
+            bound = await reactor.attach_workspace(None, None)
+            assert bound == att_b
+            assert len(grants) == 1
+            assert reactor._entries[canon_b].is_default_workspace is True
+            await async_eventually(
+                lambda: not reactor._candidates,
+                timeout=5.0,
+                interval=0.01,
+                description="handoff candidate reaped",
+            )
+
+            # Subsequent retarget to C stays pinned to B, and omitted detach removes B.
+            symlink.unlink()
+            symlink.symlink_to(ws_c)
+            assert (await reactor.attach_workspace(None, None)) == att_b
+            detached = await reactor.detach_workspace(None)
+            assert detached["records"][0]["workspace"] == canon_b
+        finally:
+            await reactor.aclose()
+
+    async def exercise_slow_default_isolation() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        hold_default = threading.Event()
+        default_calls = 0
+        call_lock = threading.Lock()
+        real_res_ws = workspace_reactor._resolve_workspace
+
+        def slow_default_res(locator: str) -> Any:
+            nonlocal default_calls
+            if locator == str(symlink):
+                with call_lock:
+                    default_calls += 1
+                hold_default.wait(timeout=10)
+            return real_res_ws(locator)
+
+        # 1) Unpinned default: hung default filesystem does not block explicit ws_c attach (F5).
+        with monkeypatch.context() as spatch:
+            spatch.setattr(workspace_reactor, "_resolve_workspace", slow_default_res)
+            r_unpinned = ProcessReactor(
+                asyncio.get_running_loop(),
+                defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            )
+            try:
+                att_c = await asyncio.wait_for(
+                    r_unpinned.attach_workspace(str(ws_c), claude_tok_c),
+                    timeout=3.0,
+                )
+                assert canonical_of(att_c) == str(ws_c.resolve())
+            finally:
+                hold_default.set()
+                await r_unpinned.aclose()
+
+        # 2) Pinned default: explicit ws_c attach performs zero _resolve_workspace(symlink) calls (F5).
+        hold_default.clear()
+        r_pinned = ProcessReactor(
+            asyncio.get_running_loop(),
+            defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+        )
+        try:
+            await r_pinned.attach_workspace(None, None)
+            with call_lock:
+                default_calls = 0
+            with monkeypatch.context() as ppatch:
+                ppatch.setattr(
+                    workspace_reactor, "_resolve_workspace", slow_default_res
+                )
+                att_c2 = await asyncio.wait_for(
+                    r_pinned.attach_workspace(str(ws_c), claude_tok_c),
+                    timeout=3.0,
+                )
+                assert canonical_of(att_c2) == str(ws_c.resolve())
+                assert default_calls == 0
+        finally:
+            hold_default.set()
+            await r_pinned.aclose()
+
+    async def exercise_cold_as_and_utf8_order() -> None:
+        # F2: unsuccessful --as probe on cold initialized workspace never rewrites meta.
+        r_cold = ProcessReactor(
+            asyncio.get_running_loop(),
+            defaults=McpLaunchDefaults(
+                workspace=str(cold_ws), as_name="missing_claude"
+            ),
+        )
+        try:
+            with _tool_error(
+                "workspace identity invalid; ensure the configured --as member exists or provide a valid existing continuity token"
+            ):
+                await r_cold.execute_tool(None, None, "whoami", {})
+        finally:
+            await r_cold.aclose()
+        with sqlite3.connect(cold_db) as conn:
+            cold_meta_after = dict(
+                conn.execute("SELECT key, value FROM meta").fetchall()
+            )
+        assert cold_meta_after == cold_meta_before
+
+        # F6: strict UTF-8 checks for workspace then token precede path absoluteness.
+        r_utf8 = ProcessReactor(asyncio.get_running_loop())
+        try:
+            with _tool_error(
+                "workspace path is not valid UTF-8; provide an absolute UTF-8 workspace path"
+            ):
+                await r_utf8.attach_workspace("bad\ud800path", "bad\ud800token")
+            with _tool_error(
+                "workspace token is not valid UTF-8; provide a valid existing UTF-8 continuity token"
+            ):
+                await r_utf8.attach_workspace("relative/path", "bad\ud800token")
+        finally:
+            await r_utf8.aclose()
+
+    async def full_scenario() -> None:
+        await exercise_resident_default_handoff(
+            McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a)
+        )
+        await exercise_resident_default_handoff(
+            McpLaunchDefaults(workspace=str(symlink), as_name="claude")
+        )
+        await exercise_slow_default_isolation()
+        await exercise_cold_as_and_utf8_order()
+
+    asyncio.run(full_scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_slow_alias_reconcile_and_probe_error_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] Regression coverage for F5a (slow matching alias reconciliation) and F5b (probe PermissionError recovery)."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    (tmp_path / "proj_c").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    ws_c, claude_tok_c, _ = _create_workspace(tmp_path / "proj_c", "claude")
+    symlink = tmp_path / "default_link"
+    symlink.symlink_to(ws_a)
+    real_res_ws = workspace_reactor._resolve_workspace
+
+    async def exercise_slow_alias_reconcile() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        probe_entered = threading.Event()
+        probe_release = threading.Event()
+        probe_finished = threading.Event()
+
+        def delayed_matching_alias(locator: str) -> Any:
+            if locator == str(symlink):
+                probe_entered.set()
+                probe_release.wait(timeout=10)
+                try:
+                    return real_res_ws(locator)
+                finally:
+                    probe_finished.set()
+            return real_res_ws(locator)
+
+        with monkeypatch.context() as f5a_patch:
+            f5a_patch.setattr(
+                workspace_reactor,
+                "_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS",
+                0.03,
+            )
+            f5a_patch.setattr(
+                workspace_reactor, "_resolve_workspace", delayed_matching_alias
+            )
+            r_f5a = ProcessReactor(
+                asyncio.get_running_loop(),
+                defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            )
+            try:
+                att_a_slow = await r_f5a.attach_workspace(str(ws_a), claude_tok_a)
+                assert probe_entered.is_set()
+                probe_release.set()
+                assert await asyncio.to_thread(probe_finished.wait, 5)
+                await async_eventually(
+                    lambda: (
+                        r_f5a._entries[canonical_of(att_a_slow)].is_default_workspace
+                        is True
+                    ),
+                    timeout=5.0,
+                    interval=0.01,
+                    description="late default probe pinned resident ws_a",
+                )
+                symlink.unlink()
+                symlink.symlink_to(ws_b)
+                assert (await r_f5a.attach_workspace(None, None)) == att_a_slow
+                assert set(r_f5a._entries) == {canonical_of(att_a_slow)}
+            finally:
+                probe_release.set()
+                await r_f5a.aclose()
+
+    async def exercise_probe_error_recovery() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        perm_calls = 0
+        perm_lock = threading.Lock()
+
+        def oneshot_perm_error(locator: str) -> Any:
+            nonlocal perm_calls
+            if locator == str(symlink):
+                with perm_lock:
+                    perm_calls += 1
+                    current = perm_calls
+                if current == 1:
+                    raise PermissionError("EACCES simulated on default locator")
+            return real_res_ws(locator)
+
+        with monkeypatch.context() as f5b_patch:
+            f5b_patch.setattr(
+                workspace_reactor, "_resolve_workspace", oneshot_perm_error
+            )
+            r_f5b = ProcessReactor(
+                asyncio.get_running_loop(),
+                defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            )
+            try:
+                assert r_f5b._default_probe is not None
+                att_c_perm = await r_f5b.attach_workspace(str(ws_c), claude_tok_c)
+                assert canonical_of(att_c_perm) == str(ws_c.resolve())
+                assert r_f5b._default_probe._inflight is None
+                att_a_rec = await r_f5b.attach_workspace(str(ws_a), claude_tok_a)
+                assert perm_calls == 2
+                assert (
+                    r_f5b._entries[canonical_of(att_a_rec)].is_default_workspace is True
+                )
+            finally:
+                await r_f5b.aclose()
+
+    async def scenario() -> None:
+        await exercise_slow_alias_reconcile()
+        await exercise_probe_error_recovery()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_unrelated_resident_retarget_and_hung_probe_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] Regression coverage for R3-1 (unrelated resident is not pinned by another caller's slow probe) and R3-3 (hung probe retains O(1) state)."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    (tmp_path / "proj_c").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    ws_c, claude_tok_c, _ = _create_workspace(tmp_path / "proj_c", "claude")
+    b_admin = TautClient(db_path=ws_b / ".taut.db", as_name="claude")
+    try:
+        with b_admin._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = ? WHERE name_key = 'claude'",
+                (claude_tok_a,),
+            )
+    finally:
+        b_admin.close()
+
+    symlink = tmp_path / "default_link"
+    real_res_ws = workspace_reactor._resolve_workspace
+
+    async def exercise_unrelated_resident_not_pinned() -> None:
+        # 1) Start with broken symlink so explicit ws_a attaches unpinned.
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(tmp_path / "missing_initial_target")
+        reactor = ProcessReactor(
+            asyncio.get_running_loop(),
+            defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+        )
+        probe_entered = threading.Event()
+        probe_release = threading.Event()
+        probe_finished = threading.Event()
+
+        def slow_link_res(locator: str) -> Any:
+            if locator == str(symlink):
+                probe_entered.set()
+                probe_release.wait(timeout=10)
+                try:
+                    return real_res_ws(locator)
+                finally:
+                    probe_finished.set()
+            return real_res_ws(locator)
+
+        try:
+            att_a = await reactor.attach_workspace(str(ws_a), claude_tok_a)
+            canon_a = canonical_of(att_a)
+            assert reactor._entries[canon_a].is_default_workspace is False
+
+            # 2) Point symlink at ws_a, then attach ws_c while probe is slow:
+            # ws_c's probe samples ws_a (> timeout), then symlink retargets to ws_b!
+            symlink.unlink()
+            symlink.symlink_to(ws_a)
+            with monkeypatch.context() as r3_patch:
+                r3_patch.setattr(
+                    workspace_reactor,
+                    "_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS",
+                    0.03,
+                )
+                r3_patch.setattr(workspace_reactor, "_resolve_workspace", slow_link_res)
+                att_c = await reactor.attach_workspace(str(ws_c), claude_tok_c)
+                assert canonical_of(att_c) == str(ws_c.resolve())
+                assert probe_entered.is_set()
+                probe_release.set()
+                assert await asyncio.to_thread(probe_finished.wait, 5)
+
+            await asyncio.sleep(0.05)
+            reactor._drain_events()
+            assert reactor._entries[canon_a].is_default_workspace is False
+
+            # 3) Retarget symlink to ws_b; omitted-workspace call must attach ws_b, NOT ws_a!
+            symlink.unlink()
+            symlink.symlink_to(ws_b)
+            att_b = await reactor.attach_workspace(None, None)
+            assert canonical_of(att_b) == str(ws_b.resolve())
+            assert reactor._entries[canonical_of(att_b)].is_default_workspace is True
+        finally:
+            probe_release.set()
+            await reactor.aclose()
+
+    async def exercise_hung_probe_constant_state() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        hold_forever = threading.Event()
+
+        def hung_link_res(locator: str) -> Any:
+            if locator == str(symlink):
+                hold_forever.wait(timeout=10)
+            return real_res_ws(locator)
+
+        with monkeypatch.context() as hpatch:
+            hpatch.setattr(
+                workspace_reactor,
+                "_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS",
+                0.01,
+            )
+            hpatch.setattr(workspace_reactor, "_resolve_workspace", hung_link_res)
+            r_hung = ProcessReactor(
+                asyncio.get_running_loop(),
+                defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            )
+
+            def no_live_candidates(reactor: ProcessReactor = r_hung) -> bool:
+                return not reactor._candidates
+
+            try:
+                for _ in range(10):
+                    with _tool_error(
+                        "workspace identity invalid; provide a valid existing continuity token"
+                    ):
+                        await r_hung.attach_workspace(str(ws_c), "bad-token")
+                    await async_eventually(
+                        no_live_candidates,
+                        timeout=5.0,
+                        interval=0.01,
+                        description="failed candidate reaped",
+                    )
+                assert r_hung._default_probe is not None
+                assert r_hung._default_probe._inflight is not None
+                assert not hasattr(r_hung._default_probe._inflight, "timed_out_checks")
+                assert not r_hung._candidates
+            finally:
+                hold_forever.set()
+                await r_hung.aclose()
+
+    async def full() -> None:
+        await exercise_unrelated_resident_not_pinned()
+        await exercise_hung_probe_constant_state()
+
+    asyncio.run(full())
+
+
+class _TimeoutRecordingEvent:
+    def __init__(self, sink: list[float | None]) -> None:
+        self._inner = threading.Event()
+        self._sink = sink
+
+    def is_set(self) -> bool:
+        return self._inner.is_set()
+
+    def set(self) -> None:
+        self._inner.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self._sink.append(timeout)
+        return self._inner.wait(timeout=timeout)
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_overlapping_probes_preserve_first_participant_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] R4-1 / R5-2 / R6-1 / R6-2: overlapping probes preserve timed-out match, use call-time timeout, and enqueue while owning _inflight."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    (tmp_path / "proj_c").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    ws_c, claude_tok_c, _ = _create_workspace(tmp_path / "proj_c", "claude")
+    symlink = tmp_path / "default_link"
+    real_res_ws = workspace_reactor._resolve_workspace
+
+    async def exercise_delayed_resolved_after_two_drained_probes() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(ws_a)
+        probe_num = 0
+        probe_lock = threading.Lock()
+        probe1_entered = threading.Event()
+        probe1_release = threading.Event()
+        probe1_done = threading.Event()
+        probe2_done = threading.Event()
+        ws_a_timed_out = threading.Event()
+        hold_ws_a_emit = threading.Event()
+        seen_pending: list[tuple[bool, object]] = []
+        observed_timeouts: list[float | None] = []
+        enqueue_slot_states: list[tuple[bool, bool]] = []
+
+        def staged_res(locator: str) -> Any:
+            nonlocal probe_num
+            if locator == str(symlink):
+                with probe_lock:
+                    probe_num += 1
+                    cur = probe_num
+                if cur == 1:
+                    probe1_entered.set()
+                    probe1_release.wait(timeout=10)
+                    try:
+                        return real_res_ws(locator)
+                    finally:
+                        probe1_done.set()
+                try:
+                    return real_res_ws(locator)
+                finally:
+                    probe2_done.set()
+            return real_res_ws(locator)
+
+        real_is_default = workspace_reactor._is_default_candidate
+
+        def delayed_ws_a_after_probe(
+            bootstrap: Any,
+            canonical: str,
+            directory_identity: tuple[int, int],
+        ) -> Any:
+            matched, pending = real_is_default(bootstrap, canonical, directory_identity)
+            if bootstrap.locator == str(ws_a):
+                seen_pending.append((matched, pending))
+                ws_a_timed_out.set()
+                hold_ws_a_emit.wait(timeout=10)
+            return matched, pending
+
+        with monkeypatch.context() as opatch:
+            opatch.setattr(
+                workspace_reactor,
+                "_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS",
+                0.02,
+            )
+            opatch.setattr(
+                workspace_reactor,
+                "Event",
+                lambda: _TimeoutRecordingEvent(observed_timeouts),
+            )
+            opatch.setattr(workspace_reactor, "_resolve_workspace", staged_res)
+            opatch.setattr(
+                workspace_reactor,
+                "_is_default_candidate",
+                delayed_ws_a_after_probe,
+            )
+            r_ov = ProcessReactor(
+                asyncio.get_running_loop(),
+                defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+            )
+            assert r_ov._default_probe is not None
+            real_enqueue = r_ov._default_probe._on_resolved
+            assert real_enqueue is not None
+
+            def checking_enqueue(attempt: Any) -> None:
+                probe = r_ov._default_probe
+                assert probe is not None
+                enqueue_slot_states.append(
+                    (probe._inflight is attempt, probe._lock.locked())
+                )
+                real_enqueue(attempt)
+
+            opatch.setattr(r_ov._default_probe, "_on_resolved", checking_enqueue)
+            drained_probes = 0
+            real_on_probe = r_ov._on_default_workspace_resolved
+
+            def counting_on_probe(event: Any) -> None:
+                nonlocal drained_probes
+                drained_probes += 1
+                real_on_probe(event)
+
+            opatch.setattr(r_ov, "_on_default_workspace_resolved", counting_on_probe)
+            try:
+                task_a = asyncio.create_task(
+                    r_ov.attach_workspace(str(ws_a), claude_tok_a)
+                )
+                assert await asyncio.to_thread(probe1_entered.wait, 5)
+                assert await asyncio.to_thread(ws_a_timed_out.wait, 5)
+                assert observed_timeouts == [0.02]
+                assert len(seen_pending) == 1
+                first_matched, first_pending = seen_pending[0]
+                assert first_matched is False and first_pending is not None
+
+                probe1_release.set()
+                assert await asyncio.to_thread(probe1_done.wait, 5)
+                await async_eventually(
+                    lambda: drained_probes >= 1,
+                    timeout=5.0,
+                    interval=0.01,
+                    description="probe 1 completion drained",
+                )
+
+                symlink.unlink()
+                symlink.symlink_to(ws_b)
+                att_c = await r_ov.attach_workspace(str(ws_c), claude_tok_c)
+                assert canonical_of(att_c) == str(ws_c.resolve())
+                assert await asyncio.to_thread(probe2_done.wait, 5)
+                await async_eventually(
+                    lambda: drained_probes >= 2,
+                    timeout=5.0,
+                    interval=0.01,
+                    description="probe 2 completion drained before ws_a resolved",
+                )
+                assert enqueue_slot_states == [(True, True), (True, True)]
+                assert observed_timeouts == [0.02, 0.02]
+
+                hold_ws_a_emit.set()
+                att_a = await task_a
+                canon_a = canonical_of(att_a)
+                assert r_ov._entries[canon_a].is_default_workspace is True
+                assert r_ov._entries[canon_a].pending_default_probes == []
+                assert (await r_ov.attach_workspace(None, None)) == att_a
+            finally:
+                probe1_release.set()
+                hold_ws_a_emit.set()
+                await r_ov.aclose()
+
+    asyncio.run(exercise_delayed_resolved_after_two_drained_probes())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(25)
+def test_launch_defaults_two_aliases_on_resident_entry_preserve_pending_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] R5-1: two alias attaches on one resident entry preserve all pending probes."""
+
+    from taut_mcp.cli import McpLaunchDefaults
+
+    (tmp_path / "proj_a").mkdir()
+    (tmp_path / "proj_b").mkdir()
+    ws_a, claude_tok_a, _ = _create_workspace(tmp_path / "proj_a", "claude")
+    ws_b, _claude_tok_b, _ = _create_workspace(tmp_path / "proj_b", "claude")
+    symlink = tmp_path / "default_link"
+    alias1 = tmp_path / "alias_a_1"
+    alias2 = tmp_path / "alias_a_2"
+    alias1.symlink_to(ws_a)
+    alias2.symlink_to(ws_a)
+    real_res_ws = workspace_reactor._resolve_workspace
+
+    async def exercise_two_aliases_on_resident_entry() -> None:
+        symlink.unlink(missing_ok=True)
+        symlink.symlink_to(tmp_path / "missing_init")
+        r_alias = ProcessReactor(
+            asyncio.get_running_loop(),
+            defaults=McpLaunchDefaults(workspace=str(symlink), token=claude_tok_a),
+        )
+        p_num = 0
+        p_lock = threading.Lock()
+        p1_entered = threading.Event()
+        p1_release = threading.Event()
+        p2_entered = threading.Event()
+        p2_release = threading.Event()
+        hold_cb1 = threading.Event()
+
+        def two_alias_res(locator: str) -> Any:
+            nonlocal p_num
+            if locator == str(symlink):
+                with p_lock:
+                    p_num += 1
+                    cur = p_num
+                if cur == 1:
+                    p1_entered.set()
+                    p1_release.wait(timeout=10)
+                    return real_res_ws(locator)
+                p2_entered.set()
+                p2_release.wait(timeout=10)
+                return real_res_ws(locator)
+            return real_res_ws(locator)
+
+        assert r_alias._default_probe is not None
+        real_cb = r_alias._default_probe._on_resolved
+        assert real_cb is not None
+        cb_calls = 0
+
+        def delayed_first_cb(attempt: Any) -> None:
+            nonlocal cb_calls
+            cb_calls += 1
+            if cb_calls == 1:
+
+                def emit_later() -> None:
+                    hold_cb1.wait(timeout=10)
+                    real_cb(attempt)
+
+                threading.Thread(target=emit_later, daemon=True).start()
+                return
+            real_cb(attempt)
+
+        try:
+            att_a = await r_alias.attach_workspace(str(ws_a), claude_tok_a)
+            canon_a = canonical_of(att_a)
+            assert r_alias._entries[canon_a].is_default_workspace is False
+
+            symlink.unlink()
+            symlink.symlink_to(ws_a)
+            with monkeypatch.context() as apatch:
+                apatch.setattr(
+                    workspace_reactor,
+                    "_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS",
+                    0.02,
+                )
+                apatch.setattr(workspace_reactor, "_resolve_workspace", two_alias_res)
+                apatch.setattr(r_alias._default_probe, "_on_resolved", delayed_first_cb)
+                assert (
+                    await r_alias.attach_workspace(str(alias1), claude_tok_a)
+                ) == att_a
+                assert await asyncio.to_thread(p1_entered.wait, 5)
+                assert len(r_alias._entries[canon_a].pending_default_probes) == 1
+                p1_release.set()
+                await async_eventually(
+                    lambda: r_alias._default_probe._inflight is None,  # type: ignore[union-attr]
+                    timeout=5.0,
+                    interval=0.01,
+                    description="probe 1 finished with callback 1 held",
+                )
+
+                symlink.unlink()
+                symlink.symlink_to(ws_b)
+                assert (
+                    await r_alias.attach_workspace(str(alias2), claude_tok_a)
+                ) == att_a
+                assert await asyncio.to_thread(p2_entered.wait, 5)
+                assert len(r_alias._entries[canon_a].pending_default_probes) == 2
+
+                p2_release.set()
+                hold_cb1.set()
+                await async_eventually(
+                    lambda: r_alias._entries[canon_a].is_default_workspace is True,
+                    timeout=5.0,
+                    interval=0.01,
+                    description="entry_a pinned once held callback 1 drained",
+                )
+                assert r_alias._entries[canon_a].pending_default_probes == []
+                assert (await r_alias.attach_workspace(None, None)) == att_a
+        finally:
+            p1_release.set()
+            p2_release.set()
+            hold_cb1.set()
+            await r_alias.aclose()
+
+    asyncio.run(exercise_two_aliases_on_resident_entry())

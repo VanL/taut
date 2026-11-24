@@ -310,11 +310,16 @@ and
 `taut-mcp` is a separate, connection-scoped stdio adapter for MCP
 clients. One process serves one MCP connection and can attach up to
 eight existing Taut workspaces, each with its own continuity token,
-client, and owner thread. The manifest contains exactly 21 tools —
+client, owner thread, and bounded command FIFO (1 active plus up to 8
+waiting commands). The manifest contains exactly 21 tools —
 18 CLI-shaped, workspace- and token-scoped, plus three
 process-lifecycle tools — and the repeatable
 `taut://notifications/current` resource, which reports notification
 pointers only; reading it does not claim them or advance chat cursors.
+Hosts can also pass optional launch defaults (`--workspace DIR`, plus
+`--token TOKEN` or `--as NAME`) so single-project or named-agent MCP
+registrations omit `workspace`/`token` on ordinary calls while keeping
+explicit per-call overrides available.
 The package is wired into the coordinated PyPI and immutable GitHub
 Release path; that configuration does not itself mean a release has
 been published.
@@ -553,7 +558,8 @@ There are three identity modes:
    member. It does not rename the member or rewrite history.
 
 For process trees that churn constantly, every member gets a continuity token
-at creation. Stash it in your agent's state, and
+at creation (and can read it back later without side effects via
+`taut whoami --show-token`). Stash it in your agent's state, and
 `TAUT_TOKEN=taut-7f3k9q2m taut say ...` is that same member from anywhere. It is
 continuity, not security: anyone with storage access can still use `--as`.
 
@@ -588,7 +594,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut read [THREAD_OR_DM]` | Show unread and advance your bookmark; a DM accepts `@name-or-alias` or its stable handle; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions, replies, new DMs, and reactions |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
-| `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
+| `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors (`--channel` accepts bare or `#channel`); add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
 | `taut system dump --output FILE` | Write a live H-bounded logical dump of registered pending messages, core authority, and installed durable extension state |
 | `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
 | `taut system doctor` | Passively run seven fixed workspace checks, including debug-capture status; no repair, work claims, or provider loading |
@@ -597,7 +603,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut who [THREAD]` | Members and presence |
-| `taut whoami [--explain]` | Who taut thinks you are, and why |
+| `taut whoami [--explain] [--show-token]` | Who taut thinks you are, why, and optionally your continuity token |
 | `taut rejoin [NAME] [--token TOKEN]` | Associate the current process claim with an existing member |
 
 Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,

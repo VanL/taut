@@ -1762,3 +1762,31 @@ def test_project_channel_rename_resume_contract(taut_project: Path) -> None:
     assert [message.text for message in van.log(f"ops.{root.ts}")] == ["threaded"]
     with pytest.raises(NotFoundError, match="channel not found: general"):
         van.rename_channel("general", "ops")
+
+
+def test_project_whoami_include_token_install_schema_and_hash_search_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    van = TautClient(as_name="van", install_schema=False)
+    try:
+        van.join("general")
+        created = van.last_created_member
+        assert created is not None and isinstance(created.token, str)
+        before_row = van._state.get_member(created.member_id)
+        assert before_row is not None
+
+        tok_member = van.whoami(explain=True, include_token=True)
+        assert tok_member.token == created.token
+        assert tok_member.explain is not None
+        assert van.last_created_member is created
+        assert van._state.get_member(created.member_id) == before_row
+
+        msg = van.say("general", "cross-backend hash search needle")
+
+        assert [h.ts for h in van.search("needle", channels=["#general"])] == [msg.ts]
+        assert [
+            h.ts for h in van.search("needle", channels=["general", "#general"])
+        ] == [msg.ts]
+    finally:
+        van.close()

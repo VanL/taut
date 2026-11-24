@@ -32,14 +32,17 @@ coalesced, or dropped update hints. Standard resource notifications are
 edge-triggered hints only. Receiving an edge never acknowledges a notification
 and never grants authority to act on its content.
 
-Every identity-using workspace call carries two explicit values: an absolute
-local workspace directory locator and an existing Taut continuity token.
+Every identity-using workspace call resolves two values: an absolute
+local workspace directory locator and an existing Taut continuity token (either
+supplied explicitly in the tool call or inherited from explicit launch-time
+`--workspace` and `--token` / `--as` server flags under [MCP-3]–[MCP-4]).
 Together they are the application handle from which the server can
 reconstruct the configured project and member binding after process loss.
 The token is an identity-continuity selector, not authentication,
-authorization, or a capability. It is never returned or placed in chat.
+authorization, or a capability. It is never returned by MCP tools or placed in chat.
 `detach_workspace` is the narrow exception: it removes process-local state
-by exact published-canonical lookup, recognizes an exact hidden-candidate
+by exact published-canonical lookup (or the single resident default workspace bound
+from launch `--workspace` when `workspace` is omitted or null), recognizes an exact hidden-candidate
 string only to report busy, and reconstructs no Taut identity.
 
 `attach_workspace` is the eager form of one shared `ensure_workspace`
@@ -97,10 +100,23 @@ Publisher identity. Configuring this path does not itself publish a version;
 only an owner-authorized release tag does.
 
 The server starts with no resident workspace and can complete legacy
-initialization or modern discovery in that state. There is no process-wide
-`--db`, `TAUT_DB`, `--token`, `TAUT_TOKEN`, inferred current workspace, or
-default identity. Workspace and identity selection arrive only in
-workspace-scoped tool inputs. This spec defines no launch-time behavior flag.
+initialization or modern discovery in that state. It never infers an ambient
+current working directory, `TAUT_DB`, `TAUT_AS`, or `TAUT_TOKEN`. Both launch
+surfaces (`taut mcp` and `taut-mcp`) accept optional explicit launch-default
+flags: `--workspace DIR` (an absolute UTF-8 local directory path) and at most
+one of `--token TOKEN` (an existing non-empty UTF-8 continuity token; requires
+`--workspace`) or `--as NAME_OR_ALIAS` (matching `[IAN-4.2]`'s member-name
+pattern; resolves an existing workspace member read-only on first ensure). On
+`taut mcp`, pre-verb `--db`, `--json`, `-t/--timestamps`, and `-q/--quiet` are
+usage errors (exit 1 before protocol start); pre-verb `--as` or `--token` is
+accepted when not combined with a second identity flag (pre-verb root-option
+syntax before `mcp` remains governed by `[TAUT-8.1]`). On both `taut-mcp` and
+`taut mcp`'s command-local parser, invalid launch flag combinations, malformed
+`--workspace` / `--token` / `--as` values, and unrecognized or positional
+arguments exit 1 on stderr with fixed content-free diagnostics and zero stdout,
+never echoing a supplied token or untrusted argument value. When launch
+defaults are omitted, workspace and identity selection arrive only in
+workspace-scoped tool inputs.
 
 The era-neutral server lifespan starts before request handling and captures
 the running `asyncio` loop used by the process reactor. Every request handler
@@ -174,7 +190,10 @@ path, not as a legacy value in modern `supportedVersions`. Taut never emits
 flow.
 
 Modern `tools/list` and `resources/list` complete results are deterministic
-and return `ttlMs: 300000` with `cacheScope: "public"`. A complete read of
+and return `ttlMs: 300000`; `resources/list` advertises `cacheScope: "public"`,
+while `tools/list` advertises `cacheScope: "public"` when no launch defaults are
+configured and `cacheScope: "private"` when launch `--workspace`, `--token`, or
+`--as` customizes the advertised input schemas. A complete read of
 `taut://notifications/current` returns `ttlMs: 0` with
 `cacheScope: "private"` because the aggregate changes independently of the
 request. Legacy clients receive the equivalent application data through
@@ -246,7 +265,8 @@ fails with `workspace directory identity unavailable; choose a workspace with
 stable directory identity` rather than risk two
 clients for case aliases of one project. It retains the
 resolved config and target on the child thread and sends only immutable
-canonical-path, directory-identity, and backend-name data to the master.
+canonical-path, directory-identity, backend-name, and default-workspace-match
+boolean data to the master.
 The master does not touch the resolved filesystem object.
 
 Each resident workspace closes its client-owned BrokerSession on the workspace
@@ -257,7 +277,18 @@ process session alive; this does not defer the retiring worker's cache release.
 After the master grants the candidate, the child constructs its core client
 through `TautClient(broker_target=resolved_target,
 broker_config=resolved_config, token=token,
-inherit_environment_identity=False)`. This is the [TAUT-3.2]/[TAUT-8.3]
+inherit_environment_identity=False, install_schema=False)` (when `token` was
+resolved through launch `--as NAME_OR_ALIAS`, the child first resolves that
+existing member read-only on the same owner thread via a short-lived
+`TautClient(broker_target=resolved_target, broker_config=resolved_config,
+as_name=as_name, inherit_environment_identity=False,
+install_schema=False).whoami(include_token=True)` call to obtain its stored
+continuity token without running broker setup/migration, installing sidecar
+DDL, creating a member, healing claims, or updating activity; an uninitialized
+or broker-only target emits `workspace project not found; initialize Taut there
+or choose another directory`, while a missing member or missing token emits
+`workspace identity invalid; ensure the configured --as member exists or
+provide a valid existing continuity token`). This is the [TAUT-3.2]/[TAUT-8.3]
 resolved handoff and identity-isolation seam. The extension does not mutate
 or inherit `cwd`, `TAUT_DB`, `TAUT_AS`, `TAUT_TOKEN`, or another
 process-global selector and does not translate a PostgreSQL DSN into
@@ -384,7 +415,13 @@ without creating SQLite state.
 
 `detach_workspace` deliberately has narrower locator semantics. It accepts
 only the exact canonical identifier exposed by ensure or
-`list_workspaces`, performs no filesystem/config resolution, and treats an
+`list_workspaces` (or an omitted/null `workspace` when launch `--workspace` is
+configured, which selects the single published entry matching that default
+project — including `ready`, `detaching`, `identity_lost`, `reactor_failed`,
+and validation-timeout tombstones — or reports `workspace busy; retry after
+backoff` if a hidden candidate for that default project is active, or returns
+an idempotent empty result if unattached; an explicit empty string `""` never
+selects the default workspace), performs no filesystem/config resolution, and treats an
 unrecognized string as an idempotent miss. Before a candidate publishes, an
 exact string match against that hidden candidate's immutable original locator
 or already-stored canonical string returns `workspace busy; retry after
@@ -497,14 +534,19 @@ callback rechecks the phase latch and becomes a no-op after another winner.
 Every later event or callback for the settled phase is ignored and cannot
 publish, overwrite status, resend stop, or complete a future twice.
 
-Ensuring a `ready` canonical workspace with the same token is idempotent
-and returns the existing entry without opening a client or revalidating the
-token. A different token conflicts until the workspace is detached. A
+Ensuring a `ready` canonical workspace with the same token (or a matching
+launch `--as` binding, recorded on the resident entry from its validated member
+route keys regardless of whether first attachment used `--as` or an explicit
+token) is idempotent and returns the existing entry without opening a
+client or revalidating the token; a losing or idempotent alias candidate
+retires at resolution arbitration without receiving a validation grant. A
+different token or non-matching `--as` selector conflicts until the workspace
+is detached. A
 degraded or detaching entry must finish detachment before any reattachment;
 no token can create a second generation while an earlier child might still
 be live. Tokens are scoped to their selected Taut database; equality of
 token text across databases has no cross-workspace meaning. The process
-registry retains the exact supplied string on a hidden or ready owner and
+registry retains the exact resolved continuity token string on a hidden or ready owner and
 compares ordinary string equality, without trimming or normalization.
 Publication transfers that owner value to the ready entry. Retirement
 releases it with the owning entry. Expected diagnostics and protocol results
@@ -513,10 +555,41 @@ frames remain outside Taut's process-state retention contract.
 
 One immutable member id is bound independently to each ready resident
 workspace. Member rename does not change it. `attach_workspace` and every
-CLI-shaped schema carry the absolute workspace locator plus existing
-continuity token and no name, member id, or alternative identity selector.
-`detach_workspace` carries only the exact canonical workspace because it
-performs no Taut identity operation.
+CLI-shaped schema carry `workspace` and `token` properties (required `string`
+by default; `workspace` becomes optional `["string", "null"]` when launch
+`--workspace` is configured, and `token` becomes optional `["string", "null"]`
+when launch `--token` or `--as` is configured) and no per-tool name, member id,
+or alternative identity selector. Only omitted or JSON `null` values inherit
+launch defaults; explicit empty strings `""` fail master request validation
+(`workspace path must be absolute; provide an absolute workspace directory` for
+`workspace: ""` and `workspace identity invalid; provide a valid existing
+continuity token` for `token: ""`) before seat allocation or arbitration.
+Whenever launch `--workspace` is configured (whether paired with `--token`,
+`--as`, or explicit per-call tokens), at most one validation-granted candidate
+or published entry may hold the default-workspace binding at a time (computed
+on the child resolution thread from canonical path or `(st_dev, st_ino)`
+directory identity, including symlinks and descendant directories regardless of
+which spelling attached first, with zero master-thread filesystem I/O): if a
+symlink passed to `--workspace` retargets on disk while an earlier default
+validation or resident entry remains active, that binding stays frozen until
+validation fails or the entry is detached — at master preflight, an
+omitted/null-`workspace` call routes directly to a published default entry when
+one exists, or — only when no default entry is published — returns `workspace
+busy; retry after backoff` if an active candidate already holds that default
+reservation or matches the launch locator, and if an
+omitted/null-`workspace` call entered candidate resolution earlier and resolves
+to a retargeted project after another validation-granted candidate or published
+entry owns the default binding, resolution arbitration retires it with
+`workspace busy; retry after backoff` without granting validation. When launch
+`--token` is configured for `--workspace`, an omitted or null per-call `token`
+applies only to that single default workspace; supplying an explicit `workspace`
+for any other project (including a retargeted project while another validation
+or published entry owns the default binding) with omitted/null `token` fails
+before validation grant with `workspace token required for non-default
+workspace; supply token or use the configured default workspace`.
+`detach_workspace` carries only `workspace`
+(optional `["string", "null"]` when launch `--workspace` is configured) because
+it performs no Taut identity operation.
 
 Request decoding and the process reactor may hold the supplied token string.
 The workspace child validates it and its one canonical `TautClient` retains
@@ -582,10 +655,11 @@ distinct named clocks/latches in implementation and are tested independently
 even where their numeric values match.
 
 `join THREAD` and `leave THREAD` change Taut thread membership, not workspace
-residency or member identity. MCP offers no selector-free process inference,
-`--as`, `join --new`, `rejoin`, or caller-selected token creation. Each
-identity-using call accepts only a token that already resolves a member.
-Identity bootstrap remains an ordinary Taut task.
+residency or member identity. MCP offers no ambient selector-free process
+inference, per-call `--as`, `join --new`, `rejoin`, or caller-selected member
+or token creation. Each identity-using call resolves an existing member by
+continuity token (or read-only launch `--as` selection of an existing member).
+Identity bootstrap remains an ordinary Taut CLI/Python task.
 
 If an out-of-band change removes a bound member or invalidates its continuity
 claim, only that workspace becomes `identity_lost`. Its reactor stops database
@@ -686,8 +760,8 @@ hint.
 | `who` | List Taut members or members of one thread through read-only identity resolution. | true | false | true | true |
 | `whoami` | Return the member bound to this workspace attachment through read-only identity resolution. | true | false | true | true |
 
-`init`, `watch`, `rejoin`, `summon`, `dismiss`, extension-discovered verbs,
-and future CLI verbs are not registered automatically. `init` and identity
+`init`, `onboard`, `watch`, `rejoin`, `summon`, `dismiss`, extension-discovered verbs,
+and future CLI verbs are not registered automatically. `init`, `onboard`, and identity
 bootstrap happen outside MCP; the aggregate notification resource owns the
 MCP notification-observation and wake use case, not the CLI `watch` command's
 consuming full-chat live-follow behavior; `rejoin` conflicts with immutable
@@ -786,10 +860,16 @@ Input schemas carry no `$schema` key.
 | `list.all` | List every registered thread; exclusive with dms. |
 | `list.dms` | List every accessible DM; exclusive with all. |
 
-| Tool | Input properties | Required | MCP-specific rule |
+In the table below, `workspace` is `string` and required by default, becoming
+`string or null` and optional when launch `--workspace` is configured; `token`
+is `string` and required by default on `attach_workspace` and all 18 CLI-shaped
+tools, becoming `string or null` and optional when launch `--token` or `--as`
+is configured (`detach_workspace` never accepts `token`).
+
+| Tool | Input properties | Default required (`workspace`/`token` optional when configured at launch) | MCP-specific rule |
 |------|------------------|----------|-------------------|
-| `attach_workspace` | `workspace: string`, `token: string` | both | eagerly enters [MCP-4]'s shared ensure lifecycle; `workspace` is an absolute directory locator; token must resolve an existing member and is never echoed |
-| `detach_workspace` | `workspace: string` | `workspace` | exact canonical resident identifier for removal; exact hidden original/stored-canonical string reports busy; performs no filesystem or identity resolution; every other miss is idempotent success |
+| `attach_workspace` | `workspace: string`, `token: string` | both | eagerly enters [MCP-4]'s shared ensure lifecycle; `workspace` is an absolute directory locator; token/launch `--as` must resolve an existing member and token is never echoed |
+| `detach_workspace` | `workspace: string` | `workspace` | exact canonical resident identifier for removal (or omitted/null for the resident launch `--workspace`); exact hidden original/stored-canonical string reports busy; performs no filesystem or identity resolution; every other miss is idempotent success |
 | `list_workspaces` | no properties | none | returns all published process-local entries in [MCP-7]'s lexicographic Unicode-code-point order of canonical workspace path |
 | `join` | `workspace: string`, `token: string`, `thread: string`, `persona: string or null` | `workspace`, `token`, `thread` | lazily ensures the workspace if needed; calls `join(..., new=False)`; no other identity selector |
 | `leave` | `workspace: string`, `token: string`, `thread: string` | all | lazily ensures the workspace if needed; ordinary channel/sub-thread membership semantics |
@@ -808,19 +888,31 @@ Input schemas carry no `$schema` key.
 | `list` | `workspace: string`, `token: string`, `all: boolean`, `dms: boolean` | `workspace`, `token` | lazily ensures the workspace if needed; both booleans default false; `all && dms` is rejected before child dispatch; selects the public list API with `include_unread_counts=False` |
 | `channel_rename` | `workspace: string`, `token: string`, `old_name: string`, `new_name: string` | all | lazily ensures the workspace if needed; channel rename only |
 | `who` | `workspace: string`, `token: string`, `thread: string or null` | `workspace`, `token` | lazily ensures the workspace if needed; retains core read-only selection and computed-presence semantics |
-| `whoami` | `workspace: string`, `token: string` | both | lazily ensures the workspace if needed; fixed `explain=False`; read-only selection does not touch activity or heal a claim |
+| `whoami` | `workspace: string`, `token: string` | both | lazily ensures the workspace if needed; fixed `explain=False, include_token=False`; read-only selection does not touch activity or heal a claim |
 
 The application compiles one Draft 2020-12 validator from each exact
-advertised input schema and validates `tools/call` arguments. If the SDK
+advertised input schema and validates `tools/call` arguments. Top-level channel
+and chat-thread string patterns (`join.thread`, `leave.thread`, `reply.thread`,
+`read.thread`, `log.thread`, `search.channels[]`, `channel_show.channel`,
+`channel_topic.channel`, `channel_rename.old_name`, `channel_rename.new_name`,
+and `who.thread`) accept an optional single leading `#` (`^#?[a-z0-9][a-z0-9_-]{0,63}$`,
+plus optional `.[0-9]{19}` only on sub-thread-capable `leave.thread`,
+`read.thread`, `log.thread`, and `who.thread`), normalized by core
+[IAN-5.1] addressing to canonical bare queue names. If the SDK
 supplies omitted `arguments` as `None`, the shared adapter
 normalizes it to `{}` before validation; no other value is coerced.
 `list_workspaces` therefore accepts omitted or explicit-empty arguments,
 while a tool with required properties returns the ordinary schema-invalid
 result for either form. A schema-invalid known-tool call returns a
 `CallToolResult` with
-`isError: true`, no `structuredContent`, and exactly one text content block:
-`invalid tool arguments; inspect the tool schema and retry`. It does not
-expose the rejected value or validator exception. An unknown tool, malformed
+`isError: true`, no `structuredContent`, and exactly one text content block
+beginning with `invalid tool arguments` and ending with `; inspect the tool
+schema and retry` (naming at most a deterministic server-owned schema field
+such as `missing required field 'token'`, `invalid field 'msg_id'`, `invalid
+field 'channels[0]'`, `conflicting fields 'all' and 'dms'`, `(unexpected
+property)`, or `(expected JSON object)`). It never echoes any caller-supplied
+argument value, caller-supplied unknown property key, or raw validator
+exception. An unknown tool, malformed
 MCP envelope, or invalid protocol metadata remains an SDK-owned protocol
 error, not this tool result.
 
@@ -856,26 +948,39 @@ A child that was created by lazy ensure is the same persistent owner that
 explicit attach would have created. Calls for different workspaces remain
 independent.
 
-Each ready workspace has one no-wait parent admission slot. If that slot is
-occupied, another CLI-shaped call for that workspace is rejected with an
-`isError` result `workspace busy; retry after backoff`; it is not queued. Calls for different
+Each ready workspace has one active parent command slot plus a bounded FIFO
+queue of up to eight waiting CLI-shaped commands (`MAX_QUEUED_COMMANDS = 8`,
+for at most nine concurrent in-flight CLI-shaped calls per ready workspace).
+Before counting queued depth, promoting the next command, or checking detach
+busy state, the master synchronously prunes any queued item whose request
+waiter has already been cancelled (`waiter.cancelled()`). When the active slot
+is free, an admitted command dispatches immediately to the child; when occupied
+and fewer than eight uncancelled commands are queued, the frozen command waits
+in FIFO order on the master reactor and promotes only after the preceding
+command's completion installs its post-command snapshot; when eight uncancelled
+commands are already queued, a tenth concurrent call for that workspace is
+rejected immediately with an `isError` result `workspace busy; retry after
+backoff`. Calls for different
 workspaces may run concurrently. `attach_workspace` and `detach_workspace`
 perform their reservation/status transitions without awaiting at the same
-master serial point. There is no separate process-wide lifecycle lock or
+master serial point (`detach_workspace` rejects with `workspace busy; retry
+after backoff` whenever a command is active or an uncancelled command is queued
+on that workspace). There is no separate process-wide lifecycle lock or
 lifecycle-busy state; after the transition, each handler waits only on its
 selected child's future. A hidden candidate retains only its own per-path
 reservation, so one slow workspace cannot delay lifecycle work for another.
 `list_workspaces` and the cached aggregate resource do not enter a parent
 admission slot. Every registry transition, generation install/retirement,
-ordinary-tool routing lookup, and child-slot reservation occurs at one
+ordinary-tool routing lookup, and child-slot/FIFO reservation occurs at one
 non-awaiting master-thread serial point. A CLI-shaped tool is routable only
-when the entry is `ready`; lookup, status check, and slot reservation are one
-atomic admission step. Detach marks an entry `detaching` at the same serial
-point before it requests child stop. `list_workspaces` snapshots only fully
-published entries at that serial point, so neither it nor ordinary routing
-observes a half-published attach. The applicable no-wait slot is checked
-at this serial point after request validation. There is no process-wide
-request quota; workspace slots and the resident cap remain admission bounds.
+when the entry is `ready`; lookup, status check, cancelled-waiter prune, and
+slot or FIFO admission are one atomic admission step. Detach marks an entry
+`detaching` at the same serial point before it requests child stop.
+`list_workspaces` snapshots only fully published entries at that serial point,
+so neither it nor ordinary routing observes a half-published attach. The
+applicable admission bound is checked at this serial point after request
+validation. There is no process-wide request quota; per-workspace bounded FIFO
+queues and the resident cap remain admission bounds.
 
 Request cancellation is a queued control input and never a rollback
 boundary. The child keeps the existing cancel-before-start boundary and
@@ -884,7 +989,15 @@ to a canceled request in either protocol era. The extension does not
 synthesize the legacy code-`0` `Request cancelled` response.
 
 An admitted command envelope carries its command id. If its MCP request is
-canceled or the transport disconnects, the master enqueues a cancel-control
+canceled or the transport disconnects while the command is still waiting in the
+master's per-workspace FIFO queue before dispatch to the child, its request
+waiter becomes cancelled synchronously at `Task.cancel()` time: admission
+pruning, the waiter's done callback, and FIFO promotion all check
+`waiter.cancelled()` at the master serial point, removing the entry without
+sending any child control, touching Taut state, consuming a slot against later
+admissions, or disturbing remaining FIFO entries even if an admission or
+completion drain runs before the request task unwinds. Once dispatched to
+the active slot, the master enqueues a cancel-control
 envelope with that id and issues only the ordinary payload-free child wake.
 On each wake the child drains the inbound queue through `queue.Empty` into
 child-owned pending state before selecting work. The instant that drain first
@@ -903,7 +1016,8 @@ boundary, so a mutation may commit even when its response cannot be
 delivered. Every admitted CLI-shaped command follows this fixed master-thread
 completion order: await the child event; if its generation is still current,
 install the outcome's status and notification snapshot and recompute the
-aggregate; free the parent admission slot; then either hand the outcome to a
+aggregate; clear the active slot and promote the next uncancelled FIFO-queued
+command (if any); then either hand the outcome to a
 live transport or discard it after cancellation/disconnect. The workspace remains
 busy through snapshot installation even after its requester cancels.
 A caller must inspect the selected workspace's current Taut
@@ -915,15 +1029,16 @@ metadata read; every other CLI-shaped command carries a new post-command
 snapshot. This narrow exception preserves `channel_show`'s actor-free,
 sidecar-only contract without changing aggregate ordering.
 
-A current-generation command outcome normally settles its parent admission
-slot. If the child instead reports terminal `identity_lost` or
-`reactor_failed` status, or its owner thread exits, while that slot is
-occupied, the process reactor treats the terminal event as the one
-completion for that internal command id: it installs the terminal status and
-empty snapshot, synthesizes the corresponding fixed routing error outcome,
-frees the parent admission slot, and responds or discards in the same fixed
-order. A later outcome for that command id is ignored. Thus a known child fault cannot leave
-detach permanently rejected as busy. A still-live child blocked inside a
+A current-generation command outcome normally settles its active parent command
+slot and promotes the next uncancelled FIFO-queued command, if any. If the child instead reports terminal `identity_lost` or
+`reactor_failed` status, or its owner thread exits, while the active slot or
+FIFO queue is non-empty, the process reactor treats the terminal event as the
+completion for the active command and every uncancelled queued command on that workspace:
+it installs the terminal status and
+empty snapshot, synthesizes the corresponding fixed routing error outcome for
+each pending future, clears the active slot and FIFO queue, and responds or discards in the same fixed
+order. A later outcome for a settled command id is ignored. Thus a known child fault cannot leave
+queued callers hung or detach permanently rejected as busy. A still-live child blocked inside a
 synchronous call emits no terminal event and remains the explicit
 process-restart case in [MCP-11].
 
@@ -1130,7 +1245,10 @@ not found; initialize Taut there or choose another directory`, `workspace
 directory identity unavailable; choose a workspace with stable directory
 identity`, `workspace configuration or backend unavailable; fix the
 workspace configuration or backend and retry`, `workspace identity invalid;
-provide a valid existing continuity token`, `workspace attachment failed;
+provide a valid existing continuity token`, `workspace identity invalid;
+ensure the configured --as member exists or provide a valid existing
+continuity token`, `workspace token required for non-default workspace; supply
+token or use the configured default workspace`, `workspace attachment failed;
 use list_workspaces before retrying`, `workspace resolution timed out; use
 list_workspaces then restart if warned`, `workspace attach timed out; use
 list_workspaces then detach`, and `workspace already attached; detach to
@@ -1143,19 +1261,23 @@ The registry/status routing matrix is normative:
 | Observed state | Identity-using caller with same token | Identity-using caller with different token | `detach_workspace` input |
 |----------------|---------------------------------------|--------------------------------------------|--------------------------|
 | missing | begin shared ensure if a cap seat is available; a CLI-shaped command dispatches only after publication | same | successful empty no-op without filesystem or identity resolution |
-| hidden candidate | `workspace busy; retry after backoff` | `workspace busy; retry after backoff` | exact hidden original/stored-canonical string returns `workspace busy; retry after backoff`; every other string is a missing no-op |
-| `ready`, parent admission slot free | CLI-shaped command dispatches; attach returns existing record | `workspace already attached; detach to replace token` | begin one detach |
-| `ready`, parent admission slot occupied | CLI-shaped command returns `workspace busy; retry after backoff`; attach returns the existing record | `workspace already attached; detach to replace token` | `workspace busy; retry after backoff` |
+| hidden candidate | `workspace busy; retry after backoff` | `workspace busy; retry after backoff` | exact hidden original/stored-canonical string (or omitted/null matching a hidden default workspace) returns `workspace busy; retry after backoff`; every other string is a missing no-op |
+| `ready`, parent admission slot free | CLI-shaped command dispatches immediately; attach returns existing record | `workspace already attached; detach to replace token` | begin one detach |
+| `ready`, active slot occupied (`< 8` queued) | CLI-shaped command queues in FIFO order; attach returns the existing record | `workspace already attached; detach to replace token` | `workspace busy; retry after backoff` |
+| `ready`, active slot + 8 FIFO slots full | CLI-shaped command returns `workspace busy; retry after backoff`; attach returns the existing record | `workspace already attached; detach to replace token` | `workspace busy; retry after backoff` |
 | `detaching` | `workspace busy; retry after backoff` | same | `workspace busy; retry after backoff`; do not send another stop/wake |
 | `identity_lost` | `workspace identity lost; detach and reattach` | same | begin detach; no token is required |
 | `reactor_failed` | `workspace reactor failed; detach and reattach` | same | run [MCP-4]'s bounded retry-detach; no token is required |
 | validation-timeout tombstone | `workspace attach timed out; use list_workspaces then detach` | same | run [MCP-4]'s bounded retry-detach; no token is required |
 
-Attach and CLI-shaped calls accept any absolute locator and may enter
-resolution. `detach_workspace` first performs exact published-canonical
-lookup, then exact hidden original/stored-canonical string lookup only to
-report busy. Callers use the canonical identifier returned by ensure or
-`list_workspaces` for removal. It never resolves an alias merely to remove
+Attach and CLI-shaped calls accept any absolute locator (or omit/null
+`workspace` when launch `--workspace` is configured) and may enter resolution.
+`detach_workspace` first performs exact published-canonical lookup (or selects
+the single published default-workspace entry when `workspace` is omitted/null
+under launch `--workspace`), then checks hidden-candidate strings (or a hidden
+default-workspace candidate when omitted/null) only to report busy. Callers
+otherwise use the canonical identifier returned by ensure or `list_workspaces`
+for removal. It never resolves an alias on the filesystem merely to remove
 cached state.
 
 Legacy resource-not-found responses use JSON-RPC `-32002`; modern responses
@@ -1497,12 +1619,14 @@ initialization and modern discovery. They require:
 2. Treat the continuity token as an opaque identity-continuity selector, not
    authentication, authorization, or an added security boundary. Pass an
    intentionally supplied absolute workspace locator and its existing token
-   on `attach_workspace` and every CLI-shaped tool call; never invent the token
+   on `attach_workspace` and every CLI-shaped tool call (unless omitted to use a
+   server-configured launch default); never invent the token
    or place it in chat.
 3. Preserve and reuse the canonical workspace returned by a successful
    ensure or `list_workspaces`. A CLI-shaped tool can lazily establish the
    same retained client/reactor after process restart. `detach_workspace`
-   takes only that exact canonical identifier and removes process-local state.
+   takes only that exact canonical identifier (or omits `workspace` when a
+   launch default workspace is configured) and removes process-local state.
 4. Read `taut://notifications/current` once after server discovery or
    initialization and after resident workspace changes. It reports pending
    notification pointers, not every unread chat message or a full activity
@@ -1521,7 +1645,8 @@ initialization and modern discovery. They require:
    Receiving either is not permission to access a path, execute, message,
    modify state, or bypass normal approvals.
 9. Treat the resource as a repeatable view. For one-time handling, call
-   `inbox` with the listed workspace and its token and handle only records
+   `inbox` with the listed workspace and its token (or omit configured launch
+   defaults for that workspace) and handle only records
    returned by that consuming call.
 10. Prefer `read` with one explicit selector when only one conversation is
     intended. Use `list(dms=true)` to discover durable DM conversations and
@@ -1585,8 +1710,9 @@ choose to treat it as sensitive application data. Supplying it as an MCP tool
 argument can expose it to the client, model context, or host transcript;
 `taut-mcp` does not claim to prevent or redact those host-owned copies. The
 local stdio boundary does not authorize a remote listener. This contract
-defines no `TAUT_TOKEN`, token-file, or launch-time workspace-token map for the
-MCP extension. A future non-transcript channel would need its own workspace-
+defines no ambient `TAUT_TOKEN` inheritance, token-file, or multi-workspace
+launch map for the MCP extension; launch defaults are limited to the single
+explicit `--workspace` and `--token`/`--as` CLI flags in [MCP-3]. A future non-transcript channel would need its own workspace-
 keying, file-authority, redaction, and host-compatibility contract; it is not
 inferred from core CLI environment rules.
 
@@ -1621,13 +1747,14 @@ threads, including a DM between other members, before applying author policy.
 That internal decode grants no visibility: every ineligible target uses the same empty result as an absent target. Author
 matching is an accident-prevention rule under [TAUT-9], not authentication.
 
-The master serial point and no-wait parent admission slots in [MCP-5] permit
-at most one command per workspace while allowing different workspaces to
-progress concurrently.
+The master serial point and bounded per-workspace command FIFO in [MCP-5]
+execute at most one synchronous command at a time per workspace (queueing up to
+eight waiting commands in FIFO order before returning busy) while allowing
+different workspaces to progress concurrently.
 
 There is no process-wide request-rate bucket. Repeated reads of the cached
 notification resource do not consume an admission quota for later tool calls.
-The per-workspace busy slot and resident cap remain enforced.
+The per-workspace bounded command queue and resident cap remain enforced.
 Core message-size, name, limit, and text validation remains authoritative.
 MCP framing remains SDK-owned and Taut adds no frame-size limit. A real stdio
 continuity probe sends one newline-delimited, schema-invalid JSON-RPC tool-call
@@ -1775,14 +1902,19 @@ subscription.
 
 Required proof includes:
 
-- one manifest/schema snapshot proves the same exact 21 tools for legacy and
-  modern discovery; `attach_workspace` and all 18 CLI-shaped schemas require
+- one default manifest/schema snapshot proves the same exact 21 tools for legacy and
+  modern discovery; without launch defaults, `attach_workspace` and all 18 CLI-shaped schemas require
   both `workspace` and `token`, `detach_workspace` requires only exact
-  canonical `workspace`, and `list_workspaces` remains empty-input;
+  canonical `workspace`, and `list_workspaces` remains empty-input; across all
+  four launch-default modes (none, workspace-only, identity-only, and both),
+  configured properties become optional `["string", "null"]` while preserving
+  explicit overrides and staying within the 21,000-byte manifest ceiling;
 - malformed, extra, wrong-type, pattern, range, and cross-field-invalid tool
   input is rejected by the one application validator before registry
   inspection, filesystem work, or child dispatch in both eras; each
-  known-tool failure is the exact single-text `isError` result, while unknown
+  known-tool failure is a single-text `isError` result naming at most the
+  deterministic server-owned schema field without echoing caller-supplied
+  values or unknown keys, while unknown
   tools and malformed protocol input remain protocol errors;
 - omitted SDK `arguments` is normalized from `None` to `{}` before
   validation: `list_workspaces` succeeds for omitted and explicit-empty
@@ -1821,7 +1953,9 @@ Required proof includes:
   repeats that server info, and neither era advertises a host-specific
   experimental capability;
 - modern tools/list and resources/list are deterministic and advertise
-  `ttlMs: 300000`, `cacheScope: "public"`; current-notifications read
+  `ttlMs: 300000` (`resources/list` `cacheScope: "public"`; `tools/list`
+  `cacheScope: "public"` without launch defaults and `cacheScope: "private"`
+  when launch defaults are configured); current-notifications read
   advertises `ttlMs: 0`, `cacheScope: "private"`;
 - a single semantic resource change reaches each era's subscribed path
   without version-conditioned domain logic, and resource reread recovers when
@@ -1848,7 +1982,8 @@ Required proof includes:
 - exact tool-description, annotation, input-schema, and successful-output-
   schema snapshots for every [MCP-5] tool, including every property description, the `records`/optional-`warnings`
   result object, omission of `outputSchema`, rejection of additional
-  properties, a serialized tool-manifest size ceiling of 21,000 bytes, and
+  properties, a serialized tool-manifest size ceiling of 21,000 bytes across
+  all launch-default modes, and
   canonical text/structured parity; state probes confirm that `log` and
   `list_workspaces` are observational, `message_show` and `read` advance chat
   cursors, `message_react` advances its cursor and reports the intended
@@ -2097,11 +2232,14 @@ Required proof includes:
   each using its own client/config with no backend-specific MCP branch
 - master-thread process-reactor ownership plus one owner thread/client per
   child, including child-thread-only attachment resolution and validation;
-  atomic registry/status/generation routing admission; same-workspace busy
-  rejection; different-workspace parallel progress; notification service
-  after each command; fairness between short commands; atomic result-plus-
-  snapshot completion; rejection of stale-generation events; synthesized
-  admission settlement on terminal identity loss, child fault, or owner-thread
+  atomic registry/status/generation routing admission; bounded per-workspace
+  FIFO command queueing (1 active + up to 8 queued) with immediate busy
+  rejection at the 10th concurrent call and synchronous cancel-while-queued
+  pruning across admission, promotion, and detach in all scheduler orders;
+  different-workspace parallel progress; notification service
+  before the next queued command executes; fairness between short commands; atomic result-plus-
+  snapshot completion before promoting the next queued command; rejection of stale-generation events; synthesized
+  admission settlement across active and queued commands on terminal identity loss, child fault, or owner-thread
   exit; late-outcome suppression; and proof that a long child call does not
   block MCP framing, lifecycle work, or another child
 - real unbounded `queue.Queue` command/control and shared child-event channels;
@@ -2251,6 +2389,13 @@ wheel to register its `mcp` manifest.
 
 ## Related Plans
 
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
+  adds optional launch-time `--workspace`/`--token`/`--as` defaults (with
+  pre-setup non-installing `TautClient(..., install_schema=False)` validation,
+  compact nullable schemas, and private `tools/list` cache scoping), bounded
+  per-workspace command FIFO queueing (`MAX_QUEUED_COMMANDS = 8`), `#channel`
+  schema normalization, `onboard` CLI-parity accounting, and server-owned
+  field-named schema validation diagnostics.
 - `docs/plans/2026-09-28-mcp-rate-prose-and-static-proof-plan.md` — removes
   stale rate-state and charge claims after the process bucket's removal.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — simplifies

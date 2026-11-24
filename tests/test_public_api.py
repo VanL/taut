@@ -425,6 +425,16 @@ def test_onboard_reports_and_signatures_are_exact_frozen_slotted_public_values()
     assert init_params["directory"].kind is inspect.Parameter.KEYWORD_ONLY
     assert init_params["directory"].default is None
 
+    whoami_params = inspect.signature(taut.TautClient.whoami).parameters
+    assert list(whoami_params) == ["self", "explain", "include_token"]
+    for name in ("explain", "include_token"):
+        assert whoami_params[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert whoami_params[name].default is False
+
+    ctor_params = inspect.signature(taut.TautClient.__init__).parameters
+    assert "install_schema" in ctor_params
+    assert ctor_params["install_schema"].default is True
+
 
 def test_static_typing_rejects_unknown_public_export(tmp_path: Path) -> None:
     probe = tmp_path / "unknown_taut_export.py"

@@ -11,7 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock, Thread
 
 from simplebroker import (
     BrokerTarget,
@@ -32,7 +32,7 @@ from taut import (
 )
 from taut._cleanup import capture_cleanup_failure
 from taut._config import load_config
-from taut._constants import CACHE_STALE_QUEUE_NAME
+from taut._constants import CACHE_STALE_QUEUE_NAME, route_key
 from taut._exceptions import IdentityError, NotInitializedError
 from taut.watcher import BaseReactor, QueueMessageContext, QueueMode
 
@@ -55,6 +55,14 @@ CONFIGURATION_UNAVAILABLE = (
 )
 IDENTITY_INVALID = (
     "workspace identity invalid; provide a valid existing continuity token"
+)
+AS_IDENTITY_INVALID = (
+    "workspace identity invalid; ensure the configured --as member exists or "
+    "provide a valid existing continuity token"
+)
+NON_DEFAULT_WORKSPACE_TOKEN_REQUIRED = (
+    "workspace token required for non-default workspace; supply token or use "
+    "the configured default workspace"
 )
 ATTACHMENT_FAILED = "workspace attachment failed; use list_workspaces before retrying"
 INVALID_UTF8_PATH = (
@@ -79,11 +87,95 @@ class _WorkspaceResolutionError(RuntimeError):
     """A fixed, public workspace resolution failure."""
 
 
+_UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS = 0.2
+
+
+@dataclass(slots=True)
+class DefaultProbeAttempt:
+    done: Event
+    result: tuple[str, tuple[int, int]] | None = None
+
+
+class DefaultWorkspaceProbe:
+    """Coalesced bounded child-side probe for an unpinned default workspace."""
+
+    def __init__(
+        self,
+        default_workspace: str,
+        *,
+        on_resolved: Callable[[DefaultProbeAttempt], None] | None = None,
+    ) -> None:
+        self._default_workspace = default_workspace
+        self._on_resolved = on_resolved
+        self._lock = Lock()
+        self._inflight: DefaultProbeAttempt | None = None
+
+    def match(
+        self,
+        canonical: str,
+        directory_identity: tuple[int, int],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[bool, DefaultProbeAttempt | None]:
+        effective_timeout = (
+            _UNPINNED_DEFAULT_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
+        )
+        with self._lock:
+            attempt = self._inflight
+            if attempt is None:
+                attempt = DefaultProbeAttempt(done=Event())
+                self._inflight = attempt
+                Thread(
+                    target=self._run_probe,
+                    args=(attempt,),
+                    name="taut-mcp-default-probe",
+                    daemon=True,
+                ).start()
+        if not attempt.done.wait(timeout=effective_timeout):
+            with self._lock:
+                if not attempt.done.is_set():
+                    return False, attempt
+        result = attempt.result
+        if result is None:
+            return False, None
+        default_canonical, default_identity = result
+        return (
+            canonical == default_canonical or directory_identity == default_identity,
+            None,
+        )
+
+    def _run_probe(self, attempt: DefaultProbeAttempt) -> None:
+        resolved: tuple[str, tuple[int, int]] | None = None
+        try:
+            try:
+                _, _, default_canonical, default_identity = _resolve_workspace(
+                    self._default_workspace
+                )
+                resolved = (default_canonical, default_identity)
+            except (OSError, RuntimeError, ValueError, TautError):
+                resolved = None
+        finally:
+            with self._lock:
+                attempt.result = resolved
+                attempt.done.set()
+                if self._on_resolved is not None:
+                    self._on_resolved(attempt)
+                if self._inflight is attempt:
+                    self._inflight = None
+
+
 @dataclass(slots=True)
 class Bootstrap:
     generation: int
     locator: str
-    token: str
+    token: str | None
+    as_name: str | None = None
+    configured_as_name: str | None = None
+    default_workspace: str | None = None
+    pinned_default_workspace: tuple[str, tuple[int, int]] | None = None
+    default_probe: DefaultWorkspaceProbe | None = None
+    used_default_workspace: bool = False
+    require_default_workspace: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +223,8 @@ class WorkspaceResolved:
     canonical_workspace: str
     directory_identity: tuple[int, int]
     backend: str
+    is_default_workspace: bool = False
+    pending_default_probe: DefaultProbeAttempt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +234,8 @@ class WorkspaceReady:
     name: str
     notifications: tuple[Notification, ...]
     truncated: bool
+    token: str = ""
+    matches_default_as: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,8 +280,14 @@ class WorkspaceCommandOutcome:
     canceled: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class DefaultWorkspaceResolved:
+    attempt: DefaultProbeAttempt
+
+
 type WorkspaceEvent = (
     WorkspaceResolved
+    | DefaultWorkspaceResolved
     | WorkspaceReady
     | WorkspaceSnapshot
     | WorkspaceIdentityLost
@@ -256,6 +358,8 @@ class _WorkspaceReactor(BaseReactor):
         client: TautClient,
         target: BrokerTarget,
         config: Config,
+        resolved_token: str = "",
+        configured_as_name: str | None = None,
     ) -> None:
         self.inbound = inbound
         self.outbound = outbound
@@ -271,6 +375,9 @@ class _WorkspaceReactor(BaseReactor):
         self.snapshot_pending = False
         self.crash_capture_attempted = False
         member = client.peek_identity()
+        matches_default_as = _member_matches_as(
+            member.name, member.aliases, configured_as_name
+        )
         notification_queue = client.notification_activity_queue()
         super().__init__(
             {
@@ -301,6 +408,8 @@ class _WorkspaceReactor(BaseReactor):
                 member.name,
                 self.previous_snapshot,
                 self.previous_truncated,
+                token=resolved_token,
+                matches_default_as=matches_default_as,
             )
         )
 
@@ -497,13 +606,84 @@ class _WorkspaceReactor(BaseReactor):
         )
 
 
+def _member_matches_as(
+    name: str,
+    aliases: tuple[str, ...],
+    configured_as_name: str | None,
+) -> bool:
+    if configured_as_name is None:
+        return False
+    target_key = route_key(configured_as_name)
+    return route_key(name) == target_key or any(
+        route_key(alias) == target_key for alias in aliases
+    )
+
+
+def _matches_default_workspace(
+    default_workspace: str,
+    canonical: str,
+    directory_identity: tuple[int, int],
+) -> bool:
+    try:
+        _, _, default_canonical, default_identity = _resolve_workspace(
+            default_workspace
+        )
+    except (OSError, NotInitializedError, ValueError, _WorkspaceResolutionError):
+        return False
+    return canonical == default_canonical or directory_identity == default_identity
+
+
+def _is_default_candidate(
+    bootstrap: Bootstrap,
+    canonical: str,
+    directory_identity: tuple[int, int],
+) -> tuple[bool, DefaultProbeAttempt | None]:
+    if bootstrap.default_workspace is None:
+        return False, None
+    if (
+        bootstrap.used_default_workspace
+        or bootstrap.locator == bootstrap.default_workspace
+    ):
+        return True, None
+    if bootstrap.pinned_default_workspace is not None:
+        pinned_canonical, pinned_identity = bootstrap.pinned_default_workspace
+        return (
+            canonical == pinned_canonical or directory_identity == pinned_identity,
+            None,
+        )
+    if bootstrap.require_default_workspace:
+        return (
+            _matches_default_workspace(
+                bootstrap.default_workspace,
+                canonical,
+                directory_identity,
+            ),
+            None,
+        )
+    if bootstrap.default_probe is not None:
+        return bootstrap.default_probe.match(canonical, directory_identity)
+    return (
+        _matches_default_workspace(
+            bootstrap.default_workspace,
+            canonical,
+            directory_identity,
+        ),
+        None,
+    )
+
+
 def _resolve_candidate(
     bootstrap: Bootstrap,
     emit: Callable[[WorkspaceEvent], None],
-) -> tuple[BrokerTarget, Config, str, tuple[int, int]] | None:
+) -> (
+    tuple[BrokerTarget, Config, str, tuple[int, int], bool, DefaultProbeAttempt | None]
+    | None
+):
     """Keep the resolution phase's fixed public failure mapping in one place."""
     try:
-        return _resolve_workspace(bootstrap.locator)
+        target, config, canonical, directory_identity = _resolve_workspace(
+            bootstrap.locator
+        )
     except NotInitializedError:
         emit(WorkspaceFailed(bootstrap.generation, "resolution", PROJECT_NOT_FOUND))
         return None
@@ -514,9 +694,45 @@ def _resolve_candidate(
         emit(WorkspaceFailed(bootstrap.generation, "resolution", str(exc)))
         return None
 
+    is_default, pending_probe = _is_default_candidate(
+        bootstrap, canonical, directory_identity
+    )
+    if bootstrap.require_default_workspace and not is_default:
+        emit(
+            WorkspaceFailed(
+                bootstrap.generation,
+                "resolution",
+                NON_DEFAULT_WORKSPACE_TOKEN_REQUIRED,
+            )
+        )
+        return None
+    return target, config, canonical, directory_identity, is_default, pending_probe
+
+
+def _probe_as_token(
+    target: BrokerTarget,
+    config: Config,
+    as_name: str | None,
+) -> str:
+    if as_name is None:
+        raise IdentityError(AS_IDENTITY_INVALID)
+    probe = TautClient(
+        broker_target=target,
+        broker_config=config,
+        as_name=as_name,
+        inherit_environment_identity=False,
+        install_schema=False,
+    )
+    try:
+        member = probe.whoami(include_token=True)
+    finally:
+        probe.close()
+    assert member.token is not None
+    return member.token
+
 
 def _validate_candidate(
-    token: str,
+    token: str | None,
     inbound: queue.Queue[WorkspaceControl],
     strategy: PollingStrategy,
     stop_event: Event,
@@ -527,17 +743,24 @@ def _validate_candidate(
     target: BrokerTarget,
     config: Config,
     emit: Callable[[WorkspaceEvent], None],
+    as_name: str | None = None,
+    configured_as_name: str | None = None,
 ) -> _WorkspaceReactor | None:
     """Construct the admitted owner or publish its fixed validation failure."""
     client: TautClient | None = None
     reactor: _WorkspaceReactor | None = None
+    invalid_identity = AS_IDENTITY_INVALID if token is None else IDENTITY_INVALID
     try:
+        effective_token = (
+            _probe_as_token(target, config, as_name) if token is None else token
+        )
         client = TautClient(
             broker_target=target,
             broker_config=config,
-            token=token,
+            token=effective_token,
             persistent=True,
             inherit_environment_identity=False,
+            install_schema=False,
         )
         reactor = _WorkspaceReactor(
             inbound,
@@ -549,10 +772,15 @@ def _validate_candidate(
             client=client,
             target=target,
             config=config,
+            resolved_token=effective_token,
+            configured_as_name=configured_as_name,
         )
         return reactor
-    except IdentityError:
-        emit(WorkspaceFailed(generation, "validation", IDENTITY_INVALID))
+    except NotInitializedError:
+        emit(WorkspaceFailed(generation, "validation", PROJECT_NOT_FOUND))
+        return None
+    except (NotFoundError, IdentityError):
+        emit(WorkspaceFailed(generation, "validation", invalid_identity))
         return None
     except ReactionConfigurationError:
         emit(WorkspaceFailed(generation, "validation", CONFIGURATION_UNAVAILABLE))
@@ -591,10 +819,22 @@ def run_workspace_reactor(
         resolved = _resolve_candidate(bootstrap, emit)
         if resolved is None:
             return
-        target, config, canonical, directory_identity = resolved
+        (
+            target,
+            config,
+            canonical,
+            directory_identity,
+            is_default,
+            pending_probe,
+        ) = resolved
         emit(
             WorkspaceResolved(
-                generation, canonical, directory_identity, target.backend_name
+                generation,
+                canonical,
+                directory_identity,
+                target.backend_name,
+                is_default_workspace=is_default,
+                pending_default_probe=pending_probe,
             )
         )
         grant = inbound.get()
@@ -611,6 +851,8 @@ def run_workspace_reactor(
             target=target,
             config=config,
             emit=emit,
+            as_name=bootstrap.as_name,
+            configured_as_name=bootstrap.configured_as_name,
         )
         if reactor is None:
             return

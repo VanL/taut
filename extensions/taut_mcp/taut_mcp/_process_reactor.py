@@ -7,10 +7,11 @@ import json
 import os
 import queue
 import threading
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from simplebroker import format_message_id
@@ -26,8 +27,13 @@ from ._commands import (
 from ._results import DOMAIN_TOOL_NAMES, tool_result
 from ._workspace_reactor import (
     ATTACHMENT_FAILED,
+    IDENTITY_INVALID,
+    NON_DEFAULT_WORKSPACE_TOKEN_REQUIRED,
     Bootstrap,
     CancelWorkspaceCommand,
+    DefaultProbeAttempt,
+    DefaultWorkspaceProbe,
+    DefaultWorkspaceResolved,
     GrantValidation,
     RunWorkspaceCommand,
     StopWorkspace,
@@ -43,6 +49,7 @@ from ._workspace_reactor import (
     WorkspaceStopped,
     run_workspace_reactor,
 )
+from .cli import McpLaunchDefaults
 
 WORKSPACE_BUSY = "workspace busy; retry after backoff"
 WORKSPACE_IDENTITY_LOST = "workspace identity lost; detach and reattach"
@@ -68,6 +75,7 @@ WORKSPACE_ATTACH_TIMEOUT = "workspace attach timed out; use list_workspaces then
 WORKSPACE_DETACH_TIMEOUT = "workspace detach timed out; retry detach after backoff"
 
 MAX_WORKSPACES = 8
+MAX_QUEUED_COMMANDS = 8
 PHASE_TIMEOUT_SECONDS = 10.0
 DETACH_JOIN_SECONDS = 5.0
 SHUTDOWN_SECONDS = 10.0
@@ -93,12 +101,11 @@ class WorkspaceToolError(Exception):
     """A fixed, content-free MCP tool failure."""
 
 
-async def _await_owned_future[FutureResult](
+def _bind_waiter[FutureResult](
+    loop: asyncio.AbstractEventLoop,
     future: asyncio.Future[FutureResult],
-) -> FutureResult:
-    """Wait without transferring task cancellation to a reactor-owned future."""
-
-    waiter: asyncio.Future[FutureResult] = asyncio.get_running_loop().create_future()
+) -> asyncio.Future[FutureResult]:
+    waiter: asyncio.Future[FutureResult] = loop.create_future()
 
     def settle(completed: asyncio.Future[FutureResult]) -> None:
         if waiter.cancelled():
@@ -115,7 +122,25 @@ async def _await_owned_future[FutureResult](
             waiter.set_result(completed.result())
 
     future.add_done_callback(settle)
-    return await waiter
+    return waiter
+
+
+async def _await_owned_future[FutureResult](
+    future: asyncio.Future[FutureResult],
+) -> FutureResult:
+    """Wait without transferring task cancellation to a reactor-owned future."""
+
+    return await _bind_waiter(asyncio.get_running_loop(), future)
+
+
+@dataclass(slots=True)
+class _QueuedCommand:
+    command_id: int
+    name: str
+    arguments: CommandArguments
+    future: asyncio.Future[_CommandCompletion]
+    waiter: asyncio.Future[_CommandCompletion]
+    canceled: bool = False
 
 
 @dataclass(slots=True)
@@ -148,6 +173,10 @@ class _Candidate:
     deadline: asyncio.TimerHandle | None = None
     retired_at: float | None = None
     warning_due: bool = False
+    used_default_workspace: bool = False
+    require_default_workspace: bool = False
+    is_default_workspace: bool = False
+    pending_default_probe: DefaultProbeAttempt | None = None
 
 
 @dataclass(slots=True)
@@ -168,7 +197,11 @@ class _Entry:
     detach_deadline: asyncio.TimerHandle | None = None
     active_command_id: int | None = None
     command_future: asyncio.Future[_CommandCompletion] | None = None
+    queued_commands: deque[_QueuedCommand] = field(default_factory=deque)
     attach_timed_out: bool = False
+    is_default_workspace: bool = False
+    matches_default_as: bool = False
+    pending_default_probes: list[DefaultProbeAttempt] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,15 +227,13 @@ def _is_strict_utf8(value: str) -> bool:
     return True
 
 
-def _validate_workspace_request(workspace: str, token: str) -> None:
-    """Reject malformed request values with fixed public diagnostics."""
-
-    if not _is_strict_utf8(workspace):
-        raise WorkspaceToolError(WORKSPACE_PATH_UTF8)
-    if not _is_strict_utf8(token):
-        raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8)
-    if not os.path.isabs(workspace):
-        raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+@dataclass(frozen=True, slots=True)
+class _ResolvedRequest:
+    locator: str
+    request_token: str | None
+    as_name: str | None
+    used_default_workspace: bool
+    require_default_workspace: bool
 
 
 def _workspace_record(entry: _Entry, *, status: str | None = None) -> dict[str, Any]:
@@ -243,10 +274,20 @@ class ProcessReactor:
         loop: asyncio.AbstractEventLoop,
         *,
         diagnostic: Callable[[str], None] | None = None,
+        defaults: McpLaunchDefaults | None = None,
     ) -> None:
         if loop is not asyncio.get_running_loop():
             raise RuntimeError("process reactor requires the running MCP loop")
         self._loop = loop
+        self._defaults = McpLaunchDefaults() if defaults is None else defaults
+        self._default_probe = (
+            DefaultWorkspaceProbe(
+                self._defaults.workspace,
+                on_resolved=self._emit_default_probe_resolved,
+            )
+            if self._defaults.workspace is not None
+            else None
+        )
         self._diagnostic = (
             self._write_stderr_diagnostic if diagnostic is None else diagnostic
         )
@@ -280,6 +321,10 @@ class ProcessReactor:
             # The loop is closed during teardown. Maintenance on that loop
             # cannot recover this callback; queued payload ownership is unchanged.
             pass
+
+    def _emit_default_probe_resolved(self, attempt: DefaultProbeAttempt) -> None:
+        self._events.put_nowait(DefaultWorkspaceResolved(attempt))
+        self._wake_master()
 
     def _new_owner(self, generation: int) -> _Owner:
         inbound: queue.Queue[WorkspaceControl] = queue.Queue(maxsize=0)
@@ -321,24 +366,170 @@ class ProcessReactor:
                 return candidate
         return None
 
-    def _preflight_workspace(
-        self,
-        workspace: str,
-        token: str,
-    ) -> dict[str, Any] | None:
-        """Return an existing result or admit a new workspace candidate."""
+    def _find_default_entry(self) -> _Entry | None:
+        for entry in self._entries.values():
+            if entry.is_default_workspace:
+                return entry
+        return None
 
-        entry = self._entries.get(workspace)
-        if entry is not None:
-            if entry.status != "ready":
-                raise WorkspaceToolError(self._entry_error(entry))
-            if entry.token is None:
-                raise AssertionError("ready workspace requires a token")
+    def _pinned_default_identity(self) -> tuple[str, tuple[int, int]] | None:
+        default_entry = self._find_default_entry()
+        if default_entry is not None:
+            return (
+                default_entry.canonical_workspace,
+                default_entry.directory_identity,
+            )
+        for candidate in self._candidates.values():
+            if (
+                not candidate.retiring
+                and candidate.phase == "validation"
+                and candidate.is_default_workspace
+                and candidate.canonical_workspace is not None
+                and candidate.directory_identity is not None
+            ):
+                return (
+                    candidate.canonical_workspace,
+                    candidate.directory_identity,
+                )
+        return None
+
+    def _find_default_or_path_candidate(self, locator: str) -> _Candidate | None:
+        for candidate in self._candidates.values():
+            if (
+                (not candidate.retiring and candidate.is_default_workspace)
+                or candidate.locator == locator
+                or candidate.canonical_workspace == locator
+            ):
+                return candidate
+        return None
+
+    def _has_other_default_owner(
+        self,
+        canonical: str,
+        identity: tuple[int, int],
+        *,
+        exclude_generation: int,
+    ) -> bool:
+        for entry in self._entries.values():
+            if entry.is_default_workspace and not self._same_workspace(
+                canonical,
+                identity,
+                entry.canonical_workspace,
+                entry.directory_identity,
+            ):
+                return True
+        for other in self._candidates.values():
+            if (
+                other.generation == exclude_generation
+                or other.retiring
+                or other.phase != "validation"
+                or not other.is_default_workspace
+                or other.canonical_workspace is None
+                or other.directory_identity is None
+            ):
+                continue
+            if not self._same_workspace(
+                canonical,
+                identity,
+                other.canonical_workspace,
+                other.directory_identity,
+            ):
+                return True
+        return False
+
+    def _select_request_locator(self, workspace: str | None) -> tuple[str, bool]:
+        if workspace is not None:
+            if not os.path.isabs(workspace):
+                raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+            return workspace, False
+        if self._defaults.workspace is not None:
+            return self._defaults.workspace, True
+        raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+
+    def _resolve_request(
+        self,
+        workspace: str | None,
+        token: str | None,
+    ) -> _ResolvedRequest:
+        if workspace is not None and not _is_strict_utf8(workspace):
+            raise WorkspaceToolError(WORKSPACE_PATH_UTF8)
+        if token is not None and not _is_strict_utf8(token):
+            raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8)
+        locator, used_default_workspace = self._select_request_locator(workspace)
+
+        if token is not None:
+            if token == "":
+                raise WorkspaceToolError(IDENTITY_INVALID)
+            return _ResolvedRequest(
+                locator=locator,
+                request_token=token,
+                as_name=None,
+                used_default_workspace=used_default_workspace,
+                require_default_workspace=False,
+            )
+        if self._defaults.token is not None:
+            return _ResolvedRequest(
+                locator=locator,
+                request_token=self._defaults.token,
+                as_name=None,
+                used_default_workspace=used_default_workspace,
+                require_default_workspace=True,
+            )
+        if self._defaults.as_name is not None:
+            return _ResolvedRequest(
+                locator=locator,
+                request_token=None,
+                as_name=self._defaults.as_name,
+                used_default_workspace=used_default_workspace,
+                require_default_workspace=False,
+            )
+        raise WorkspaceToolError(IDENTITY_INVALID)
+
+    def _check_entry_selector(
+        self,
+        entry: _Entry,
+        *,
+        token: str | None,
+        require_default_workspace: bool,
+    ) -> dict[str, Any]:
+        if require_default_workspace and not entry.is_default_workspace:
+            raise WorkspaceToolError(NON_DEFAULT_WORKSPACE_TOKEN_REQUIRED)
+        if entry.status != "ready":
+            raise WorkspaceToolError(self._entry_error(entry))
+        if token is not None:
             if entry.token == token:
                 return tool_result([_workspace_record(entry)])
             raise WorkspaceToolError(WORKSPACE_CONFLICT)
-        if self._find_candidate_by_path(workspace) is not None:
-            raise WorkspaceToolError(WORKSPACE_BUSY)
+        if entry.matches_default_as:
+            return tool_result([_workspace_record(entry)])
+        raise WorkspaceToolError(WORKSPACE_CONFLICT)
+
+    def _preflight_workspace(
+        self,
+        request: _ResolvedRequest,
+    ) -> dict[str, Any] | None:
+        """Return an existing result or admit a new workspace candidate."""
+
+        if request.used_default_workspace:
+            default_entry = self._find_default_entry()
+            if default_entry is not None:
+                return self._check_entry_selector(
+                    default_entry,
+                    token=request.request_token,
+                    require_default_workspace=request.require_default_workspace,
+                )
+            if self._find_default_or_path_candidate(request.locator) is not None:
+                raise WorkspaceToolError(WORKSPACE_BUSY)
+        else:
+            entry = self._entries.get(request.locator)
+            if entry is not None:
+                return self._check_entry_selector(
+                    entry,
+                    token=request.request_token,
+                    require_default_workspace=request.require_default_workspace,
+                )
+            if self._find_candidate_by_path(request.locator) is not None:
+                raise WorkspaceToolError(WORKSPACE_BUSY)
         if len(self._entries) + len(self._candidates) >= MAX_WORKSPACES:
             raise WorkspaceToolError(WORKSPACE_LIMIT)
         return None
@@ -354,22 +545,26 @@ class ProcessReactor:
 
     def attach_workspace(
         self,
-        workspace: str,
-        token: str,
+        workspace: str | None,
+        token: str | None,
     ) -> Coroutine[Any, Any, dict[str, Any]]:
         """Eagerly ensure one workspace and return its published record."""
 
         return self.ensure_workspace(workspace, token)
 
-    async def ensure_workspace(self, workspace: str, token: str) -> dict[str, Any]:
+    async def ensure_workspace(
+        self,
+        workspace: str | None,
+        token: str | None,
+    ) -> dict[str, Any]:
         """Resolve, validate, and retain one workspace owner if it is missing."""
 
         if self._closing:
             raise WorkspaceToolError(ATTACHMENT_FAILED)
         self._drain_events()
-        _validate_workspace_request(workspace, token)
+        request = self._resolve_request(workspace, token)
 
-        existing = self._preflight_workspace(workspace, token)
+        existing = self._preflight_workspace(request)
         if existing is not None:
             return existing
 
@@ -380,11 +575,32 @@ class ProcessReactor:
         candidate: _Candidate | None = None
         try:
             owner = self._new_owner(generation)
-            candidate = _Candidate(generation, workspace, token, owner, future)
+            candidate = _Candidate(
+                generation,
+                request.locator,
+                request.request_token,
+                owner,
+                future,
+                used_default_workspace=request.used_default_workspace,
+                require_default_workspace=request.require_default_workspace,
+            )
             self._candidates[generation] = candidate
             owner.completion = self._executor.submit(owner.run)
             owner.completion.add_done_callback(lambda _: self._wake_master())
-            owner.send(Bootstrap(generation, workspace, token))
+            owner.send(
+                Bootstrap(
+                    generation,
+                    request.locator,
+                    request.request_token,
+                    as_name=request.as_name,
+                    configured_as_name=self._defaults.as_name,
+                    default_workspace=self._defaults.workspace,
+                    pinned_default_workspace=self._pinned_default_identity(),
+                    default_probe=self._default_probe,
+                    used_default_workspace=request.used_default_workspace,
+                    require_default_workspace=request.require_default_workspace,
+                )
+            )
         except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             if owner is not None:
                 self._discard_unstarted_controls(owner)
@@ -401,25 +617,49 @@ class ProcessReactor:
         # Cancellation drops only this waiter. The child lifecycle keeps running.
         return await _await_owned_future(future)
 
-    async def detach_workspace(self, workspace: str) -> dict[str, Any]:
-        if self._closing:
-            raise WorkspaceToolError(ATTACHMENT_FAILED)
-        self._drain_events()
+    def _select_detach_entry(
+        self,
+        workspace: str | None,
+    ) -> tuple[str, _Entry] | None:
+        if workspace is None:
+            if self._defaults.workspace is None:
+                raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+            entry = self._find_default_entry()
+            if entry is None:
+                if (
+                    self._find_default_or_path_candidate(self._defaults.workspace)
+                    is not None
+                ):
+                    raise WorkspaceToolError(WORKSPACE_BUSY)
+                return None
+            return entry.canonical_workspace, entry
         entry = self._entries.get(workspace)
         if entry is None:
             if self._find_candidate_by_path(workspace) is not None:
                 raise WorkspaceToolError(WORKSPACE_BUSY)
+            return None
+        return workspace, entry
+
+    async def detach_workspace(self, workspace: str | None) -> dict[str, Any]:
+        if self._closing:
+            raise WorkspaceToolError(ATTACHMENT_FAILED)
+        self._drain_events()
+        selected = self._select_detach_entry(workspace)
+        if selected is None:
             return tool_result([])
-        if entry.status == "detaching":
-            raise WorkspaceToolError(WORKSPACE_BUSY)
-        if entry.detach_future is not None:
-            raise WorkspaceToolError(WORKSPACE_BUSY)
-        if entry.active_command_id is not None:
+        workspace_key, entry = selected
+        self._prune_cancelled_queued_commands(entry)
+        if (
+            entry.status == "detaching"
+            or entry.detach_future is not None
+            or entry.active_command_id is not None
+            or entry.queued_commands
+        ):
             raise WorkspaceToolError(WORKSPACE_BUSY)
 
         prior_record = _workspace_record(entry)
         if not entry.owner.alive():
-            self._entries.pop(workspace, None)
+            self._entries.pop(workspace_key, None)
             self._recompute_resource()
             return tool_result([{**prior_record, "status": "detached"}])
         entry.status = "detaching"
@@ -431,7 +671,7 @@ class ProcessReactor:
         entry.detach_deadline = self._loop.call_later(
             DETACH_JOIN_SECONDS,
             self._detach_timeout,
-            workspace,
+            workspace_key,
             entry.generation,
         )
         self._recompute_resource()
@@ -439,8 +679,8 @@ class ProcessReactor:
 
     async def execute_tool(
         self,
-        workspace: str,
-        token: str,
+        workspace: str | None,
+        token: str | None,
         name: str,
         arguments: dict[str, object],
     ) -> dict[str, Any]:
@@ -460,6 +700,82 @@ class ProcessReactor:
             arguments,
         )
 
+    @staticmethod
+    def _prune_cancelled_queued_commands(entry: _Entry) -> None:
+        if not entry.queued_commands:
+            return
+        kept: deque[_QueuedCommand] = deque()
+        for item in entry.queued_commands:
+            if item.canceled or item.waiter.cancelled():
+                item.canceled = True
+                if not item.future.done():
+                    item.future.cancel()
+            else:
+                kept.append(item)
+        entry.queued_commands = kept
+
+    def _promote_next_queued_command(self, entry: _Entry) -> None:
+        self._prune_cancelled_queued_commands(entry)
+        if not entry.queued_commands or entry.status != "ready":
+            return
+        nxt = entry.queued_commands.popleft()
+        entry.active_command_id = nxt.command_id
+        entry.command_future = nxt.future
+        entry.owner.send(
+            RunWorkspaceCommand(
+                entry.generation,
+                nxt.command_id,
+                nxt.name,
+                nxt.arguments,
+            )
+        )
+
+    def _admit_ready_command(
+        self,
+        entry: _Entry,
+        name: str,
+        frozen: CommandArguments,
+    ) -> tuple[int, _QueuedCommand | None, asyncio.Future[_CommandCompletion]]:
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        future: asyncio.Future[_CommandCompletion] = self._loop.create_future()
+        waiter = _bind_waiter(self._loop, future)
+        if entry.active_command_id is None:
+            entry.active_command_id = command_id
+            entry.command_future = future
+            entry.owner.send(
+                RunWorkspaceCommand(entry.generation, command_id, name, frozen)
+            )
+            return command_id, None, waiter
+        if len(entry.queued_commands) >= MAX_QUEUED_COMMANDS:
+            future.cancel()
+            waiter.cancel()
+            raise WorkspaceToolError(WORKSPACE_BUSY)
+        queued = _QueuedCommand(command_id, name, frozen, future, waiter)
+        entry.queued_commands.append(queued)
+        return command_id, queued, waiter
+
+    def _cancel_ready_command(
+        self,
+        canonical_workspace: str,
+        entry: _Entry,
+        command_id: int,
+        queued: _QueuedCommand | None,
+    ) -> None:
+        if queued is not None and queued in entry.queued_commands:
+            queued.canceled = True
+            entry.queued_commands.remove(queued)
+            if not queued.future.done():
+                queued.future.cancel()
+            return
+        current = self._entries.get(canonical_workspace)
+        if (
+            current is entry
+            and entry.active_command_id == command_id
+            and entry.status == "ready"
+        ):
+            entry.owner.send(CancelWorkspaceCommand(entry.generation, command_id))
+
     async def _execute_ready_tool(
         self,
         canonical_workspace: str,
@@ -476,34 +792,14 @@ class ProcessReactor:
             raise AssertionError("successful ensure requires a published entry")
         if entry.status != "ready":
             raise WorkspaceToolError(self._entry_error(entry))
-        if entry.active_command_id is not None:
-            raise WorkspaceToolError(WORKSPACE_BUSY)
+        self._prune_cancelled_queued_commands(entry)
 
         frozen = _freeze_command_arguments(arguments)
-
-        command_id = self._next_command_id
-        self._next_command_id += 1
-        future: asyncio.Future[_CommandCompletion] = self._loop.create_future()
-        entry.active_command_id = command_id
-        entry.command_future = future
-        entry.owner.send(
-            RunWorkspaceCommand(
-                entry.generation,
-                command_id,
-                name,
-                frozen,
-            )
-        )
+        command_id, queued, waiter = self._admit_ready_command(entry, name, frozen)
         try:
-            completion = await _await_owned_future(future)
+            completion = await waiter
         except asyncio.CancelledError:
-            current = self._entries.get(canonical_workspace)
-            if (
-                current is entry
-                and entry.active_command_id == command_id
-                and entry.status == "ready"
-            ):
-                entry.owner.send(CancelWorkspaceCommand(entry.generation, command_id))
+            self._cancel_ready_command(canonical_workspace, entry, command_id, queued)
             raise
         if completion.error is not None:
             raise WorkspaceToolError(completion.error)
@@ -640,12 +936,23 @@ class ProcessReactor:
                 candidate.owner,
                 status="reactor_failed",
                 attach_timed_out=True,
+                is_default_workspace=candidate.is_default_workspace,
+                pending_default_probes=(
+                    [candidate.pending_default_probe]
+                    if not candidate.is_default_workspace
+                    and candidate.pending_default_probe is not None
+                    else []
+                ),
             )
+            candidate.is_default_workspace = False
+            candidate.pending_default_probe = None
             self._entries[entry.canonical_workspace] = entry
             self._candidates.pop(generation, None)
             self._recompute_resource()
             self._fail_future(candidate.future, WORKSPACE_ATTACH_TIMEOUT)
             return
+        candidate.is_default_workspace = False
+        candidate.pending_default_probe = None
         self._fail_future(candidate.future, WORKSPACE_RESOLUTION_TIMEOUT)
 
     def _detach_timeout(self, workspace: str, generation: int) -> None:
@@ -699,6 +1006,8 @@ class ProcessReactor:
         candidate.retiring = True
         candidate.retired_at = self._loop.time()
         candidate.token = None
+        candidate.is_default_workspace = False
+        candidate.pending_default_probe = None
         if candidate.deadline is not None:
             candidate.deadline.cancel()
             candidate.deadline = None
@@ -708,14 +1017,60 @@ class ProcessReactor:
         elif error is not None:
             self._fail_future(candidate.future, error)
 
-    def _on_resolved(self, event: WorkspaceResolved) -> None:
-        candidate = self._candidates.get(event.generation)
-        if candidate is None or candidate.retiring or candidate.phase != "resolution":
-            return
-        candidate.canonical_workspace = event.canonical_workspace
-        candidate.directory_identity = event.directory_identity
-        candidate.backend = event.backend
+    def _consume_completed_probe_match(
+        self,
+        event: WorkspaceResolved,
+    ) -> tuple[bool, DefaultProbeAttempt | None]:
+        pending_probe = event.pending_default_probe
+        if event.is_default_workspace or pending_probe is None:
+            return False, None
+        if not pending_probe.done.is_set():
+            return False, pending_probe
+        result = pending_probe.result
+        if result is None:
+            return False, None
+        matched = self._same_workspace(
+            event.canonical_workspace,
+            event.directory_identity,
+            result[0],
+            result[1],
+        )
+        return matched, None
 
+    def _arbitrate_default_workspace(
+        self,
+        candidate: _Candidate,
+        event: WorkspaceResolved,
+        *,
+        is_default_candidate: bool,
+    ) -> bool | None:
+        if not is_default_candidate:
+            return False
+        if not self._has_other_default_owner(
+            event.canonical_workspace,
+            event.directory_identity,
+            exclude_generation=event.generation,
+        ):
+            return True
+        if candidate.used_default_workspace:
+            self._retire_candidate(candidate, error=WORKSPACE_BUSY)
+            return None
+        if candidate.require_default_workspace:
+            self._retire_candidate(
+                candidate,
+                error=NON_DEFAULT_WORKSPACE_TOKEN_REQUIRED,
+            )
+            return None
+        return False
+
+    def _arbitrate_existing_entry(
+        self,
+        candidate: _Candidate,
+        event: WorkspaceResolved,
+        *,
+        effective_is_default: bool,
+        pending_probe: DefaultProbeAttempt | None,
+    ) -> bool:
         for entry in self._entries.values():
             if not self._same_workspace(
                 event.canonical_workspace,
@@ -724,17 +1079,36 @@ class ProcessReactor:
                 entry.directory_identity,
             ):
                 continue
-            if entry.status != "ready":
-                self._retire_candidate(candidate, error=self._entry_error(entry))
-            elif entry.token == candidate.token:
-                self._retire_candidate(
-                    candidate,
-                    result=tool_result([_workspace_record(entry)]),
+            try:
+                result = self._check_entry_selector(
+                    entry,
+                    token=candidate.token,
+                    require_default_workspace=(
+                        candidate.require_default_workspace and not effective_is_default
+                    ),
                 )
+            except WorkspaceToolError as exc:
+                self._retire_candidate(candidate, error=str(exc))
             else:
-                self._retire_candidate(candidate, error=WORKSPACE_CONFLICT)
-            return
+                if effective_is_default:
+                    entry.is_default_workspace = True
+                    entry.pending_default_probes.clear()
+                    self._clear_pending_default_probes()
+                elif (
+                    pending_probe is not None
+                    and entry.status != "detaching"
+                    and self._pinned_default_identity() is None
+                    and all(
+                        item is not pending_probe
+                        for item in entry.pending_default_probes
+                    )
+                ):
+                    entry.pending_default_probes.append(pending_probe)
+                self._retire_candidate(candidate, result=result)
+            return True
+        return False
 
+    def _has_same_workspace_candidate(self, event: WorkspaceResolved) -> bool:
         for other in self._candidates.values():
             if (
                 other.generation == event.generation
@@ -748,11 +1122,44 @@ class ProcessReactor:
                 other.canonical_workspace,
                 other.directory_identity,
             ):
-                self._retire_candidate(candidate, error=WORKSPACE_BUSY)
-                return
+                return True
+        return False
+
+    def _on_resolved(self, event: WorkspaceResolved) -> None:
+        candidate = self._candidates.get(event.generation)
+        if candidate is None or candidate.retiring or candidate.phase != "resolution":
+            return
+        candidate.canonical_workspace = event.canonical_workspace
+        candidate.directory_identity = event.directory_identity
+        candidate.backend = event.backend
+
+        probe_matched, pending_probe = self._consume_completed_probe_match(event)
+        effective_is_default = self._arbitrate_default_workspace(
+            candidate,
+            event,
+            is_default_candidate=event.is_default_workspace or probe_matched,
+        )
+        if effective_is_default is None:
+            return
+        if self._arbitrate_existing_entry(
+            candidate,
+            event,
+            effective_is_default=effective_is_default,
+            pending_probe=pending_probe,
+        ):
+            return
+        if self._has_same_workspace_candidate(event):
+            self._retire_candidate(candidate, error=WORKSPACE_BUSY)
+            return
 
         if candidate.deadline is not None:
             candidate.deadline.cancel()
+        candidate.is_default_workspace = effective_is_default
+        candidate.pending_default_probe = (
+            None if effective_is_default else pending_probe
+        )
+        if effective_is_default:
+            self._clear_pending_default_probes()
         candidate.phase = "validation"
         candidate.deadline = self._loop.call_later(
             PHASE_TIMEOUT_SECONDS,
@@ -771,7 +1178,8 @@ class ProcessReactor:
         assert candidate.backend is not None
         if candidate.deadline is not None:
             candidate.deadline.cancel()
-        assert candidate.token is not None
+        effective_token = event.token or candidate.token
+        assert effective_token is not None
         entry = _Entry(
             event.generation,
             candidate.canonical_workspace,
@@ -779,13 +1187,23 @@ class ProcessReactor:
             candidate.backend,
             event.member_id,
             event.name,
-            candidate.token,
+            effective_token,
             candidate.owner,
             notifications=event.notifications,
             truncated=event.truncated,
+            is_default_workspace=candidate.is_default_workspace,
+            matches_default_as=event.matches_default_as,
+            pending_default_probes=(
+                [candidate.pending_default_probe]
+                if not candidate.is_default_workspace
+                and candidate.pending_default_probe is not None
+                else []
+            ),
         )
         self._candidates.pop(event.generation, None)
         candidate.token = None
+        candidate.is_default_workspace = False
+        candidate.pending_default_probe = None
         self._entries[entry.canonical_workspace] = entry
         self._recompute_resource()
         if not candidate.future.done():
@@ -837,6 +1255,7 @@ class ProcessReactor:
         future = entry.command_future
         entry.active_command_id = None
         entry.command_future = None
+        self._promote_next_queued_command(entry)
         if future is None or future.done():
             return
         if event.canceled:
@@ -848,13 +1267,18 @@ class ProcessReactor:
         )
         future.set_result(_CommandCompletion(payload=payload, error=event.error))
 
-    @staticmethod
-    def _settle_active_command(entry: _Entry, error: str) -> None:
+    def _settle_commands(self, entry: _Entry, error: str) -> None:
+        self._prune_cancelled_queued_commands(entry)
         future = entry.command_future
+        queued = list(entry.queued_commands)
         entry.active_command_id = None
         entry.command_future = None
+        entry.queued_commands.clear()
         if future is not None and not future.done():
             future.set_result(_CommandCompletion(error=error))
+        for item in queued:
+            if not item.future.done():
+                item.future.set_result(_CommandCompletion(error=error))
 
     def _on_terminal(self, generation: int, status: str) -> None:
         if self._closing:
@@ -872,7 +1296,78 @@ class ProcessReactor:
         entry.notifications = ()
         entry.truncated = False
         self._recompute_resource()
-        self._settle_active_command(entry, self._entry_error(entry))
+        self._settle_commands(entry, self._entry_error(entry))
+
+    def _clear_pending_default_probes(self) -> None:
+        for entry in self._entries.values():
+            entry.pending_default_probes.clear()
+        for candidate in self._candidates.values():
+            candidate.pending_default_probe = None
+
+    def _reconcile_entry_default_probe(
+        self,
+        attempt: DefaultProbeAttempt,
+        result: tuple[str, tuple[int, int]] | None,
+    ) -> bool:
+        for entry in self._entries.values():
+            if all(item is not attempt for item in entry.pending_default_probes):
+                continue
+            entry.pending_default_probes = [
+                item for item in entry.pending_default_probes if item is not attempt
+            ]
+            if (
+                result is not None
+                and entry.status != "detaching"
+                and self._same_workspace(
+                    result[0],
+                    result[1],
+                    entry.canonical_workspace,
+                    entry.directory_identity,
+                )
+            ):
+                entry.is_default_workspace = True
+                self._clear_pending_default_probes()
+                return True
+        return False
+
+    def _reconcile_candidate_default_probe(
+        self,
+        attempt: DefaultProbeAttempt,
+        result: tuple[str, tuple[int, int]] | None,
+    ) -> bool:
+        for candidate in self._candidates.values():
+            if candidate.pending_default_probe is not attempt:
+                continue
+            candidate.pending_default_probe = None
+            if (
+                result is not None
+                and not candidate.retiring
+                and candidate.phase == "validation"
+                and candidate.canonical_workspace is not None
+                and candidate.directory_identity is not None
+                and self._same_workspace(
+                    result[0],
+                    result[1],
+                    candidate.canonical_workspace,
+                    candidate.directory_identity,
+                )
+            ):
+                candidate.is_default_workspace = True
+                self._clear_pending_default_probes()
+                return True
+        return False
+
+    def _on_default_workspace_resolved(
+        self,
+        event: DefaultWorkspaceResolved,
+    ) -> None:
+        if self._closing or self._pinned_default_identity() is not None:
+            self._clear_pending_default_probes()
+            return
+        result = event.attempt.result
+        if self._reconcile_entry_default_probe(event.attempt, result):
+            return
+        self._reconcile_candidate_default_probe(event.attempt, result)
 
     def _drain_events(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-015] exception
         while True:
@@ -882,6 +1377,8 @@ class ProcessReactor:
                 break
             if isinstance(event, WorkspaceResolved):
                 self._on_resolved(event)
+            elif isinstance(event, DefaultWorkspaceResolved):
+                self._on_default_workspace_resolved(event)
             elif isinstance(event, WorkspaceReady):
                 self._on_ready(event)
             elif isinstance(event, WorkspaceFailed):
@@ -924,7 +1421,7 @@ class ProcessReactor:
                 entry.notifications = ()
                 entry.truncated = False
                 self._recompute_resource()
-                self._settle_active_command(entry, WORKSPACE_REACTOR_FAILED)
+                self._settle_commands(entry, WORKSPACE_REACTOR_FAILED)
 
     async def aclose(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-016] exception
         if self._closing:
@@ -943,6 +1440,8 @@ class ProcessReactor:
             if not candidate.future.done():
                 candidate.future.cancel()
             candidate.token = None
+            candidate.is_default_workspace = False
+            candidate.pending_default_probe = None
             owners[candidate.generation] = candidate.owner
         for entry in self._entries.values():
             if entry.detach_deadline is not None:
@@ -952,6 +1451,11 @@ class ProcessReactor:
                 entry.detach_future.cancel()
             if entry.command_future is not None and not entry.command_future.done():
                 entry.command_future.cancel()
+            for queued in entry.queued_commands:
+                if not queued.future.done():
+                    queued.future.cancel()
+            entry.queued_commands.clear()
+            entry.pending_default_probes.clear()
             entry.active_command_id = None
             entry.command_future = None
             entry.token = None

@@ -9,11 +9,12 @@ from jsonschema import Draft202012Validator
 from mcp import types
 
 from ._results import DOMAIN_TOOL_NAMES, MESSAGE_ID_PATTERN
+from .cli import McpLaunchDefaults
 
-CHANNEL_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
-CHAT_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?$"
+CHANNEL_PATTERN = r"^#?[a-z0-9][a-z0-9_-]{0,63}$"
+CHAT_PATTERN = r"^#?[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?$"
 CHAT_OR_DM_PATTERN = (
-    r"^(?:[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?"
+    r"^(?:#?[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?"
     r"|@[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
     r"|dm\.d_[a-z2-7]{26})$"
 )
@@ -59,15 +60,32 @@ class ToolDefinition:
     annotations: types.ToolAnnotations
     schema_constraints: dict[str, Any] | None = None
 
-    def to_mcp(self) -> types.Tool:
+    def to_mcp(self, defaults: McpLaunchDefaults | None = None) -> types.Tool:
+        effective = McpLaunchDefaults() if defaults is None else defaults
+        token_schema = (
+            _optional_nullable_string(TOKEN_DESCRIPTION)
+            if effective.has_identity_default
+            else _TOKEN
+        )
         properties: dict[str, dict[str, Any]] = {}
         for name, property_schema in self.properties.items():
-            properties[name] = property_schema
+            if name == "workspace" and effective.workspace is not None:
+                properties[name] = _optional_nullable_string(
+                    str(property_schema["description"])
+                )
+            elif name == "token":
+                properties[name] = token_schema
+            else:
+                properties[name] = property_schema
             if name == "workspace" and self.name in DOMAIN_TOOL_NAMES:
-                properties["token"] = _TOKEN
+                properties["token"] = token_schema
         required = list(self.required)
         if self.name in DOMAIN_TOOL_NAMES:
             required.insert(required.index("workspace") + 1, "token")
+        if effective.workspace is not None:
+            required = [item for item in required if item != "workspace"]
+        if effective.has_identity_default:
+            required = [item for item in required if item != "token"]
         schema: dict[str, Any] = {
             "additionalProperties": False,
             "properties": properties,
@@ -83,6 +101,10 @@ class ToolDefinition:
             input_schema=schema,
             annotations=self.annotations,
         )
+
+
+def _optional_nullable_string(description: str) -> dict[str, Any]:
+    return {"description": description, "type": ["string", "null"]}
 
 
 def _string(description: str, *, pattern: str | None = None) -> dict[str, Any]:
@@ -587,27 +609,158 @@ class ToolValidationError(ValueError):
     """A known tool call does not match its advertised input schema."""
 
 
-_TOOL_VALIDATORS: dict[str, Draft202012Validator] = {}
-for _tool in TOOLS:
-    Draft202012Validator.check_schema(_tool.input_schema)
-    _TOOL_VALIDATORS[_tool.name] = Draft202012Validator(_tool.input_schema)
+@dataclass(frozen=True, slots=True)
+class _CompiledPropertyValidator:
+    name: str
+    validator: Draft202012Validator
+    item_validator: Draft202012Validator | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledToolValidator:
+    validator: Draft202012Validator
+    required: tuple[str, ...]
+    property_names: frozenset[str]
+    properties: tuple[_CompiledPropertyValidator, ...]
+
+
+_VALIDATOR_CACHE: dict[tuple[bool, bool], dict[str, _CompiledToolValidator]] = {}
+
+
+def build_tools(defaults: McpLaunchDefaults | None = None) -> tuple[types.Tool, ...]:
+    """Return the advertised 21-tool manifest for the given launch defaults."""
+
+    if defaults is None or not defaults.has_any_default:
+        return TOOLS
+    return tuple(definition.to_mcp(defaults) for definition in TOOL_DEFINITIONS)
+
+
+def _compile_tool_validator(tool: types.Tool) -> _CompiledToolValidator:
+    schema = tool.input_schema
+    Draft202012Validator.check_schema(schema)
+    raw_props: dict[str, dict[str, Any]] = schema.get("properties", {})
+    compiled_props: list[_CompiledPropertyValidator] = []
+    for prop_name, prop_schema in raw_props.items():
+        item_schema = prop_schema.get("items")
+        item_val = (
+            Draft202012Validator(item_schema) if isinstance(item_schema, dict) else None
+        )
+        compiled_props.append(
+            _CompiledPropertyValidator(
+                name=prop_name,
+                validator=Draft202012Validator(prop_schema),
+                item_validator=item_val,
+            )
+        )
+    return _CompiledToolValidator(
+        validator=Draft202012Validator(schema),
+        required=tuple(schema.get("required", ())),
+        property_names=frozenset(raw_props),
+        properties=tuple(compiled_props),
+    )
+
+
+def _validators_for_defaults(
+    defaults: McpLaunchDefaults | None,
+) -> dict[str, _CompiledToolValidator]:
+    effective = McpLaunchDefaults() if defaults is None else defaults
+    cache_key = (effective.workspace is not None, effective.has_identity_default)
+    cached = _VALIDATOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    built = {
+        tool.name: _compile_tool_validator(tool) for tool in build_tools(effective)
+    }
+    _VALIDATOR_CACHE[cache_key] = built
+    return built
+
+
+_TOOL_VALIDATORS = _validators_for_defaults(None)
+
+
+def _check_array_items(
+    prop_name: str,
+    item_validator: Draft202012Validator,
+    items: list[object],
+) -> None:
+    for index, item in enumerate(items):
+        if next(item_validator.iter_errors(item), None) is not None:
+            raise ToolValidationError(
+                f"invalid tool arguments: invalid field '{prop_name}[{index}]'; "
+                "inspect the tool schema and retry"
+            )
+
+
+def _check_compiled_properties(
+    properties: tuple[_CompiledPropertyValidator, ...],
+    normalized: dict[str, object],
+) -> None:
+    for prop in properties:
+        if prop.name not in normalized:
+            continue
+        value = normalized[prop.name]
+        if prop.item_validator is not None and isinstance(value, list):
+            _check_array_items(prop.name, prop.item_validator, value)
+            continue
+        if next(prop.validator.iter_errors(value), None) is not None:
+            raise ToolValidationError(
+                f"invalid tool arguments: invalid field '{prop.name}'; "
+                "inspect the tool schema and retry"
+            )
+
+
+def _raise_for_schema_mismatch(
+    name: str,
+    compiled: _CompiledToolValidator,
+    normalized: dict[str, object],
+) -> None:
+    for req in compiled.required:
+        if req not in normalized:
+            raise ToolValidationError(
+                f"invalid tool arguments: missing required field '{req}'; "
+                "inspect the tool schema and retry"
+            )
+    if any(key not in compiled.property_names for key in normalized):
+        raise ToolValidationError(
+            "invalid tool arguments (unexpected property); "
+            "inspect the tool schema and retry"
+        )
+    _check_compiled_properties(compiled.properties, normalized)
+    if (
+        name == "list"
+        and normalized.get("all") is True
+        and normalized.get("dms") is True
+    ):
+        raise ToolValidationError(
+            "invalid tool arguments: conflicting fields 'all' and 'dms'; "
+            "inspect the tool schema and retry"
+        )
+    if next(compiled.validator.iter_errors(normalized), None) is not None:
+        raise ToolValidationError(
+            "invalid tool arguments; inspect the tool schema and retry"
+        )
 
 
 def validate_tool_call(
     name: str,
     arguments: dict[str, object] | None,
+    *,
+    defaults: McpLaunchDefaults | None = None,
 ) -> dict[str, object]:
     """Validate one known tool call without coercion or diagnostic leakage."""
 
+    validators = _validators_for_defaults(defaults)
     try:
-        validator = _TOOL_VALIDATORS[name]
+        compiled = validators[name]
     except KeyError:
         raise KeyError(name) from None
     normalized: object = {} if arguments is None else arguments
     if not isinstance(normalized, dict) or not all(
         isinstance(key, str) for key in normalized
     ):
-        raise ToolValidationError from None
-    if next(validator.iter_errors(normalized), None) is not None:
-        raise ToolValidationError from None
+        raise ToolValidationError(
+            "invalid tool arguments (expected JSON object); "
+            "inspect the tool schema and retry"
+        )
+    _raise_for_schema_mismatch(name, compiled, normalized)
     return normalized

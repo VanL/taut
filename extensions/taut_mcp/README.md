@@ -16,11 +16,28 @@ contract is `docs/specs/05-taut-mcp.md` [MCP-1]–[MCP-12].
 
 ## Workspaces and Identity
 
-Every identity-using call carries:
+By default, every identity-using call carries:
 
 - `workspace`: an absolute local directory containing an existing Taut
   project; and
 - `token`: an existing Taut continuity token for the intended member.
+
+For single-project or named-agent host registrations, `taut mcp` (and
+`taut-mcp`) also accepts optional launch defaults:
+
+- `--workspace DIR`: absolute path to a default Taut workspace directory; and
+- `--token TOKEN` (requires `--workspace`) or `--as NAME` (mutually exclusive
+  with `--token`; pre-verb `taut --as NAME mcp` / `taut --token TOKEN mcp` is
+  equivalent when unambiguous).
+
+When a launch default is configured, the corresponding `workspace` and/or
+`token` tool properties become optional (`["string", "null"]`) in advertised
+schemas and `tools/list` advertises `cacheScope: "private"`, while explicit
+non-null per-call values still override the default. Launch `--token` applies
+only to the configured `--workspace`; non-default workspaces require an
+explicit per-call `token`. Launch `--as NAME` resolves an existing member via
+Taut's read-only selector without creating members, installing or migrating
+schemas, or touching activity/claims.
 
 The token selects identity continuity. It is not authentication,
 authorization, or a bearer capability. Treat it as sensitive input: do not
@@ -31,19 +48,24 @@ the member, starts notification observation, and retains one configured
 client. Attach is useful when setup cost should be paid before a domain
 operation, but it is not a correctness prerequisite.
 
-Each of the 18 CLI-shaped tools also requires `workspace` and `token`. If its
-workspace is not resident, that first call performs the same setup lazily and
-retains the same client/reactor. Reuse the canonical workspace returned by a
-successful call or `list_workspaces` for the fast path.
+Each of the 18 CLI-shaped tools uses the same workspace and identity
+resolution. If its workspace is not resident, that first call performs the same
+setup lazily and retains the same client/reactor. Reuse the canonical workspace
+returned by a successful call or `list_workspaces` for the fast path. Each
+resident workspace executes one synchronous command at a time and queues up to
+eight additional waiting commands in FIFO order (`MAX_QUEUED_COMMANDS = 8`)
+before returning `workspace busy`, so parallel same-turn tool calls from an MCP
+host serialize cleanly instead of failing.
 
 `detach_workspace` is different: it accepts only the exact canonical
-`workspace` and no token because it removes process-local cached state rather
-than performing a Taut identity operation. `list_workspaces` takes no
-arguments and reports only state resident in the current process.
+`workspace` (or omits `workspace` when `--workspace` is configured) and no
+token because it removes process-local cached state rather than performing a
+Taut identity operation. `list_workspaces` takes no arguments and reports only
+state resident in the current process.
 
 After process restart, an ordinary CLI-shaped call can reconstruct its
-workspace/member binding from `workspace` plus `token`; prior attach state is
-never required.
+workspace/member binding from `workspace` plus `token` (or configured launch
+defaults); prior attach state is never required.
 
 ## Notifications
 
@@ -72,6 +94,14 @@ cancellation, and graceful close are owned by the MCP SDK. A dropped,
 duplicated, or delayed hint does not lose Taut data; reread the resource.
 
 ## Tool Notes
+
+Channel and chat-thread parameters across `join`, `leave`, `reply`, `read`,
+`log`, `who`, `search.channels`, `channel_show`, `channel_topic`, and
+`channel_rename` accept an optional single leading `#` (for example `#general`)
+and normalize it to the canonical channel or sub-thread name. Known-tool schema
+validation failures name the deterministic server-owned invalid, missing, or
+conflicting schema field without echoing caller-supplied values or unknown
+property keys.
 
 `read` and `log` accept the same direct-message selectors as the CLI
 (`@name-or-alias` routes and exact stable `dm.d_*` handles), and `list`
@@ -142,6 +172,8 @@ For Claude Code, for example:
 
 ```bash
 claude mcp add taut -- taut mcp
+# Or pin a default project directory and existing member identity:
+claude mcp add taut -- taut mcp --workspace /abs/path/to/project --as claude
 ```
 
 The equivalent host configuration is:
@@ -157,11 +189,14 @@ The equivalent host configuration is:
 }
 ```
 
-Each identity-using call still supplies its own `workspace` and `token`.
+Without launch defaults, each identity-using call supplies its own `workspace`
+and `token` (with launch defaults, those fields become optional while explicit
+per-call values still override them).
 Taut prints a new member's continuity token when a command such as
-`taut join general` first creates that member. Store that value in the
-agent's private state and pass it to MCP calls; the MCP server does not mint
-or reveal tokens.
+`taut join general` first creates that member, and existing members can read
+their token back without side effects via `taut whoami --show-token`. Store
+that value in the agent's private state when using explicit tokens; the MCP
+server itself does not mint or reveal tokens.
 
 To expose the standalone convenience command too:
 

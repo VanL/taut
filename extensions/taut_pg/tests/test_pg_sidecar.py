@@ -750,3 +750,315 @@ def test_postgres_ensure_schema_on_current_schema_skips_the_schema_lock(
         pool.shutdown(wait=True)
         queue.close()
         setup_queue.close()
+
+
+def test_postgres_install_schema_false_never_creates_migrates_or_falls_back_to_public(
+    pg_dsn: str,
+    raw_pg_conn: psycopg.Connection[Any],
+    tmp_path: Path,
+) -> None:
+    import uuid
+
+    from taut._exceptions import NotInitializedError
+
+    def make_unique_schema(prefix: str) -> str:
+        return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+    def list_schema_tables(schema_name: str) -> set[str]:
+        with raw_pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+                (schema_name,),
+            )
+            return {str(row[0]) for row in cur.fetchall()}
+
+    def schema_exists(schema_name: str) -> bool:
+        with raw_pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema_name,),
+            )
+            return cur.fetchone() is not None
+
+    def make_project(sub: str, schema_name: str) -> Path:
+        root = tmp_path / sub
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".taut.toml").write_text(
+            "\n".join(
+                [
+                    "version = 1",
+                    'backend = "postgres"',
+                    f'target = "{pg_dsn}"',
+                    "",
+                    "[backend_options]",
+                    f'schema = "{schema_name}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return root
+
+    uncreated_schema = make_unique_schema("taut_pg_uncreated")
+    older_broker_schema = make_unique_schema("taut_pg_oldbroker")
+    public_shadow_empty_schema = make_unique_schema("taut_pg_pubshadow_empty")
+    public_shadow_oldbroker_schema = make_unique_schema("taut_pg_pubshadow_old")
+
+    try:
+        # 4) Uncreated PostgreSQL schema remains uncreated.
+        p_uncreated = make_project("uncreated", uncreated_schema)
+        target_uncreated = target_for_directory(p_uncreated, config=load_config())
+        with pytest.raises(NotInitializedError):
+            TautClient(
+                broker_target=target_uncreated,
+                broker_config=load_config(),
+                install_schema=False,
+            )
+        assert not schema_exists(uncreated_schema)
+
+        # 5) Older-version broker-only PostgreSQL schema (meta.schema_version = 1) stays 1.
+        pg_meta_ddl = (
+            "(singleton BOOLEAN PRIMARY KEY DEFAULT TRUE, "
+            "magic TEXT NOT NULL, "
+            "schema_version INTEGER NOT NULL, "
+            "last_ts BIGINT NOT NULL DEFAULT 0, "
+            "alias_version BIGINT NOT NULL DEFAULT 0)"
+        )
+        with raw_pg_conn.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA "{older_broker_schema}"')
+            cur.execute(f'CREATE TABLE "{older_broker_schema}".meta {pg_meta_ddl}')
+            cur.execute(
+                f'INSERT INTO "{older_broker_schema}".meta '
+                "(singleton, magic, schema_version) VALUES (TRUE, 'simplebroker-v1', 1)"
+            )
+        p_old = make_project("old_broker", older_broker_schema)
+        target_old = target_for_directory(p_old, config=load_config())
+        with pytest.raises(NotInitializedError):
+            TautClient(
+                broker_target=target_old,
+                broker_config=load_config(),
+                install_schema=False,
+            )
+        assert list_schema_tables(older_broker_schema) == {"meta"}
+        with raw_pg_conn.cursor() as cur:
+            cur.execute(
+                f'SELECT schema_version FROM "{older_broker_schema}".meta WHERE singleton = TRUE'
+            )
+            ver = cur.fetchone()
+        assert ver == (1,)
+
+        # 6) Create an isolated test-owned PostgreSQL database, populate its public.meta +
+        # public.taut_meta, and prove target <schema> never falls back to public via
+        # PostgresRunner's search_path ("<schema>, public") and never mutates the shared DB (F3).
+        import json
+
+        import psycopg.conninfo
+        import simplebroker.db as sb_db
+
+        from taut._exceptions import NotFoundError
+
+        isolated_db = make_unique_schema("taut_pg_pubiso_db")
+        isolated_dsn = psycopg.conninfo.make_conninfo(pg_dsn, dbname=isolated_db)
+        with raw_pg_conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{isolated_db}"')
+        try:
+            with psycopg.connect(isolated_dsn, autocommit=True) as iso_conn:
+
+                def make_iso_project(
+                    name: str,
+                    schema_name: str,
+                    *,
+                    dsn: str = isolated_dsn,
+                ) -> Path:
+                    root = tmp_path / name
+                    root.mkdir(parents=True, exist_ok=True)
+                    (root / ".taut.toml").write_text(
+                        "\n".join(
+                            [
+                                "version = 1",
+                                'backend = "postgres"',
+                                f"target = {json.dumps(dsn, ensure_ascii=False)}",
+                                "",
+                                "[backend_options]",
+                                f'schema = "{schema_name}"',
+                                "",
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                    return root
+
+                # R3-4 / R4-2: percent-encoded supplementary Unicode in a URI round-trips
+                # through make_iso_project's actual .taut.toml writer and tomllib.loads.
+                import tomllib
+
+                unicode_dsn = psycopg.conninfo.make_conninfo(
+                    "postgresql://u:%F0%9F%94%92@127.0.0.1:5432/shared?dbname=shared",
+                    dbname=isolated_db,
+                )
+                unicode_proj = make_iso_project(
+                    "unicode_dsn_roundtrip",
+                    "s_unicode",
+                    dsn=unicode_dsn,
+                )
+                parsed_toml = tomllib.loads(
+                    (unicode_proj / ".taut.toml").read_text(encoding="utf-8")
+                )
+                assert parsed_toml["target"] == unicode_dsn
+                assert (
+                    psycopg.conninfo.conninfo_to_dict(parsed_toml["target"])["dbname"]
+                    == isolated_db
+                )
+
+                with iso_conn.cursor() as cur:
+                    cur.execute("SELECT current_database()")
+                    assert cur.fetchone() == (isolated_db,)
+
+                # Initialize one real Taut schema in isolated_db before populating public.meta.
+                init_schema = make_unique_schema("taut_pg_f2b_init")
+                p_init_owner = make_iso_project("f2b_owner", init_schema)
+                TautClient.init(directory=p_init_owner)
+
+                with iso_conn.cursor() as cur:
+                    cur.execute(f"CREATE TABLE public.meta {pg_meta_ddl}")
+                    cur.execute(
+                        "INSERT INTO public.meta (singleton, magic, schema_version) "
+                        "VALUES (TRUE, 'simplebroker-v1', 6)"
+                    )
+                    cur.execute(
+                        "CREATE TABLE public.taut_meta "
+                        "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    cur.execute(
+                        "INSERT INTO public.taut_meta (key, value) VALUES (%s, %s)",
+                        (sql_state.SCHEMA_VERSION_KEY, str(sql_state.SCHEMA_VERSION)),
+                    )
+                    cur.execute(f'CREATE SCHEMA "{public_shadow_oldbroker_schema}"')
+                    cur.execute(
+                        f'CREATE TABLE "{public_shadow_oldbroker_schema}".meta {pg_meta_ddl}'
+                    )
+                    cur.execute(
+                        f'INSERT INTO "{public_shadow_oldbroker_schema}".meta '
+                        "(singleton, magic, schema_version) VALUES (TRUE, 'simplebroker-v1', 1)"
+                    )
+
+                p_shadow_empty = make_iso_project(
+                    "shadow_empty", public_shadow_empty_schema
+                )
+                target_shadow_empty = target_for_directory(
+                    p_shadow_empty, config=load_config()
+                )
+                with pytest.raises(NotInitializedError):
+                    TautClient(
+                        broker_target=target_shadow_empty,
+                        broker_config=load_config(),
+                        install_schema=False,
+                    )
+
+                p_shadow_old = make_iso_project(
+                    "shadow_old", public_shadow_oldbroker_schema
+                )
+                target_shadow_old = target_for_directory(
+                    p_shadow_old, config=load_config()
+                )
+                with pytest.raises(NotInitializedError):
+                    TautClient(
+                        broker_target=target_shadow_old,
+                        broker_config=load_config(),
+                        install_schema=False,
+                    )
+
+                # 7) F2b: fresh .taut.toml pointing at an already-initialized Postgres schema
+                # with zero setup markers never invokes SimpleBroker project target admission
+                # when install_schema=False probes a missing member (ephemeral or persistent).
+                p_fresh_config = make_iso_project("f2b_fresh_reader", init_schema)
+                assert list(p_fresh_config.iterdir()) == [p_fresh_config / ".taut.toml"]
+                target_fresh = target_for_directory(
+                    p_fresh_config, config=load_config()
+                )
+                with pytest.MonkeyPatch.context() as f2b_patch:
+                    f2b_patch.setattr(
+                        sb_db,
+                        "_initialize_project_backend_target",
+                        lambda *_a, **_kw: pytest.fail(
+                            "install_schema=False must not run project target admission"
+                        ),
+                    )
+                    for persistent_mode in (False, True):
+                        probe_client = TautClient(
+                            broker_target=target_fresh,
+                            broker_config=load_config(),
+                            as_name="missing_member",
+                            persistent=persistent_mode,
+                            inherit_environment_identity=False,
+                            install_schema=False,
+                        )
+                        try:
+                            with pytest.raises(NotFoundError):
+                                probe_client.whoami(include_token=True)
+                        finally:
+                            probe_client.close()
+                assert list(p_fresh_config.iterdir()) == [p_fresh_config / ".taut.toml"]
+
+                # 8) R3-2: a PostgreSQL schema with current meta + message indexes + taut_meta
+                # but missing its project-local aliases table is rejected by Taut's raw
+                # preflight before Queue/BrokerSession open, even if public.aliases exists.
+                missing_aliases_schema = make_unique_schema("taut_pg_no_aliases")
+                p_no_aliases = make_iso_project(
+                    "no_aliases_owner", missing_aliases_schema
+                )
+                with iso_conn.cursor() as cur:
+                    cur.execute("DROP TABLE IF EXISTS public.meta, public.taut_meta")
+                TautClient.init(directory=p_no_aliases)
+                with iso_conn.cursor() as cur:
+                    cur.execute(
+                        "CREATE TABLE IF NOT EXISTS public.aliases "
+                        "(alias TEXT PRIMARY KEY, target TEXT NOT NULL)"
+                    )
+                    cur.execute(f'DROP TABLE "{missing_aliases_schema}".aliases')
+                p_no_aliases_reader = make_iso_project(
+                    "no_aliases_reader", missing_aliases_schema
+                )
+                target_no_aliases = target_for_directory(
+                    p_no_aliases_reader, config=load_config()
+                )
+                from taut._exceptions import TautError
+
+                for persistent_mode in (False, True):
+                    with pytest.raises(
+                        TautError, match="current schema shape is incomplete"
+                    ):
+                        TautClient(
+                            broker_target=target_no_aliases,
+                            broker_config=load_config(),
+                            persistent=persistent_mode,
+                            install_schema=False,
+                        )
+
+                with iso_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                        (public_shadow_empty_schema,),
+                    )
+                    assert cur.fetchone() is None
+                    cur.execute(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = %s",
+                        (public_shadow_oldbroker_schema,),
+                    )
+                    assert {str(row[0]) for row in cur.fetchall()} == {"meta"}
+                    cur.execute(
+                        f'SELECT schema_version FROM "{public_shadow_oldbroker_schema}".meta '
+                        "WHERE singleton = TRUE"
+                    )
+                    assert cur.fetchone() == (1,)
+        finally:
+            with raw_pg_conn.cursor() as cur:
+                cur.execute(f'DROP DATABASE IF EXISTS "{isolated_db}" WITH (FORCE)')
+    finally:
+        with raw_pg_conn.cursor() as cur:
+            for s in (
+                uncreated_schema,
+                older_broker_schema,
+            ):
+                cur.execute(f'DROP SCHEMA IF EXISTS "{s}" CASCADE')

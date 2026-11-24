@@ -822,3 +822,284 @@ def test_one_reactor_owns_unconfigured_sqlite_configured_sqlite_and_postgres(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.pg_only
+@pytest.mark.timeout(45)
+def test_postgres_mcp_launch_defaults_readonly_non_mutation_hash_channels_and_fifo(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """[MCP-3]/[MCP-4]/[MCP-5] Live Postgres: older-broker & public-schema-populated non-mutation (R2.4 + R3.3), --workspace + --as read-only attach, #channel tools, and parallel FIFO."""
+
+    import os
+    import uuid
+
+    import psycopg
+
+    from taut.state import _sql as sql_state
+    from taut_mcp._process_reactor import WorkspaceToolError
+    from taut_mcp.cli import McpLaunchDefaults
+
+    pg_dsn = os.environ["SIMPLEBROKER_PG_TEST_DSN"]
+    probe_root = tmp_path_factory.mktemp("pg_mcp_probes")
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    claude = TautClient(as_name="claude")
+    try:
+        claude.join("general")
+        created = claude.last_created_member
+        assert created is not None and created.token is not None
+        claude_tok = created.token
+        assert claude.whoami(include_token=True).token == claude_tok
+        claude.say("general", "pg hash channel needle")
+    finally:
+        claude.close()
+
+    import json
+
+    import psycopg.conninfo
+    import simplebroker.db as sb_db
+
+    isolated_db = f"taut_mcp_pubiso_{uuid.uuid4().hex[:12]}"
+    isolated_dsn = psycopg.conninfo.make_conninfo(pg_dsn, dbname=isolated_db)
+    old_schema = f"taut_mcp_pg_old_{uuid.uuid4().hex[:12]}"
+    pub_empty_schema = f"taut_mcp_pg_pubempty_{uuid.uuid4().hex[:12]}"
+    pub_old_schema = f"taut_mcp_pg_pubold_{uuid.uuid4().hex[:12]}"
+    f2b_init_schema = f"taut_mcp_pg_f2b_{uuid.uuid4().hex[:12]}"
+
+    def make_pg_ws(name: str, schema_name: str, *, dsn: str = isolated_dsn) -> Path:
+        d = probe_root / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".taut.toml").write_text(
+            "\n".join(
+                [
+                    "version = 1",
+                    'backend = "postgres"',
+                    f"target = {json.dumps(dsn, ensure_ascii=False)}",
+                    "",
+                    "[backend_options]",
+                    f'schema = "{schema_name}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return d
+
+    import tomllib
+
+    unicode_dsn = psycopg.conninfo.make_conninfo(
+        "postgresql://u:%F0%9F%94%92@127.0.0.1:5432/shared?dbname=shared",
+        dbname=isolated_db,
+    )
+    unicode_ws = make_pg_ws("ws_unicode_roundtrip", "s_unicode", dsn=unicode_dsn)
+    parsed_unicode_toml = tomllib.loads(
+        (unicode_ws / ".taut.toml").read_text(encoding="utf-8")
+    )
+    assert parsed_unicode_toml["target"] == unicode_dsn
+    assert (
+        psycopg.conninfo.conninfo_to_dict(parsed_unicode_toml["target"])["dbname"]
+        == isolated_db
+    )
+
+    pg_meta_ddl = (
+        "(singleton BOOLEAN PRIMARY KEY DEFAULT TRUE, "
+        "magic TEXT NOT NULL, "
+        "schema_version INTEGER NOT NULL, "
+        "last_ts BIGINT NOT NULL DEFAULT 0, "
+        "alias_version BIGINT NOT NULL DEFAULT 0)"
+    )
+
+    with psycopg.connect(pg_dsn, autocommit=True) as admin_conn:
+        with admin_conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{isolated_db}"')
+        try:
+            with psycopg.connect(isolated_dsn, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT current_database()")
+                    assert cur.fetchone() == (isolated_db,)
+
+                ws_f2b_owner = make_pg_ws("ws_f2b_owner", f2b_init_schema)
+                TautClient.init(directory=ws_f2b_owner)
+                ws_f2b_fresh = make_pg_ws("ws_f2b_fresh", f2b_init_schema)
+
+                with conn.cursor() as cur:
+                    cur.execute(f'CREATE SCHEMA "{old_schema}"')
+                    cur.execute(f'CREATE TABLE "{old_schema}".meta {pg_meta_ddl}')
+                    cur.execute(
+                        f'INSERT INTO "{old_schema}".meta '
+                        "(singleton, magic, schema_version) VALUES (TRUE, 'simplebroker-v1', 1)"
+                    )
+                    cur.execute(f"CREATE TABLE public.meta {pg_meta_ddl}")
+                    cur.execute(
+                        "INSERT INTO public.meta (singleton, magic, schema_version) "
+                        "VALUES (TRUE, 'simplebroker-v1', 6)"
+                    )
+                    cur.execute(
+                        "CREATE TABLE public.taut_meta "
+                        "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    cur.execute(
+                        "INSERT INTO public.taut_meta (key, value) VALUES (%s, %s)",
+                        (sql_state.SCHEMA_VERSION_KEY, str(sql_state.SCHEMA_VERSION)),
+                    )
+                    cur.execute(f'CREATE SCHEMA "{pub_old_schema}"')
+                    cur.execute(f'CREATE TABLE "{pub_old_schema}".meta {pg_meta_ddl}')
+                    cur.execute(
+                        f'INSERT INTO "{pub_old_schema}".meta '
+                        "(singleton, magic, schema_version) VALUES (TRUE, 'simplebroker-v1', 1)"
+                    )
+
+                ws_old = make_pg_ws("ws_old", old_schema)
+                ws_pub_empty = make_pg_ws("ws_pub_empty", pub_empty_schema)
+                ws_pub_old = make_pg_ws("ws_pub_old", pub_old_schema)
+
+                async def scenario() -> None:
+                    # 1) Non-mutation under --as and --token against older-broker and public-shadowed schemas.
+                    for ws_probe in (ws_old, ws_pub_empty, ws_pub_old):
+                        for probe_defaults in (
+                            McpLaunchDefaults(
+                                workspace=str(ws_probe), as_name="claude"
+                            ),
+                            McpLaunchDefaults(
+                                workspace=str(ws_probe), token=claude_tok
+                            ),
+                        ):
+                            r_probe = ProcessReactor(
+                                asyncio.get_running_loop(),
+                                defaults=probe_defaults,
+                            )
+                            try:
+                                with pytest.raises(
+                                    WorkspaceToolError,
+                                    match="workspace project not found",
+                                ):
+                                    await r_probe.execute_tool(None, None, "whoami", {})
+                            finally:
+                                await r_probe.aclose()
+
+                    # 1b) F2b: fresh .taut.toml pointing at an initialized Postgres schema
+                    # with a missing --as member or invalid --token never triggers project admission.
+                    with monkeypatch.context() as f2b_patch:
+                        f2b_patch.setattr(
+                            sb_db,
+                            "_initialize_project_backend_target",
+                            lambda *_a, **_kw: pytest.fail(
+                                "MCP probe must not run project target admission"
+                            ),
+                        )
+                        for f2b_defaults, expected_err in (
+                            (
+                                McpLaunchDefaults(
+                                    workspace=str(ws_f2b_fresh),
+                                    as_name="missing_member",
+                                ),
+                                "ensure the configured --as member exists",
+                            ),
+                            (
+                                McpLaunchDefaults(
+                                    workspace=str(ws_f2b_fresh),
+                                    token="taut-invalid-token",
+                                ),
+                                "workspace identity invalid",
+                            ),
+                        ):
+                            r_f2b = ProcessReactor(
+                                asyncio.get_running_loop(),
+                                defaults=f2b_defaults,
+                            )
+                            try:
+                                with pytest.raises(
+                                    WorkspaceToolError,
+                                    match=expected_err,
+                                ):
+                                    await r_f2b.execute_tool(None, None, "whoami", {})
+                            finally:
+                                await r_f2b.aclose()
+                    assert list(ws_f2b_fresh.iterdir()) == [ws_f2b_fresh / ".taut.toml"]
+
+                    # 1c) R3-2: missing project-local aliases table (even with public.aliases present)
+                    # fails raw preflight cleanly with attachment_failed before session/queue open.
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "CREATE TABLE IF NOT EXISTS public.aliases "
+                            "(alias TEXT PRIMARY KEY, target TEXT NOT NULL)"
+                        )
+                        cur.execute(f'DROP TABLE "{f2b_init_schema}".aliases')
+                    ws_missing_aliases = make_pg_ws(
+                        "ws_missing_aliases", f2b_init_schema
+                    )
+                    r_no_aliases = ProcessReactor(
+                        asyncio.get_running_loop(),
+                        defaults=McpLaunchDefaults(
+                            workspace=str(ws_missing_aliases),
+                            as_name="claude",
+                        ),
+                    )
+                    try:
+                        with pytest.raises(
+                            WorkspaceToolError,
+                            match="workspace attachment failed",
+                        ):
+                            await r_no_aliases.execute_tool(None, None, "whoami", {})
+                    finally:
+                        await r_no_aliases.aclose()
+
+                    # 2) Initialized Postgres workspace with --workspace + --as, #channel tools, and parallel FIFO!
+                    reactor = ProcessReactor(
+                        asyncio.get_running_loop(),
+                        defaults=McpLaunchDefaults(
+                            workspace=str(taut_pg_project), as_name="claude"
+                        ),
+                    )
+                    try:
+                        attached = await reactor.attach_workspace(None, None)
+                        assert attached["records"][0]["status"] == "ready"
+                        r1, r2, r3, r4 = await asyncio.gather(
+                            reactor.execute_tool(None, None, "whoami", {}),
+                            reactor.execute_tool(
+                                None, None, "channel_show", {"channel": "#general"}
+                            ),
+                            reactor.execute_tool(
+                                None,
+                                None,
+                                "search",
+                                {"query": "needle", "channels": ["#general"]},
+                            ),
+                            reactor.execute_tool(
+                                None, None, "who", {"thread": "#general"}
+                            ),
+                        )
+                        assert r1["records"][0]["name"] == "claude"
+                        assert r2["records"][0]["channel"] == "general"
+                        assert r3["records"][0]["text"] == "pg hash channel needle"
+                        assert r4["records"][0]["name"] == "claude"
+                    finally:
+                        await reactor.aclose()
+
+                asyncio.run(scenario())
+
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                        (pub_empty_schema,),
+                    )
+                    assert cur.fetchone() is None
+                    for s in (old_schema, pub_old_schema):
+                        cur.execute(
+                            "SELECT table_name FROM information_schema.tables "
+                            "WHERE table_schema = %s",
+                            (s,),
+                        )
+                        assert {str(row[0]) for row in cur.fetchall()} == {"meta"}
+                        cur.execute(
+                            f'SELECT schema_version FROM "{s}".meta '
+                            "WHERE singleton = TRUE"
+                        )
+                        assert cur.fetchone() == (1,)
+        finally:
+            with admin_conn.cursor() as cur:
+                cur.execute(f'DROP DATABASE IF EXISTS "{isolated_db}" WITH (FORCE)')

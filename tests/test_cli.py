@@ -4299,3 +4299,138 @@ def test_cli_join_recent_and_say_join_contracts(tmp_path: Path) -> None:
         == 0
     )
     assert out_j.getvalue() == ""
+
+
+def test_cli_whoami_show_token_json_human_explain_quiet_and_errors(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    assert (
+        dispatch(["--db", str(db), "init"], stdout=StringIO(), stderr=StringIO()) == 0
+    )
+    j_out, j_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "van", "--json", "join", "general"],
+            stdout=j_out,
+            stderr=j_err,
+        )
+        == 0
+    )
+    created_obj = json.loads(j_out.getvalue().splitlines()[0])
+    expected_token = created_obj["token"]
+
+    # Default whoami omits token.
+    p_out, p_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "van", "--json", "whoami"],
+            stdout=p_out,
+            stderr=p_err,
+        )
+        == 0
+    )
+    assert "token" not in json.loads(p_out.getvalue().strip())
+
+    # --show-token --json emits token (and composes with --explain).
+    t_out, t_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "van",
+                "--json",
+                "whoami",
+                "--show-token",
+                "--explain",
+            ],
+            stdout=t_out,
+            stderr=t_err,
+        )
+        == 0
+    )
+    t_obj = json.loads(t_out.getvalue().strip())
+    assert t_obj["token"] == expected_token
+    assert isinstance(t_obj["explain"], dict)
+
+    # Human --show-token --explain emits member row, then token: <tok>, then explain JSON.
+    h_out, h_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            [
+                "--db",
+                str(db),
+                "--as",
+                "van",
+                "whoami",
+                "--show-token",
+                "--explain",
+            ],
+            stdout=h_out,
+            stderr=h_err,
+        )
+        == 0
+    )
+    h_lines = h_out.getvalue().splitlines()
+    assert len(h_lines) == 3
+    assert h_lines[0].startswith("van\t")
+    assert h_lines[1] == f"token: {expected_token}"
+    assert json.loads(h_lines[2])["rule"] == "explicit --as"
+
+    # Quiet suppresses stdout when valid.
+    q_out, q_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "van", "-q", "whoami", "--show-token"],
+            stdout=q_out,
+            stderr=q_err,
+        )
+        == 0
+    )
+    assert q_out.getvalue() == ""
+
+    # Unrecognized caller exits 2.
+    u_out, u_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "nobody", "whoami", "--show-token"],
+            stdout=u_out,
+            stderr=u_err,
+        )
+        == 2
+    )
+
+    # Corrupted NULL token exits 1 (including with -q).
+    client = TautClient(db_path=db, as_name="van")
+    try:
+        with client._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = NULL WHERE member_id = ?",
+                (created_obj["member_id"],),
+            )
+    finally:
+        client.close()
+    c_out, c_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "van", "whoami", "--show-token"],
+            stdout=c_out,
+            stderr=c_err,
+        )
+        == 1
+    )
+    assert c_out.getvalue() == ""
+    assert "continuity token" in c_err.getvalue()
+    cq_out, cq_err = StringIO(), StringIO()
+    assert (
+        dispatch(
+            ["--db", str(db), "--as", "van", "-q", "whoami", "--show-token"],
+            stdout=cq_out,
+            stderr=cq_err,
+        )
+        == 1
+    )
+    assert cq_out.getvalue() == ""
+    assert cq_err.getvalue() == ""

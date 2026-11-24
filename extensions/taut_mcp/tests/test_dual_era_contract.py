@@ -111,7 +111,13 @@ CLI_CAPABILITY_TO_MCP_TOOL = {
     ("who",): "who",
     ("whoami",): "whoami",
 }
-INTENTIONALLY_UNEXPOSED_CLI_COMMANDS = {"init", "rejoin", "system", "watch"}
+INTENTIONALLY_UNEXPOSED_CLI_COMMANDS = {
+    "init",
+    "onboard",
+    "rejoin",
+    "system",
+    "watch",
+}
 
 
 def _nested_cli_capabilities(
@@ -395,3 +401,200 @@ def test_every_domain_tool_can_be_the_first_lazy_request(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+
+def test_launch_default_manifests_stay_valid_compact_and_under_ceiling() -> None:
+    import json
+
+    from jsonschema import Draft202012Validator
+
+    from taut_mcp._tools import TOOLS, build_tools
+    from taut_mcp.cli import McpLaunchDefaults
+
+    modes = [
+        ("none", McpLaunchDefaults()),
+        ("workspace", McpLaunchDefaults(workspace="/tmp/ws")),
+        ("as_name", McpLaunchDefaults(as_name="claude")),
+        (
+            "both_token",
+            McpLaunchDefaults(workspace="/tmp/ws", token="tok_existing"),
+        ),
+        (
+            "both_as",
+            McpLaunchDefaults(workspace="/tmp/ws", as_name="claude"),
+        ),
+    ]
+    assert build_tools(McpLaunchDefaults()) == TOOLS
+
+    for mode_name, defaults in modes:
+        tools = build_tools(defaults)
+        assert len(tools) == 21, mode_name
+        dumped = [tool.model_dump(by_alias=True, exclude_none=True) for tool in tools]
+        encoded = json.dumps(dumped, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+        assert len(encoded) <= 21_000, (mode_name, len(encoded))
+
+        for tool in tools:
+            Draft202012Validator.check_schema(tool.input_schema)
+            props = tool.input_schema["properties"]
+            req = set(tool.input_schema.get("required", ()))
+            if tool.name == "list_workspaces":
+                assert props == {}
+                assert req == set()
+                continue
+            if defaults.workspace is not None:
+                assert props["workspace"]["type"] == ["string", "null"]
+                assert "workspace" not in req
+            else:
+                assert props["workspace"]["type"] == "string"
+                assert "workspace" in req
+
+            if tool.name == "detach_workspace":
+                assert "token" not in props
+                continue
+
+            if defaults.has_identity_default:
+                assert props["token"]["type"] == ["string", "null"]
+                assert "token" not in req
+            else:
+                assert props["token"]["type"] == "string"
+                assert "token" in req
+
+
+def test_validate_tool_call_field_named_diagnostics_and_null_matrix() -> None:
+    from taut_mcp._tools import ToolValidationError, validate_tool_call
+    from taut_mcp.cli import McpLaunchDefaults
+
+    # 1) Non-object input.
+    with pytest.raises(ToolValidationError) as non_obj:
+        validate_tool_call("whoami", cast(Any, ["not", "an", "object"]))
+    assert str(non_obj.value) == (
+        "invalid tool arguments (expected JSON object); inspect the tool schema and retry"
+    )
+
+    # 2) Missing required fields in schema required order.
+    with pytest.raises(ToolValidationError) as missing_ws:
+        validate_tool_call("whoami", {})
+    assert str(missing_ws.value) == (
+        "invalid tool arguments: missing required field 'workspace'; "
+        "inspect the tool schema and retry"
+    )
+    with pytest.raises(ToolValidationError) as missing_tok:
+        validate_tool_call("whoami", {"workspace": "/tmp/ws"})
+    assert str(missing_tok.value) == (
+        "invalid tool arguments: missing required field 'token'; "
+        "inspect the tool schema and retry"
+    )
+
+    # 3) Unexpected property never echoes caller key or value.
+    with pytest.raises(ToolValidationError) as unexpected:
+        validate_tool_call(
+            "whoami",
+            {
+                "workspace": "/tmp/ws",
+                "token": "tok_secret_value",
+                "secret_unknown_key": "secret_unknown_val",
+            },
+        )
+    assert str(unexpected.value) == (
+        "invalid tool arguments (unexpected property); inspect the tool schema and retry"
+    )
+    assert "secret_unknown" not in str(unexpected.value)
+    assert "tok_secret_value" not in str(unexpected.value)
+
+    # 4) Invalid scalar field & invalid array item index, never echoing caller value.
+    with pytest.raises(ToolValidationError) as bad_msg:
+        validate_tool_call(
+            "message_show",
+            {"workspace": "/tmp/ws", "token": "tok", "msg_id": "bad_123_secret"},
+        )
+    assert str(bad_msg.value) == (
+        "invalid tool arguments: invalid field 'msg_id'; inspect the tool schema and retry"
+    )
+    assert "bad_123_secret" not in str(bad_msg.value)
+
+    with pytest.raises(ToolValidationError) as bad_arr:
+        validate_tool_call(
+            "search",
+            {
+                "workspace": "/tmp/ws",
+                "token": "tok",
+                "query": "needle",
+                "channels": ["general", "##bad_secret_chan"],
+            },
+        )
+    assert str(bad_arr.value) == (
+        "invalid tool arguments: invalid field 'channels[1]'; "
+        "inspect the tool schema and retry"
+    )
+    assert "bad_secret_chan" not in str(bad_arr.value)
+
+    # 5) Conflicting list all + dms.
+    with pytest.raises(ToolValidationError) as conflict:
+        validate_tool_call(
+            "list",
+            {"workspace": "/tmp/ws", "token": "tok", "all": True, "dms": True},
+        )
+    assert str(conflict.value) == (
+        "invalid tool arguments: conflicting fields 'all' and 'dms'; "
+        "inspect the tool schema and retry"
+    )
+
+    # 6) Explicit JSON null rejected when default absent, accepted when configured.
+    null_cases: list[tuple[str, dict[str, object], str]] = [
+        ("attach_workspace", {"workspace": None, "token": "tok"}, "workspace"),
+        ("attach_workspace", {"workspace": "/tmp/ws", "token": None}, "token"),
+        ("whoami", {"workspace": None, "token": "tok"}, "workspace"),
+        ("whoami", {"workspace": "/tmp/ws", "token": None}, "token"),
+        ("detach_workspace", {"workspace": None}, "workspace"),
+    ]
+    for tool_name, payload, bad_field in null_cases:
+        with pytest.raises(ToolValidationError) as null_err:
+            validate_tool_call(tool_name, payload)
+        assert str(null_err.value) == (
+            f"invalid tool arguments: invalid field '{bad_field}'; "
+            "inspect the tool schema and retry"
+        )
+
+    both_defaults = McpLaunchDefaults(workspace="/tmp/ws", as_name="claude")
+    assert validate_tool_call(
+        "attach_workspace",
+        {"workspace": None, "token": None},
+        defaults=both_defaults,
+    ) == {"workspace": None, "token": None}
+    assert validate_tool_call(
+        "whoami",
+        {"workspace": None, "token": None},
+        defaults=both_defaults,
+    ) == {"workspace": None, "token": None}
+    assert validate_tool_call(
+        "detach_workspace",
+        {"workspace": None},
+        defaults=both_defaults,
+    ) == {"workspace": None}
+
+    # 7) Large invalid array stops at the first failing item in O(1) memory (F4).
+    import tracemalloc
+
+    large_bad_channels = ["##INVALID_CHANNEL_NAME"] * 10_000
+    tracemalloc.start()
+    try:
+        with pytest.raises(ToolValidationError) as large_err:
+            validate_tool_call(
+                "search",
+                {
+                    "workspace": "/tmp/ws",
+                    "token": "tok",
+                    "query": "needle",
+                    "channels": large_bad_channels,
+                },
+            )
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert str(large_err.value) == (
+        "invalid tool arguments: invalid field 'channels[0]'; "
+        "inspect the tool schema and retry"
+    )
+    assert peak_bytes < 256_000, f"expected bounded validation memory, got {peak_bytes}"

@@ -371,7 +371,10 @@ def test_claude_channel_launch_flag_is_a_usage_error(module: str) -> None:
 
     assert completed.returncode == 1
     assert completed.stdout == ""
-    assert "unrecognized arguments: --claude-channel" in completed.stderr
+    prog = "taut mcp" if module == "taut" else "taut-mcp"
+    assert completed.stderr == (
+        f"{prog}: error: invalid launch arguments; run '{prog} --help' for usage\n"
+    )
     assert "Traceback" not in completed.stderr
 
 
@@ -658,22 +661,32 @@ def test_both_eras_share_omitted_empty_and_invalid_argument_contract(
             assert explicit_empty.is_error is False
             assert omitted.structured_content == explicit_empty.structured_content
 
-            for invalid in (
-                None,
-                {},
-                {"workspace": "/tmp/example"},
-                {
-                    "workspace": "/tmp/example",
-                    "token": "existing-token",
-                    "unexpected": True,
-                },
+            for invalid, expected_error in (
+                (
+                    None,
+                    "invalid tool arguments: missing required field 'workspace'; inspect the tool schema and retry",
+                ),
+                (
+                    {},
+                    "invalid tool arguments: missing required field 'workspace'; inspect the tool schema and retry",
+                ),
+                (
+                    {"workspace": "/tmp/example"},
+                    "invalid tool arguments: missing required field 'token'; inspect the tool schema and retry",
+                ),
+                (
+                    {
+                        "workspace": "/tmp/example",
+                        "token": "existing-token",
+                        "unexpected": True,
+                    },
+                    "invalid tool arguments (unexpected property); inspect the tool schema and retry",
+                ),
             ):
                 rejected = await client.call_tool("whoami", invalid)
                 assert rejected.is_error is True
                 assert isinstance(rejected.content[0], types.TextContent)
-                assert rejected.content[0].text == (
-                    "invalid tool arguments; inspect the tool schema and retry"
-                )
+                assert rejected.content[0].text == expected_error
 
     asyncio.run(scenario())
 
@@ -693,7 +706,7 @@ def test_startup_argument_failure_is_one_line_exit_one() -> None:
     assert completed.returncode == 1
     assert completed.stdout == ""
     assert completed.stderr == (
-        "taut-mcp: error: unrecognized arguments: --not-a-real-option\n"
+        "taut-mcp: error: invalid launch arguments; run 'taut-mcp --help' for usage\n"
     )
     assert "Traceback" not in completed.stderr
 
@@ -712,8 +725,8 @@ def test_main_taut_path_argument_failure_names_selected_command() -> None:
     )
     assert completed.returncode == 1
     assert completed.stdout == ""
-    assert completed.stderr.endswith(
-        "taut mcp: error: unrecognized arguments: --not-a-real-option\n"
+    assert completed.stderr == (
+        "taut mcp: error: invalid launch arguments; run 'taut mcp --help' for usage\n"
     )
     assert "Traceback" not in completed.stderr
 
@@ -857,7 +870,10 @@ def test_large_schema_invalid_frame_keeps_same_connection_live() -> None:
         assert invalid["result"] == {
             "content": [
                 {
-                    "text": "invalid tool arguments; inspect the tool schema and retry",
+                    "text": (
+                        "invalid tool arguments (unexpected property); "
+                        "inspect the tool schema and retry"
+                    ),
                     "type": "text",
                 }
             ],
@@ -1696,7 +1712,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 assert invalid_read.is_error is True
                 assert isinstance(invalid_read.content[0], types.TextContent)
                 assert invalid_read.content[0].text == (
-                    "invalid tool arguments; inspect the tool schema and retry"
+                    "invalid tool arguments: invalid field 'limit'; inspect the tool schema and retry"
                 )
             for invalid_thread in (
                 "dm.opaque",
@@ -1716,7 +1732,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 assert invalid_read.is_error is True
                 assert isinstance(invalid_read.content[0], types.TextContent)
                 assert invalid_read.content[0].text == (
-                    "invalid tool arguments; inspect the tool schema and retry"
+                    "invalid tool arguments: invalid field 'thread'; inspect the tool schema and retry"
                 )
             for tool_name in (
                 "message_show",
@@ -1749,7 +1765,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         types.TextContent,
                     )
                     assert invalid_exact.content[0].text == (
-                        "invalid tool arguments; inspect the tool schema and retry"
+                        "invalid tool arguments: invalid field 'msg_id'; inspect the tool schema and retry"
                     )
             for invalid_reaction in (
                 "",
@@ -1773,7 +1789,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 assert invalid_react.is_error is True
                 assert isinstance(invalid_react.content[0], types.TextContent)
                 assert invalid_react.content[0].text == (
-                    "invalid tool arguments; inspect the tool schema and retry"
+                    "invalid tool arguments: invalid field 'reaction'; inspect the tool schema and retry"
                 )
             for invalid_topic in ("x" * 501, "a\nb", "a\rb"):
                 invalid_channel_topic = await session.call_tool(
@@ -1792,7 +1808,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     types.TextContent,
                 )
                 assert invalid_channel_topic.content[0].text == (
-                    "invalid tool arguments; inspect the tool schema and retry"
+                    "invalid tool arguments: invalid field 'topic'; inspect the tool schema and retry"
                 )
             joined = await call("join", {"thread": "work", "persona": None})
             assert joined["records"][0]["kind"] == "notice"  # type: ignore[index]
@@ -2499,7 +2515,7 @@ def test_resource_read_burst_keeps_tools_available(
             assert invalid.is_error is True
             assert isinstance(invalid.content[0], types.TextContent)
             assert invalid.content[0].text == (
-                "invalid tool arguments; inspect the tool schema and retry"
+                "invalid tool arguments (unexpected property); inspect the tool schema and retry"
             )
             with pytest.raises(MCPError):
                 await session.call_tool("not_a_tool", {})
@@ -2678,3 +2694,193 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
             env=isolated_env,
         )
     )
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(30)
+def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel_stdio(
+    tmp_path: Path,
+) -> None:
+    """[MCP-3]/[MCP-4]/[MCP-5]/[MCP-10] End-to-end launch flags, secret non-echo, private cacheScope, explicit null, #channel, and parallel stdio FIFO."""
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    TautClient.init(db_path=ws / ".taut.db")
+    claude_client = TautClient(db_path=ws / ".taut.db", as_name="claude")
+    try:
+        claude_client.join("general")
+        created = claude_client.last_created_member
+        assert created is not None and created.token is not None
+    finally:
+        claude_client.close()
+
+    # 1) Launch validation & content-free secret non-echo across both surfaces.
+    secret_sentinel = "SECRET_NEVER_ECHO_HUNTER2_9911"
+    for base_argv, prog in (
+        (["-m", "taut_mcp"], "taut-mcp"),
+        (["-m", "taut", "mcp"], "taut mcp"),
+    ):
+        for bad_tail, expected_msg in (
+            (
+                ["--workspace", "relative/path"],
+                f"{prog}: error: --workspace must be an absolute UTF-8 directory path\n",
+            ),
+            (
+                ["--token", secret_sentinel],
+                f"{prog}: error: --token requires --workspace\n",
+            ),
+            (
+                ["--workspace", str(ws), "--token", ""],
+                f"{prog}: error: --token must be a non-empty UTF-8 continuity token\n",
+            ),
+            (
+                ["--as", f"@bad-{secret_sentinel}"],
+                f"{prog}: error: --as must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$\n",
+            ),
+            (
+                ["--workspace", str(ws), "--token", secret_sentinel, "--as", "claude"],
+                f"{prog}: error: argument --as: not allowed with argument --token\n",
+            ),
+            (
+                [f"--unknown={secret_sentinel}"],
+                f"{prog}: error: invalid launch arguments; run '{prog} --help' for usage\n",
+            ),
+            (
+                [secret_sentinel],
+                f"{prog}: error: invalid launch arguments; run '{prog} --help' for usage\n",
+            ),
+        ):
+            res = subprocess.run(
+                [sys.executable, *base_argv, *bad_tail],
+                cwd=EXTENSION_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            assert res.returncode == 1, (prog, bad_tail, res.stderr)
+            assert res.stdout == ""
+            assert res.stderr == expected_msg
+            assert secret_sentinel not in res.stderr
+
+    # Non-UTF-8 surrogateescape argv must also fail content-free without echoing raw bytes.
+    raw_bad = subprocess.run(
+        [
+            sys.executable.encode("utf-8"),
+            b"-m",
+            b"taut_mcp",
+            b"--workspace",
+            b"/tmp/\xffbad",
+        ],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    assert raw_bad.returncode == 1
+    assert raw_bad.stdout == b""
+    assert b"\xff" not in raw_bad.stderr
+
+    # Root globals --db / --json / --timestamps / -q rejected before protocol start on `taut mcp`,
+    # and duplicate pre-verb + post-verb identity rejected!
+    for root_bad in (
+        ["--db", str(ws / ".taut.db"), "mcp"],
+        ["--json", "mcp"],
+        ["--timestamps", "mcp"],
+        ["-q", "mcp"],
+        ["--as", "claude", "mcp", "--as", "claude"],
+        ["--as", "claude", "mcp", "--token", secret_sentinel, "--workspace", str(ws)],
+    ):
+        res_root = subprocess.run(
+            [sys.executable, "-m", "taut", *root_bad],
+            cwd=EXTENSION_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert res_root.returncode == 1
+        assert res_root.stdout == ""
+        assert res_root.stderr != ""
+        assert secret_sentinel not in res_root.stderr
+
+    # 2) Modern 2026-07-28 cacheScope == "private" when launch defaults are set, plus
+    #    explicit JSON null acceptance, pre-verb `taut --as claude mcp --workspace ...`,
+    #    `#channel` normalization, and parallel `asyncio.gather` FIFO calls!
+    async def scenario() -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "taut", "--as", "claude", "mcp", "--workspace", str(ws)],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+        async with Client(stdio_client(params), mode="auto") as client:
+            tools_res = await client.list_tools()
+            resources_res = await client.list_resources()
+            assert tools_res.ttl_ms == 300_000
+            assert tools_res.cache_scope == "private"
+            assert resources_res.cache_scope == "public"
+
+            # Explicit JSON null works identically to omitted `{}` on attach, domain, and detach!
+            att_null = await client.call_tool(
+                "attach_workspace", {"workspace": None, "token": None}
+            )
+            assert att_null.is_error is False
+            who_null = await client.call_tool(
+                "whoami", {"workspace": None, "token": None}
+            )
+            assert who_null.is_error is False
+            assert who_null.structured_content is not None
+            assert who_null.structured_content["records"][0]["name"] == "claude"
+            det_null = await client.call_tool("detach_workspace", {"workspace": None})
+            assert det_null.is_error is False
+            assert det_null.structured_content == {
+                "records": [
+                    {
+                        "backend": "sqlite",
+                        "member_id": created.member_id,
+                        "name": "claude",
+                        "status": "detached",
+                        "workspace": str(ws.resolve()),
+                    }
+                ]
+            }
+
+            # Warm #dev sequentially with zero workspace/token arguments, then fan out 4 parallel calls!
+            j = await client.call_tool("join", {"thread": "#dev"})
+            assert j.is_error is False
+            s = await client.call_tool(
+                "say", {"target": "#dev", "text": "hello parallel"}
+            )
+            assert s.is_error is False
+
+            r_read, r_search, r_who, r_whoami = await asyncio.gather(
+                client.call_tool("read", {"thread": "#dev"}),
+                client.call_tool("search", {"query": "parallel", "channels": ["#dev"]}),
+                client.call_tool("who", {"thread": "#dev"}),
+                client.call_tool("whoami", {}),
+            )
+            for r in (r_read, r_search, r_who, r_whoami):
+                assert r.is_error is False, r.content
+            assert r_search.structured_content is not None
+            assert r_search.structured_content["records"][0]["text"] == "hello parallel"
+
+            # Explicit token override still works on the same server when targeting another member/workspace!
+            ws2 = tmp_path / "ws2"
+            ws2.mkdir()
+            TautClient.init(db_path=ws2 / ".taut.db")
+            bob2 = TautClient(db_path=ws2 / ".taut.db", as_name="bob2")
+            try:
+                bob2.join("general")
+                assert bob2.last_created_member is not None
+                bob2_tok = bob2.last_created_member.token
+            finally:
+                bob2.close()
+            override_res = await client.call_tool(
+                "whoami", {"workspace": str(ws2), "token": bob2_tok}
+            )
+            assert override_res.is_error is False
+            assert override_res.structured_content is not None
+            assert override_res.structured_content["records"][0]["name"] == "bob2"
+
+    asyncio.run(scenario())

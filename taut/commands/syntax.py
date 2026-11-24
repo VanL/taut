@@ -974,7 +974,10 @@ def core_command_syntax() -> RootCommandSyntax:
         _node(
             ("whoami",),
             "Show the resolved identity.",
-            options=(_option("explain", "--explain"),),
+            options=(
+                _option("explain", "--explain"),
+                _option("show_token", "--show-token"),
+            ),
             post_verb_globals=common,
         ),
         _node(

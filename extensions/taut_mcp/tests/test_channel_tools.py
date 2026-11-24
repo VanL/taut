@@ -239,3 +239,83 @@ def test_channel_and_thread_records_have_exact_kind_specific_shapes() -> None:
     assert "topic" not in record_object(direct)
     assert "topic" not in record_object(subthread)
     assert "members" not in record_object(subthread)
+
+
+def test_hash_prefixed_channel_and_subthread_schema_patterns() -> None:
+    subthread = "general.1234567890123456789"
+    hash_subthread = f"#{subthread}"
+
+    # Channel-only tools accept #general and general, and reject subthreads, ##general, #General.
+    channel_only_cases: list[tuple[str, str, dict[str, object]]] = [
+        ("join", "thread", {"workspace": "/ws", "token": "tok"}),
+        (
+            "reply",
+            "thread",
+            {
+                "workspace": "/ws",
+                "token": "tok",
+                "msg_id": "1234567890123456789",
+                "text": "hi",
+            },
+        ),
+        ("channel_show", "channel", {"workspace": "/ws", "token": "tok"}),
+        (
+            "channel_topic",
+            "channel",
+            {"workspace": "/ws", "token": "tok", "topic": "ok"},
+        ),
+        (
+            "channel_rename",
+            "old_name",
+            {"workspace": "/ws", "token": "tok", "new_name": "ops"},
+        ),
+        (
+            "channel_rename",
+            "new_name",
+            {"workspace": "/ws", "token": "tok", "old_name": "general"},
+        ),
+    ]
+    for tool_name, field_name, base in channel_only_cases:
+        schema = _tool(tool_name).input_schema
+        for good in ("general", "#general"):
+            validate(instance={**base, field_name: good}, schema=schema)
+        for bad in (subthread, hash_subthread, "##general", "#General"):
+            with pytest.raises(ValidationError):
+                validate(instance={**base, field_name: bad}, schema=schema)
+
+    search_schema = _tool("search").input_schema
+    validate(
+        instance={
+            "workspace": "/ws",
+            "token": "tok",
+            "query": "needle",
+            "channels": ["general", "#general"],
+        },
+        schema=search_schema,
+    )
+    for bad in (subthread, hash_subthread, "##general", "#General"):
+        with pytest.raises(ValidationError):
+            validate(
+                instance={
+                    "workspace": "/ws",
+                    "token": "tok",
+                    "query": "needle",
+                    "channels": [bad],
+                },
+                schema=search_schema,
+            )
+
+    # Sub-thread-capable tools accept general, #general, subthread, and #subthread.
+    for tool_name in ("leave", "read", "log", "who"):
+        schema = _tool(tool_name).input_schema
+        for good in ("general", "#general", subthread, hash_subthread):
+            validate(
+                instance={"workspace": "/ws", "token": "tok", "thread": good},
+                schema=schema,
+            )
+        for bad in ("##general", "#General", "##" + subthread):
+            with pytest.raises(ValidationError):
+                validate(
+                    instance={"workspace": "/ws", "token": "tok", "thread": bad},
+                    schema=schema,
+                )

@@ -14,17 +14,25 @@ Spec references:
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from simplebroker import Queue
-from simplebroker.ext import DatabaseError, IntegrityError, SidecarSession
+from simplebroker import BrokerTarget, Config, Queue
+from simplebroker.ext import (
+    DatabaseError,
+    IntegrityError,
+    SetupPhase,
+    SidecarSession,
+    SQLRunner,
+    get_backend_plugin,
+)
 
-from taut._constants import SCHEMA_VERSION, route_key
+from taut._constants import NO_DATABASE_MESSAGE, SCHEMA_VERSION, route_key
 from taut._exceptions import (
     MembershipError,
     NotFoundError,
+    NotInitializedError,
     SchemaVersionError,
     TautError,
     ThreadNameError,
@@ -608,6 +616,251 @@ def _current_schema_is_installed(queue: Queue, *, allow_load_guard: bool) -> boo
     if not allow_load_guard and LOAD_GUARD_KEY in meta:
         raise TautError(LOAD_GUARD_MESSAGE)
     return True
+
+
+_SIMPLEBROKER_MAGIC = "simplebroker-v1"
+
+
+def _verify_broker_meta(
+    magic: object, raw_version: object, expected_version: int
+) -> None:
+    if magic is None:
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    if str(magic) != _SIMPLEBROKER_MAGIC:
+        raise TautError(f"invalid broker database magic: {magic!r}")
+    if raw_version is None:
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    try:
+        version = int(str(raw_version))
+    except (TypeError, ValueError) as exc:
+        raise TautError(f"invalid broker schema version: {raw_version!r}") from exc
+    if version < 1:
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    if version != expected_version:
+        raise TautError(
+            f"unsupported broker schema version {version} (expected {expected_version})"
+        )
+
+
+_PG_REQUIRED_BROKER_TABLES = frozenset({"meta", "messages", "aliases"})
+_PG_OWNERSHIP_META_COLUMNS = frozenset({"singleton", "magic", "schema_version"})
+_PG_TYPED_META_COLUMNS = frozenset(
+    {"singleton", "magic", "schema_version", "last_ts", "alias_version"}
+)
+
+
+def _verify_postgres_v6_broker_shape(runner: SQLRunner, schema_name: str) -> None:
+    index_rows = list(
+        runner.run(
+            "SELECT COUNT(*) FROM pg_indexes "
+            "WHERE schemaname = ? AND tablename = 'messages' "
+            "AND indexname IN "
+            "('idx_messages_queue_ts', 'idx_messages_pending_queue_ts')",
+            (schema_name,),
+            fetch=True,
+        )
+    )
+    if not index_rows or int(index_rows[0][0]) != 2:
+        raise TautError(f"Schema '{schema_name}' current schema shape is incomplete")
+
+
+def _read_postgres_raw_meta(plugin: Any, runner: SQLRunner) -> list[tuple[Any, ...]]:
+    schema_name = str(cast(Any, runner).schema)
+    present = {
+        str(row[0])
+        for row in runner.run(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = ? "
+            "AND table_name IN ('meta', 'messages', 'aliases', 'taut_meta')",
+            (schema_name,),
+            fetch=True,
+        )
+    }
+    if "meta" not in present or "taut_meta" not in present:
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    meta_columns = {
+        str(row[0])
+        for row in runner.run(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = ? AND table_name = 'meta'",
+            (schema_name,),
+            fetch=True,
+        )
+    }
+    if not _PG_OWNERSHIP_META_COLUMNS.issubset(meta_columns):
+        raise TautError(f"Schema '{schema_name}' current schema shape is incomplete")
+    quoted_schema = '"' + schema_name.replace('"', '""') + '"'
+    taut_rows = list(
+        runner.run(
+            f"SELECT key, value FROM {quoted_schema}.taut_meta WHERE key IN (?, ?)",
+            (SCHEMA_VERSION_KEY, LOAD_GUARD_KEY),
+            fetch=True,
+        )
+    )
+    _verify_broker_meta(
+        plugin.read_magic(runner),
+        plugin.read_schema_version(runner),
+        int(plugin.schema_version),
+    )
+    if not (
+        _PG_REQUIRED_BROKER_TABLES.issubset(present)
+        and _PG_TYPED_META_COLUMNS.issubset(meta_columns)
+    ):
+        raise TautError(f"Schema '{schema_name}' current schema shape is incomplete")
+    _verify_postgres_v6_broker_shape(runner, schema_name)
+    return taut_rows
+
+
+def _read_sqlite_raw_meta(plugin: Any, runner: SQLRunner) -> list[tuple[Any, ...]]:
+    if not plugin.meta_table_exists(runner):
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    try:
+        taut_rows = list(
+            runner.run(
+                "SELECT key, value FROM taut_meta WHERE key IN (?, ?)",
+                (SCHEMA_VERSION_KEY, LOAD_GUARD_KEY),
+                fetch=True,
+            )
+        )
+    except DatabaseError as exc:
+        if _is_schema_shape_error(exc):
+            raise NotInitializedError(NO_DATABASE_MESSAGE) from exc
+        raise
+    _verify_broker_meta(
+        plugin.read_magic(runner),
+        plugin.read_schema_version(runner),
+        int(plugin.schema_version),
+    )
+    return taut_rows
+
+
+def _raw_runner_for_target(
+    target: BrokerTarget | str,
+    config: Config,
+) -> tuple[str, Any, SQLRunner]:
+    if isinstance(target, BrokerTarget):
+        backend_name = target.backend_name
+        target_str = target.target
+        backend_options = dict(target.backend_options)
+    else:
+        backend_name = "sqlite"
+        target_str = target
+        backend_options = None
+    plugin = get_backend_plugin(backend_name)
+    runner = plugin.create_runner(
+        target_str,
+        backend_options=backend_options,
+        config=config,
+    )
+    return backend_name, plugin, runner
+
+
+class NoSetupSQLRunner:
+    """Caller-owned SQLRunner wrapper that suppresses SimpleBroker setup writes."""
+
+    def __init__(self, inner: SQLRunner) -> None:
+        self._inner = inner
+
+    def run(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        fetch: bool = False,
+    ) -> Iterable[tuple[Any, ...]]:
+        return self._inner.run(sql, params, fetch=fetch)
+
+    def begin_immediate(self) -> None:
+        self._inner.begin_immediate()
+
+    def commit(self) -> None:
+        self._inner.commit()
+
+    def rollback(self) -> None:
+        self._inner.rollback()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def setup(self, phase: SetupPhase) -> None:
+        del phase
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def setup_with_stop_event(self, phase: SetupPhase, stop_event: Any) -> None:
+        del phase, stop_event
+
+    def run_exclusive_setup(
+        self,
+        phase: SetupPhase,
+        operation: Callable[[], None],
+    ) -> bool:
+        del phase, operation
+        return False
+
+    def run_exclusive_setup_with_stop_event(
+        self,
+        phase: SetupPhase,
+        operation: Callable[[], None],
+        stop_event: Any,
+    ) -> bool:
+        del phase, operation, stop_event
+        return False
+
+    def is_setup_complete(self, phase: SetupPhase) -> bool:
+        del phase
+        return True
+
+    def lease_thread_connection(self) -> None:
+        if hasattr(self._inner, "lease_thread_connection"):
+            cast(Any, self._inner).lease_thread_connection()
+
+    def release_thread_connection(self) -> None:
+        if hasattr(self._inner, "release_thread_connection"):
+            cast(Any, self._inner).release_thread_connection()
+
+    def close_owned(self) -> None:
+        if hasattr(self._inner, "shutdown"):
+            cast(Any, self._inner).shutdown()
+        else:
+            self._inner.close()
+
+
+def create_no_setup_runner(
+    target: BrokerTarget | str,
+    config: Config,
+) -> NoSetupSQLRunner:
+    """Create a caller-owned SQLRunner that never runs broker setup or proof writes."""
+
+    _, _, runner = _raw_runner_for_target(target, config)
+    return NoSetupSQLRunner(runner)
+
+
+def require_installed_taut_target(
+    target: BrokerTarget | str,
+    config: Config,
+) -> None:
+    """Verify broker metadata and Taut sidecar version before opening Queue."""
+
+    backend_name, plugin, runner = _raw_runner_for_target(target, config)
+    try:
+        rows = (
+            _read_postgres_raw_meta(plugin, runner)
+            if backend_name == "postgres"
+            else _read_sqlite_raw_meta(plugin, runner)
+        )
+    finally:
+        if hasattr(runner, "shutdown"):
+            cast(Any, runner).shutdown()
+        else:
+            runner.close()
+    meta = {str(row[0]): row[1] for row in rows}
+    if SCHEMA_VERSION_KEY not in meta:
+        raise NotInitializedError(NO_DATABASE_MESSAGE)
+    _require_supported_version(decode_schema_version(meta[SCHEMA_VERSION_KEY]))
+    if LOAD_GUARD_KEY in meta:
+        raise TautError(LOAD_GUARD_MESSAGE)
 
 
 def _require_supported_version(version: int) -> None:

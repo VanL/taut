@@ -10,10 +10,11 @@ adapter record is the retired plan 2026-08-10-mcp-search-plan (source `58f8524`;
 
 ## Ownership and Boundaries
 
-Core owns the public query grammar, scope, DM visibility, author and kind
-filters, newest-first pagination, exact source hydration, durable work bodies,
-pending processing, reconciliation, and result facets. These rules live in
-`taut/client/_searching.py` and `taut/search/`. The CLI adapter in
+Core owns the public query grammar, scope (including `#channel` normalization
+and deduplication in `TautClient.search(channels=...)`), DM visibility, author
+and kind filters, newest-first pagination, exact source hydration, durable work
+bodies, pending processing, reconciliation, and result facets. These rules live
+in `taut/client/_searching.py` and `taut/search/`. The CLI adapter in
 `taut/commands/search.py` parses and renders only; it delegates semantics to
 `TautClient.search()`.
 
@@ -189,6 +190,7 @@ stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md`
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-08-24-command-runtime-findings-remediation-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`

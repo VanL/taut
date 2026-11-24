@@ -1718,12 +1718,12 @@ def test_search_enqueue_warning_preserves_real_source_and_does_not_leak(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
-def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
+@pytest.mark.timeout(25)
+def test_bounded_per_workspace_command_fifo_and_cancel_pruning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[MCP-5] The no-wait slot is per workspace, not connection-wide."""
+    """[MCP-5] Bounded per-workspace FIFO (1 active + 8 queued) and synchronous cancel pruning."""
 
     slow_workspace, slow_token = _workspace_with_two_members(tmp_path, "slow")
     fast_workspace, fast_token = _workspace_with_two_members(
@@ -1733,20 +1733,74 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
         "fast_other",
     )
     slow_db = (slow_workspace / ".taut.db").resolve()
-    started = threading.Event()
-    release = threading.Event()
+    hold_first = threading.Event()
+    first_started = threading.Event()
+    execution_order: list[str] = []
+    order_lock = threading.Lock()
     real_execute = workspace_reactor.execute_command
 
-    def delayed_execute(client: TautClient, name: str, arguments: Any) -> Any:
+    def tracked_execute(client: TautClient, name: str, arguments: Any) -> Any:
         assert isinstance(client.target, BrokerTarget)
         target = Path(str(client.target.target)).resolve()
-        if target == slow_db and name == "whoami":
-            started.set()
-            if not release.wait(timeout=5):
-                raise AssertionError("test did not release slow command")
+        arg_map = dict(arguments)
+        if target == slow_db:
+            item = arg_map.get("text") or arg_map.get("limit") or ""
+            with order_lock:
+                execution_order.append(f"{name}:{item}")
+            if not hold_first.is_set():
+                first_started.set()
+                assert hold_first.wait(timeout=10)
         return real_execute(client, name, arguments)
 
-    monkeypatch.setattr(workspace_reactor, "execute_command", delayed_execute)
+    monkeypatch.setattr(workspace_reactor, "execute_command", tracked_execute)
+
+    async def verify_cancel_schedule(
+        reactor: ProcessReactor,
+        slow: str,
+        schedule: str,
+    ) -> None:
+        execution_order.clear()
+        hold_first.clear()
+        first_started.clear()
+        blocker = asyncio.create_task(reactor._execute_ready_tool(slow, "whoami", {}))
+        assert await asyncio.to_thread(first_started.wait, 5)
+        mutating = asyncio.create_task(
+            reactor._execute_ready_tool(
+                slow,
+                "say",
+                {"target": "general", "text": f"never-{schedule}"},
+            )
+        )
+        survivor = asyncio.create_task(
+            reactor._execute_ready_tool(slow, "inbox", {"limit": 42})
+        )
+        await asyncio.sleep(0)
+
+        if schedule == "unwind_before_outcome":
+            mutating.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await mutating
+            hold_first.set()
+        else:
+            orig_drain = reactor._drain_events
+            with monkeypatch.context() as wpatch:
+                wpatch.setattr(reactor, "_drain_events", lambda: None)
+                hold_first.set()
+                await async_eventually(
+                    lambda: not reactor._events.empty(),
+                    timeout=5.0,
+                    interval=0.005,
+                    description="child outcome queued before master drain",
+                )
+            mutating.cancel()
+            orig_drain()
+            with pytest.raises(asyncio.CancelledError):
+                await mutating
+
+        await blocker
+        await survivor
+        assert f"say:never-{schedule}" not in execution_order
+        assert "inbox:42" in execution_order
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
@@ -1761,44 +1815,146 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
                     await reactor.attach_workspace(str(fast_workspace), fast_token)
                 )
             )
-            blocked = asyncio.create_task(
+
+            active = asyncio.create_task(
                 reactor._execute_ready_tool(slow, "whoami", {})
             )
-            assert await asyncio.to_thread(started.wait, 5)
+            assert await asyncio.to_thread(first_started.wait, 5)
+            queued_tasks = [
+                asyncio.create_task(
+                    reactor._execute_ready_tool(slow, "inbox", {"limit": idx})
+                )
+                for idx in range(1, 9)
+            ]
+            await asyncio.sleep(0)
+            assert len(reactor._entries[slow].queued_commands) == 8
 
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor._execute_ready_tool(slow, "who", {"thread": None})
-            for tool_name in (
-                "message_show",
-                "message_delete",
-                "message_react",
-            ):
-                with _tool_error("workspace busy; retry after backoff"):
-                    await reactor._execute_ready_tool(
-                        slow,
-                        tool_name,
-                        {
-                            "msg_id": "1234567890123456789",
-                            **(
-                                {"reaction": "ack"}
-                                if tool_name == "message_react"
-                                else {}
-                            ),
-                        },
-                    )
-            with _tool_error("workspace busy; retry after backoff"):
-                await reactor.detach_workspace(slow)
 
             independent = await asyncio.wait_for(
                 reactor._execute_ready_tool(fast, "whoami", {}),
                 timeout=2,
             )
             assert independent["records"][0]["name"] == "fast_member"
-            release.set()
-            completed = await blocked
-            assert completed["records"][0]["name"] == "selected"
+
+            # Same-turn admission prune (R2.2): cancel 8th queued task and synchronously
+            # enter _execute_ready_tool on the exact same coroutine turn before unwind!
+            async def cancel_and_admit_same_turn() -> dict[str, Any]:
+                queued_tasks[-1].cancel()
+                return await reactor._execute_ready_tool(slow, "inbox", {"limit": 99})
+
+            replacement_task = asyncio.create_task(cancel_and_admit_same_turn())
+            await asyncio.sleep(0)
+            with pytest.raises(asyncio.CancelledError):
+                await queued_tasks[-1]
+
+            with _tool_error("workspace busy; retry after backoff"):
+                await reactor.detach_workspace(slow)
+
+            hold_first.set()
+            assert (await active)["records"][0]["name"] == "selected"
+            await asyncio.gather(*queued_tasks[:-1], replacement_task)
+            assert execution_order == [
+                "whoami:",
+                *(f"inbox:{idx}" for idx in range(1, 8)),
+                "inbox:99",
+            ]
+
+            await verify_cancel_schedule(reactor, slow, "outcome_before_unwind")
+            await verify_cancel_schedule(reactor, slow, "unwind_before_outcome")
+
+            obs = TautClient(db_path=slow_workspace / ".taut.db", token=slow_token)
+            try:
+                texts = [m.text for m in obs.log("general")]
+                assert all(not t.startswith("never-") for t in texts)
+            finally:
+                obs.close()
         finally:
-            release.set()
+            hold_first.set()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(20)
+def test_bounded_fifo_channel_show_snapshot_fairness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5]/[MCP-8] channel_show fairness (R2.2): due periodic snapshot runs before Command 2 executes."""
+
+    slow_workspace, slow_token = _workspace_with_two_members(tmp_path, "slow")
+    slow_db = (slow_workspace / ".taut.db").resolve()
+    hold_first = threading.Event()
+    first_started = threading.Event()
+    events_trace: list[str] = []
+    trace_lock = threading.Lock()
+    real_execute = workspace_reactor.execute_command
+    real_peek = workspace_reactor.TautClient.peek_inbox
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            slow = str(
+                canonical_of(
+                    await reactor.attach_workspace(str(slow_workspace), slow_token)
+                )
+            )
+
+            def traced_peek(self: TautClient, *, limit: int = 1000) -> Any:
+                assert isinstance(self.target, BrokerTarget)
+                if Path(str(self.target.target)).resolve() == slow_db:
+                    with trace_lock:
+                        events_trace.append("peek_inbox")
+                return real_peek(self, limit=limit)
+
+            def traced_exec(client: TautClient, name: str, arguments: Any) -> Any:
+                assert isinstance(client.target, BrokerTarget)
+                if Path(str(client.target.target)).resolve() == slow_db:
+                    with trace_lock:
+                        events_trace.append(f"exec:{name}")
+                    if name == "channel_show" and not hold_first.is_set():
+                        first_started.set()
+                        assert hold_first.wait(timeout=10)
+                return real_execute(client, name, arguments)
+
+            with monkeypatch.context() as fair_patch:
+                fair_patch.setattr(
+                    workspace_reactor.TautClient, "peek_inbox", traced_peek
+                )
+                fair_patch.setattr(workspace_reactor, "execute_command", traced_exec)
+                cmd1 = asyncio.create_task(
+                    reactor._execute_ready_tool(
+                        slow, "channel_show", {"channel": "general"}
+                    )
+                )
+                assert await asyncio.to_thread(first_started.wait, 5)
+                cmd2 = asyncio.create_task(
+                    reactor._execute_ready_tool(
+                        slow, "channel_show", {"channel": "general"}
+                    )
+                )
+                await asyncio.sleep(0)
+
+                peer = TautClient(db_path=slow_workspace / ".taut.db", as_name="other")
+                try:
+                    peer.say("general", "fairness wake @selected")
+                finally:
+                    peer.close()
+                await asyncio.sleep(0.55)
+                hold_first.set()
+                await cmd1
+                await cmd2
+
+            assert events_trace == [
+                "exec:channel_show",
+                "peek_inbox",
+                "exec:channel_show",
+            ]
+        finally:
+            hold_first.set()
             await reactor.aclose()
 
     asyncio.run(scenario())
@@ -3129,7 +3285,7 @@ def test_search_manifest_and_result_family_are_exact() -> None:
         "reindex",
     }
     assert tool.input_schema["properties"]["channels"]["items"]["pattern"] == (
-        r"^[a-z0-9][a-z0-9_-]{0,63}$"
+        r"^#?[a-z0-9][a-z0-9_-]{0,63}$"
     )
     assert (
         tool.input_schema["properties"]["direct_messages"]["items"]["pattern"]
@@ -3374,7 +3530,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "c08bde522a3ab0f5f499a65ca3148fd3bdc5b34878743a07f29f03b37efa7a52"
+        "047da52d179f5528a93ff6ffb993161f14b1301c9c8f0c04bd63674643820acb"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

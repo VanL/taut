@@ -175,8 +175,10 @@ receives no DM candidates. This does not create or heal an identity.
 
 The CLI and Python API support these scope selectors:
 
-- repeatable channel selector: one canonical bare channel name such as
-  `general` (never `#general`) and every currently registered child sub-thread
+- repeatable channel selector: one top-level channel name such as `general` or
+  `#general` (normalized to the canonical bare channel name under [IAN-5.1];
+  sub-threads and multiple leading `#` remain validation errors) and every
+  currently registered child sub-thread
 - repeatable DM selector: one existing `@name-or-alias` route or stable
   `dm.d_*` handle; a bare name without `@` is malformed
 - all-DMs selector: every valid actor-accessible DM
@@ -696,6 +698,10 @@ threshold.
 
 ## Related Plans
 
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
+  normalizes optional single leading `#` on repeatable search channel selectors
+  across `TautClient.search`, CLI `taut search --channel`, and `taut-mcp`
+  `search.channels`.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans exact-message source lookup and removal of obsolete segmentation proof.
 

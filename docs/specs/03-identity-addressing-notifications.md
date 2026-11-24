@@ -279,10 +279,13 @@ activity, changes anchor or fingerprint evidence, or mutates membership or
 cursor state. Invalid deterministic selectors remain errors and never fall
 back. This is selection, not authentication or token verification.
 
-`whoami`, `whoami --explain`, `who`, and `list` use this read-only resolution.
-`whoami` reports the selected member; `who` and `list` use the selected member
+`whoami` (including `--explain` and `--show-token`), `who`, and `list` use this read-only resolution.
+`whoami` reports the selected member; `whoami --show-token` additionally
+includes that member's stored continuity token on stdout (raising `TokenError`
+and exiting 1 if the stored member row has no continuity token, without minting
+or modifying one); `who` and `list` use the selected member
 to drive their existing output; and `whoami --explain` also reports the rule
-that selected the member. None records a claim, heals an anchor, updates
+that selected the member (`--explain` and `--show-token` compose cleanly). None records a claim, heals an anchor, updates
 activity, or creates a member. `whoami --explain` renders the captured evidence
 and the rule in the unrecognized case too. An unrecognized `whoami --explain`
 retains `UnrecognizedCallerError` and exit code 2. Its diagnostic keeps
@@ -1079,6 +1082,10 @@ Required proofs:
   — rejects exited and zombie OS process entries in `capture_process()` and
   reconciles the `simplebroker>=8.8.1` / `simplebroker-pg>=4.8.1` floors.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md`
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
+  adds read-only `whoami --show-token` (`TautClient.whoami(...,
+  include_token=False)`) so operators and harnesses can retrieve an existing
+  member's continuity token without mutating claims or activity.
 - `docs/plans/2026-09-24-identity-claim-boundary-plan.md` — narrows the
   step-4 anchor match so a parent agent cannot capture a child agent, specifies
   PATH-independent host-id derivation and its explicit fallback, and routes the

@@ -6726,3 +6726,321 @@ def test_concurrent_same_member_first_channel_creation_emits_created_notice(
         assert [m.text for m in obs.log("brandnew")] == ["van created #brandnew"]
     finally:
         obs.close()
+
+
+def test_whoami_include_token_readonly_and_preserves_diagnostic_objects(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    creator = TautClient(db_path=db_path, as_name="van")
+    try:
+        creator.join("general")
+        created_member = creator.last_created_member
+        assert created_member is not None
+        assert isinstance(created_member.token, str) and created_member.token
+        expected_token = created_member.token
+        before_row = creator._state.get_member(created_member.member_id)
+        with creator._meta_queue.sidecar() as session:
+            before_claims = list(
+                session.run(
+                    "SELECT * FROM taut_identity_claims WHERE member_id = ? ORDER BY claim_hash",
+                    (created_member.member_id,),
+                    fetch=True,
+                )
+            )
+        assert before_row is not None
+
+        saved_candidates: list[tuple[str, list[str]]] = [("van", ["sentinel"])]
+        creator.last_candidates = saved_candidates
+
+        for bad in (1, "yes", None):
+            with pytest.raises(TypeError):
+                creator.whoami(explain=cast(Any, bad))
+            with pytest.raises(TypeError):
+                creator.whoami(include_token=cast(Any, bad))
+
+        plain = creator.whoami()
+        assert plain.token is None
+        assert creator.last_created_member is created_member
+        assert creator.last_candidates is saved_candidates
+
+        with_tok = creator.whoami(include_token=True)
+        assert with_tok.token == expected_token
+        assert with_tok.explain is None
+        assert creator.last_created_member is created_member
+        assert creator.last_candidates is saved_candidates
+
+        with_both = creator.whoami(explain=True, include_token=True)
+        assert with_both.token == expected_token
+        assert with_both.explain is not None
+        assert creator.last_created_member is created_member
+        assert creator.last_candidates is saved_candidates
+
+        after_row = creator._state.get_member(created_member.member_id)
+        with creator._meta_queue.sidecar() as session:
+            after_claims = list(
+                session.run(
+                    "SELECT * FROM taut_identity_claims WHERE member_id = ? ORDER BY claim_hash",
+                    (created_member.member_id,),
+                    fetch=True,
+                )
+            )
+        assert after_row == before_row
+        assert after_claims == before_claims
+
+        # Unrecognized --as (NotFoundError) and ambient UnrecognizedCallerError preserve refs.
+        stranger = TautClient(
+            db_path=db_path, as_name="nobody", inherit_environment_identity=False
+        )
+        try:
+            stranger.last_created_member = created_member
+            stranger.last_candidates = saved_candidates
+            with pytest.raises(NotFoundError):
+                stranger.whoami(include_token=True)
+            assert stranger.last_created_member is created_member
+            assert stranger.last_candidates is saved_candidates
+        finally:
+            stranger.close()
+
+        ambient = TautClient(
+            db_path=db_path,
+            inherit_environment_identity=False,
+            identity_capture=identity.IdentityCapture(
+                chain=(),
+                host=identity.HostIdentity(
+                    "h_unrecognized_test",
+                    "test-host",
+                    "test host identity",
+                ),
+                uid=999_999,
+                login="unrecognized",
+                anchor=None,
+                kind="human",
+                rule="test capture",
+            ),
+        )
+        try:
+            ambient.last_created_member = created_member
+            ambient.last_candidates = saved_candidates
+            with pytest.raises(UnrecognizedCallerError):
+                ambient.whoami(include_token=True)
+            assert ambient.last_created_member is created_member
+            assert ambient.last_candidates is saved_candidates
+        finally:
+            ambient.close()
+
+        # Missing or empty stored token raises TokenError and preserves diagnostic refs.
+        with creator._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = '' WHERE member_id = ?",
+                (created_member.member_id,),
+            )
+        with pytest.raises(TokenError, match="selected member has no continuity token"):
+            creator.whoami(include_token=True)
+        assert creator.last_created_member is created_member
+        assert creator.last_candidates is saved_candidates
+
+        with creator._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET token = NULL WHERE member_id = ?",
+                (created_member.member_id,),
+            )
+        with pytest.raises(TokenError, match="selected member has no continuity token"):
+            creator.whoami(include_token=True)
+        assert creator.last_created_member is created_member
+        assert creator.last_candidates is saved_candidates
+    finally:
+        creator.close()
+
+
+def test_client_install_schema_false_never_sets_up_or_migrates_sqlite_targets(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    init_db = tmp_path / "initialized" / ".taut.db"
+    init_db.parent.mkdir()
+    TautClient.init(db_path=init_db)
+    for bad in (1, "no", None):
+        with pytest.raises(TypeError):
+            TautClient(db_path=init_db, install_schema=cast(Any, bad))
+
+    ok_client = TautClient(db_path=init_db, as_name="van", install_schema=False)
+    try:
+        ok_client.join("general")
+    finally:
+        ok_client.close()
+
+    # 1) 0-byte SQLite file stays 0 bytes.
+    zero_db = tmp_path / "zero" / ".taut.db"
+    zero_db.parent.mkdir()
+    zero_db.write_bytes(b"")
+    with pytest.raises(NotInitializedError):
+        TautClient(db_path=zero_db, install_schema=False)
+    assert zero_db.read_bytes() == b""
+
+    # 2) Current-version broker-only SQLite file stays byte-for-byte identical.
+    broker_db = tmp_path / "broker_only" / ".taut.db"
+    broker_db.parent.mkdir()
+    q = Queue("plain", db_path=str(broker_db))
+    try:
+        q.write("hello")
+    finally:
+        q.close()
+    before_broker_bytes = broker_db.read_bytes()
+    with pytest.raises(NotInitializedError):
+        TautClient(db_path=broker_db, install_schema=False)
+    assert broker_db.read_bytes() == before_broker_bytes
+
+    # 3) Older-version broker-only SQLite file (meta.schema_version = '1', no taut_meta)
+    # stays at version '1' and byte-for-byte identical (no BackendAwareRunner.setup/migrate).
+    old_broker_db = tmp_path / "old_broker" / ".taut.db"
+    old_broker_db.parent.mkdir()
+    with sqlite3.connect(old_broker_db) as conn:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value BLOB NOT NULL)")
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')")
+        conn.commit()
+    before_old_bytes = old_broker_db.read_bytes()
+    with pytest.raises(NotInitializedError):
+        TautClient(db_path=old_broker_db, install_schema=False)
+    assert old_broker_db.read_bytes() == before_old_bytes
+    with sqlite3.connect(old_broker_db) as conn:
+        ver_row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert ver_row is not None and str(ver_row[0]) == "1"
+    assert tables == {"meta"}
+
+    # 4) Cold initialized SQLite target: init() leaves schema_proof_cookie synced with
+    # PRAGMA schema_version, and install_schema=False never rewrites stale cookies (F2).
+    cold_db = tmp_path / "cold_init" / ".taut.db"
+    cold_db.parent.mkdir()
+    TautClient.init(db_path=cold_db)
+    with sqlite3.connect(cold_db) as conn:
+        init_meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        init_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+    assert int(init_meta["schema_proof_cookie"]) == init_cookie
+
+    with sqlite3.connect(cold_db) as conn:
+        conn.execute("UPDATE meta SET value = 6 WHERE key = 'schema_proof_cookie'")
+        conn.commit()
+        stale_meta_before = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+    assert int(stale_meta_before["schema_proof_cookie"]) == 6
+
+    ro_probe = TautClient(
+        db_path=cold_db,
+        as_name="missing_member",
+        inherit_environment_identity=False,
+        install_schema=False,
+    )
+    try:
+        with pytest.raises(NotFoundError):
+            ro_probe.whoami(include_token=True)
+    finally:
+        ro_probe.close()
+    with sqlite3.connect(cold_db) as conn:
+        stale_meta_after = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+    assert stale_meta_after == stale_meta_before
+
+    # 5) Unmigrated broker version paired with forged taut_meta is refused before Queue open.
+    forged_db = tmp_path / "forged_old_broker" / ".taut.db"
+    forged_db.parent.mkdir()
+    with sqlite3.connect(forged_db) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES "
+            "('magic', 'simplebroker-v1'), ('schema_version', '1')"
+        )
+        conn.execute(
+            "CREATE TABLE taut_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO taut_meta (key, value) VALUES ('schema_version', '2')"
+        )
+        conn.commit()
+    with pytest.raises(TautError, match="unsupported broker schema version"):
+        TautClient(db_path=forged_db, install_schema=False)
+
+
+def test_client_sqlite_resolved_target_refreshes_schema_proof_cookie(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2a: installing Taut schema over a broker-only SQLite target refreshes schema_proof_cookie across resolved-target and persistent constructors."""
+
+    import sqlite3
+
+    from simplebroker import Queue, target_for_directory
+
+    from taut._config import load_config
+
+    for name, mode in (
+        ("discovery", "discovery"),
+        ("resolved_ephemeral", "resolved_ephemeral"),
+        ("resolved_persistent", "resolved_persistent"),
+    ):
+        proj = tmp_path / name
+        proj.mkdir()
+        db_file = proj / ".taut.db"
+        broker_q = Queue("plain", db_path=str(db_file))
+        try:
+            broker_q.write("seed")
+        finally:
+            broker_q.close()
+
+        cfg = load_config()
+        bt = target_for_directory(proj, config=cfg)
+        if mode == "discovery":
+            with monkeypatch.context() as cpatch:
+                cpatch.chdir(proj)
+                inst = TautClient(as_name="alice")
+                inst.close()
+        elif mode == "resolved_ephemeral":
+            inst = TautClient(broker_target=bt, broker_config=cfg, as_name="alice")
+            inst.close()
+        else:
+            inst = TautClient(
+                broker_target=bt,
+                broker_config=cfg,
+                as_name="alice",
+                persistent=True,
+            )
+            inst.close()
+
+        with sqlite3.connect(db_file) as conn:
+            meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+            pragma_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+        assert int(meta["schema_proof_cookie"]) == pragma_cookie
+
+
+def test_search_normalizes_hash_channel_selectors_and_rejects_malformed(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    try:
+        alice.join("general")
+        msg = alice.say("general", "hash channel needle")
+        assert [h.ts for h in alice.search("needle", channels=["#general"])] == [msg.ts]
+        assert [
+            h.ts for h in alice.search("needle", channels=["general", "#general"])
+        ] == [msg.ts]
+        for bad_channel in (
+            "##general",
+            "#General",
+            f"#general.{msg.ts}",
+            "#dm",
+        ):
+            with pytest.raises(ThreadNameError):
+                alice.search("needle", channels=[bad_channel])
+    finally:
+        alice.close()

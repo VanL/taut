@@ -857,14 +857,17 @@ def _validate_kinds(value: object) -> frozenset[str]:
 
 def _validate_scope_syntax(
     channels: tuple[str, ...], direct_messages: tuple[str, ...]
-) -> None:
-    for channel in channels:
-        if channel.startswith("#"):
-            raise ValueError("search channel selectors must be bare channel names")
-        addressing.validate_chat_thread_name(channel, allow_subthread=False)
+) -> tuple[str, ...]:
+    normalized_channels = tuple(
+        dict.fromkeys(
+            addressing.validate_chat_thread_name(channel, allow_subthread=False)
+            for channel in channels
+        )
+    )
     for selector in direct_messages:
         if addressing.parse_dm_selector(selector) is None:
             raise ValueError("direct-message selectors must start with '@' or 'dm.'")
+    return normalized_channels
 
 
 def _validate_search_request(
@@ -898,10 +901,10 @@ def _validate_search_request(
         raise ValueError("limit must be between 1 and 1000")
     if not isinstance(reindex, bool):
         raise TypeError("reindex must be a boolean")
-    _validate_scope_syntax(channel_selectors, dm_selectors)
+    normalized_channels = _validate_scope_syntax(channel_selectors, dm_selectors)
     return _SearchRequest(
         chunks=chunks,
-        channels=channel_selectors,
+        channels=normalized_channels,
         direct_messages=dm_selectors,
         all_direct_messages=all_direct_messages,
         from_member=from_member,

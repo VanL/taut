@@ -438,7 +438,8 @@ def test_cli_search_usage_boundaries_exit_one_without_client_or_traceback(
     ("tail", "diagnostic"),
     [
         (["!!!"], "at least one alphanumeric token"),
-        (["needle", "--channel", "#general"], "channel"),
+        (["needle", "--channel", "##general"], "channel"),
+        (["needle", "--channel", "#general.1234567890123456789"], "channel"),
         (["needle", "--dm", "bob"], "direct-message selectors"),
         (["needle", "--dm", "dm.bad"], "invalid direct-message selector"),
         (["needle", "--from", "@bad"], "name must match"),
@@ -653,3 +654,19 @@ def test_cli_search_human_output_escapes_control_text(tmp_path: Path) -> None:
     assert rc == 0, err
     assert "\\x1b[31mred" in out
     assert "\x1b" not in out
+
+
+def test_cli_search_accepts_hash_prefixed_channel_selector(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert (
+        run_cli("--as", "van", "say", "general", "hash selector needle", cwd=tmp_path)[
+            0
+        ]
+        == 0
+    )
+
+    rc, out, err = run_cli("search", "needle", "--channel", "#general", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "hash selector needle" in out

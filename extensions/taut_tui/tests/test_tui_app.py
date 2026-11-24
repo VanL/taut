@@ -5951,3 +5951,30 @@ def test_transcript_tail_append_skips_clear_options_and_redundant_nav_rerender(
             app._selection_copy_timer = None
 
     asyncio.run(exercise())
+
+
+def test_tui_whoami_show_token_is_cli_only(tmp_path: Path) -> None:
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    setup = TautClient(db_path=db_path, as_name="van")
+    try:
+        setup.join("general")
+    finally:
+        setup.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="van", continuity_token=None)
+        async with app.run_test(size=(120, 40)):
+            assert app._domain is not None
+            inv = parse_command_line(
+                "whoami --show-token", syntax=core_command_syntax()
+            )
+            app._dispatch_command_invocation(inv)
+            assert "--show-token is CLI-only in the TUI." in str(
+                app.query_one("#inspector-body").render()
+            )
+
+    asyncio.run(exercise())

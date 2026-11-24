@@ -70,9 +70,11 @@ and Taut operations. The only era checks in application code select
 protocol-owned resource-not-found codes.
 
 SDK cache hints keep fixed discovery and list results reusable while making
-the changing notification resource private and immediately stale. The SDK
-adds modern `resultType`, server information, TTL, and cache-scope fields and
-keeps those fields out of legacy envelopes.
+the changing notification resource private and immediately stale (`tools/list`
+advertises `cacheScope: "public"` without launch defaults and `cacheScope:
+"private"` whenever launch `--workspace`, `--token`, or `--as` defaults are
+configured). The SDK adds modern `resultType`, server information, TTL, and
+cache-scope fields and keeps those fields out of legacy envelopes.
 
 ### The process reactor is a reactor over workspace reactors
 
@@ -96,9 +98,14 @@ shutdown all pass through the existing waiter-before-client teardown. Another
 resident workspace on the same target may keep the keyed process session live;
 the retiring child still releases its own thread cache.
 
-Attachment validation calls `TautClient.peek_identity()` and obtains the
-waiter's source from `TautClient.notification_activity_queue()` on that same
-child owner thread. Core therefore owns selected-member precedence, no-touch
+Attachment validation constructs `TautClient(..., install_schema=False)` (plus a
+read-only `--as` probe via `peek_identity()` when configured with `--as`), calls
+`TautClient.peek_identity()`, and obtains the waiter's source from
+`TautClient.notification_activity_queue()` on that same child owner thread.
+Using `install_schema=False` ensures read-only MCP calls against empty or
+older-version broker-only SQLite or PostgreSQL targets fail closed with
+`PROJECT_NOT_FOUND` before `Queue.sidecar()` can install or migrate schemas.
+Core therefore owns selected-member precedence, no-touch
 resolution, notification queue naming, persistent handle reuse, and close.
 MCP neither reaches through private identity helpers nor derives `notify.*`
 names.
@@ -118,8 +125,14 @@ never blocks its event loop on `Thread.join()`.
 The installed distribution registers `taut mcp` through a lightweight command
 manifest and retains `taut-mcp` as a standalone convenience script. Both parser
 surfaces read installed identity from lightweight `taut_mcp._version`, use
-`taut_mcp.cli.configure_parser()`, and call
-`taut_mcp.cli.run_process()`; neither invokes the other executable. The shared
+`taut_mcp.cli.configure_parser()`, validate optional `McpLaunchDefaults`
+(`--workspace`, `--token` requiring `--workspace`, or `--as` mutually exclusive
+with `--token`) via a content-free error handler that never echoes rejected
+argv values, and call `taut_mcp.cli.run_process()`; neither invokes the other
+executable. The `taut mcp` adapter also rejects `--db`/`--json`/`--timestamps`/
+`--quiet` and duplicate or conflicting pre-verb and post-verb identity flags
+before protocol start, while merging an unambiguous pre-verb `taut --as NAME
+mcp` or `taut --token TOKEN mcp` into `McpLaunchDefaults`. The shared
 runner alone owns `asyncio.run`, broken-transport silence, the fixed fatal
 diagnostic, and shell status.
 
@@ -127,15 +140,18 @@ The manifest's raw-stdio declaration makes the root dispatcher skip ambient
 terminal-policy description escaping and preflight on successful execution.
 The adapter then calls `run_server()` without explicit streams, preserving the
 MCP SDK's ownership of file descriptors 0 and 1 and its diversion of stray
-process output away from the wire. Help and parser failures occur before that
-handoff and remain ordinary `taut mcp` text. The adapter declares no root
-globals and never constructs a core client.
+process output away from the wire. Help and content-free launch failures occur
+before that handoff on stderr with zero stdout. The adapter never constructs a
+core client.
 
 ### Workspace plus token is the reconstructable handle
 
-Every identity-using tool carries an absolute workspace locator and an
-existing continuity token. The token selects an existing Taut member. It is
-continuity, not authentication, authorization, or a capability.
+By default, every identity-using tool carries an absolute workspace locator and
+an existing continuity token; when `McpLaunchDefaults` configures `--workspace`
+and/or `--token` / `--as`, the corresponding tool properties become optional
+(`["string", "null"]`) while explicit non-null per-call values still override
+them. The token selects an existing Taut member. It is continuity, not
+authentication, authorization, or a capability.
 
 `attach_workspace` and every CLI-shaped tool enter the same
 `ProcessReactor.ensure_workspace()` state machine. Explicit attach is the
@@ -144,15 +160,26 @@ operation. A first CLI-shaped call performs the same setup lazily. Either path
 publishes and retains the same child owner until detach, terminal failure, or
 process exit.
 
-An exact canonical ready key with the same supplied token is the no-I/O
-fast path. Another absolute locator enters child-owned resolution and stable
-directory-identity arbitration, so aliases converge without publishing a
-second client. Hidden seats stay cap-counted until their owner exits; releasing
-one earlier could let a second client overlap unresolved backend ownership.
+An exact canonical ready key with matching selector (`entry.token ==
+request_token` strictly when `request_token is not None`, or
+`entry.matches_default_as` strictly when `request_token is None` under `--as`)
+is the no-I/O fast path. When `--workspace` is configured, at most one
+validation candidate or published entry holds `is_default_workspace` at a time
+(`_has_other_default_owner`): omitted-workspace calls route to a published
+default entry first, return `workspace busy` if a default candidate is still
+validating (or retire with `workspace busy` and zero `GrantValidation` at
+`_on_resolved` if another default owner claimed the reservation first), and
+launch `--token` is restricted strictly to that default workspace. Another
+absolute locator enters child-owned resolution and stable directory-identity
+arbitration, so aliases converge without publishing a second client. Hidden
+seats stay cap-counted until their owner exits; releasing one earlier could let
+a second client overlap unresolved backend ownership.
 
 Detach is intentionally narrower. It accepts the exact published canonical
-identifier and performs no project or identity reconstruction. An exact
-active hidden locator reports busy; every other miss is an idempotent no-op.
+identifier (or omits `workspace` to detach the published default workspace when
+`--workspace` is configured) and performs no project or identity
+reconstruction. An exact active hidden locator (or validating default workspace
+on omitted detach) reports busy; every other miss is an idempotent no-op.
 Identity-lost, reactor-failed, and validation-timeout records remain visible
 until that explicit cleanup.
 
@@ -173,11 +200,15 @@ token-bearing client, identity cache, or transient command path.
 
 ### One manifest, validator, and thin dispatcher
 
-`_tools.py` owns the fixed 21-tool manifest and compiles one Draft 2020-12
-validator from each advertised input schema. The shared handler normalizes
-only omitted SDK arguments from `None` to `{}`, validates, and returns one
-fixed content-free result for known-tool schema
-failure. Unknown tools remain protocol errors.
+`_tools.py` owns the 21-tool manifest (default and launch-defaulted variants
+all staying within the 21,000-byte ceiling via compact `["string", "null"]`
+optional properties and `#?` channel/sub-thread patterns) and compiles one
+Draft 2020-12 validator from each advertised input schema. The shared handler
+normalizes only omitted SDK arguments from `None` to `{}`, validates, and
+returns a deterministic server-owned field-named result (`missing required
+field '...'`, `invalid field '...'`, `unexpected property; see tool inputSchema`,
+etc.) for known-tool schema failure without echoing caller-supplied values or
+unknown keys. Unknown tools remain protocol errors.
 
 `_commands.py` is the explicit allowlisted dispatcher for the 18 CLI-shaped
 tools. It calls public `TautClient` methods and serializes public value
@@ -233,11 +264,15 @@ domain objects and parent/child IPC remain integer-valued.
 but schema and dispatch reject bare integers outside JavaScript's safe range.
 Accepted strings pass to the existing core resolver without a second parser.
 
-Each ready workspace has one no-wait parent command slot. A second command for
-that workspace returns busy instead of growing a queue; another workspace can
-still proceed. Child completion carries the domain outcome and selected
-notification snapshot in one event. The process installs the snapshot,
-recomputes the resource, frees the slot, then returns or discards the outcome.
+Each ready workspace executes one active command at a time and queues up to
+eight waiting commands in FIFO order (`MAX_QUEUED_COMMANDS = 8`); a tenth
+concurrent command for that workspace returns busy while other workspaces
+proceed independently. `_prune_cancelled_queued_commands` runs synchronously at
+admission, promotion, and detach so a canceled waiter never blocks a same-turn
+replacement or promotes a canceled write. Child completion carries the domain
+outcome and selected notification snapshot in one event. The process installs
+the snapshot, recomputes the resource, promotes the next uncancelled queued
+command (or frees `active_command`), then returns or discards the outcome.
 
 ### Cancellation is an ordering boundary, not transaction evidence
 
@@ -344,8 +379,8 @@ therefore use the same MCP path. The server has no backend-specific branch
 after resolution.
 
 There is no process-wide request bucket. A burst of reads of the cached
-resource cannot exhaust admission for a valid tool. Per-workspace busy slots
-and the resident cap still bound concurrent ownership.
+resource cannot exhaust admission for a valid tool. Bounded per-workspace
+command queues (`1 + 8`) and the resident cap still bound concurrent ownership.
 
 Storage access is the security boundary. A continuity token selects an
 identity; it is not a credential, access-control token, or added security
@@ -393,7 +428,8 @@ Configuring this path is not evidence that a PyPI version has been published.
   every backend handle derived from it.
 - All cross-thread payloads use queues; wakes never carry shared mutable
   command state. Validated JSON arrays are copied to tuples before enqueue.
-- Identity-using tool calls always carry workspace plus token. Detach alone
+- Identity-using tool calls carry workspace plus token unless satisfied by
+  explicit `--workspace` and `--token`/`--as` launch defaults. Detach alone
   is workspace-only because it removes process-local state.
 - Eager attach and lazy first use share one ensure lifecycle and one retained
   owner. Do not add a transient client path or an attach-required fallback.
@@ -512,6 +548,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md`
 - retired: 2026-08-18-mcp-windows-resource-timeout-budget-plan — source `7930b25`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-08-17-mcp-resource-seed-lifecycle-plan — source `6aa0f74`; see the ledger in `docs/plans/README.md`.
 - retired: 2026-08-17-mcp-tools-seed-lifecycle-plan — source `4b88b8d`; see the ledger in `docs/plans/README.md`.

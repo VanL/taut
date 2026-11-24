@@ -97,10 +97,13 @@ def _ensure_initialized_schema(
     """Install Taut state while retaining SQLite target context in errors."""
 
     try:
-        return SqlSidecarTautState(
+        created = SqlSidecarTautState(
             queue,
             dialect_for_taut_target(target),
         ).ensure_schema()
+        if created and db_file is not None:
+            queue.has_pending()
+        return created
     except RuntimeError as exc:
         if db_file is None:
             raise

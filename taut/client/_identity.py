@@ -70,33 +70,57 @@ class IdentityMixin(_ClientBase):
             self.last_created_member = last_created_member
             self.last_candidates = last_candidates
 
-    def whoami(self, *, explain: bool = False) -> Member:
-        resolved = self._resolve_member(
-            create=False,
-            _touch_activity=False,
-            _heal_claim=False,
-            _require_capture=explain,
-        )
+    def whoami(
+        self,
+        *,
+        explain: bool = False,
+        include_token: bool = False,
+    ) -> Member:
+        if not isinstance(explain, bool):
+            raise TypeError("explain must be a bool")
+        if not isinstance(include_token, bool):
+            raise TypeError("include_token must be a bool")
+        last_created_member = self.last_created_member
+        last_candidates = self.last_candidates
         try:
-            row = self._require_member(resolved)
-        except UnrecognizedCallerError as exc:
-            if not explain or resolved.capture is None:
-                raise
-            raise UnrecognizedCallerError(
-                exc.message,
-                hints=exc.hints,
-                explain=identity.explain_capture(resolved.capture, "unrecognized"),
-            ) from exc
-        explanation: dict[str, Any] | None = None
-        if explain:
-            if resolved.capture is None:
-                raise AssertionError("identity explanation requires capture evidence")
-            explanation = identity.explain_capture(resolved.capture, resolved.rule)
-        return self._member_from_row(
-            row,
-            capture=resolved.capture,
-            explain=explanation,
-        )
+            resolved = self._resolve_member(
+                create=False,
+                _touch_activity=False,
+                _heal_claim=False,
+                _require_capture=explain,
+            )
+            try:
+                row = self._require_member(resolved)
+            except UnrecognizedCallerError as exc:
+                if not explain or resolved.capture is None:
+                    raise
+                raise UnrecognizedCallerError(
+                    exc.message,
+                    hints=exc.hints,
+                    explain=identity.explain_capture(resolved.capture, "unrecognized"),
+                ) from exc
+            stored_token: str | None = None
+            if include_token:
+                raw_token = row["token"]
+                if not isinstance(raw_token, str) or not raw_token:
+                    raise TokenError("selected member has no continuity token")
+                stored_token = raw_token
+            explanation: dict[str, Any] | None = None
+            if explain:
+                if resolved.capture is None:
+                    raise AssertionError(
+                        "identity explanation requires capture evidence"
+                    )
+                explanation = identity.explain_capture(resolved.capture, resolved.rule)
+            return self._member_from_row(
+                row,
+                capture=resolved.capture,
+                token=stored_token,
+                explain=explanation,
+            )
+        finally:
+            self.last_created_member = last_created_member
+            self.last_candidates = last_candidates
 
     def who(self, thread: str | None = None) -> list[Member]:
         resolved = self._resolve_member(

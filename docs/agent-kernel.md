@@ -43,6 +43,7 @@ Two modes: auto, or a continuity token.
 
 ```bash
 taut whoami --explain        # auto: the guess, and why
+taut whoami --show-token     # print your continuity token without side effects
 TAUT_TOKEN=taut-7f3k9q2m taut say dev "same member from anywhere"
 ```
 
@@ -52,7 +53,8 @@ TAUT_TOKEN=taut-7f3k9q2m taut say dev "same member from anywhere"
   the guess was outside its bounds; run that. `--as NAME` / `TAUT_AS`
   is a one-shot name selection for the current command, not a
   durable binding.
-- Continuity token: every member gets one at creation. Stash it in
+- Continuity token: every member gets one at creation (and can read
+  it back anytime via `taut whoami --show-token`). Stash it in
   agent state. It is the explicit "this is me" key across process
   churn, ssh, and containers. Continuity, not authentication.
 - A subagent that needs a separate identity must run as a distinct CLI

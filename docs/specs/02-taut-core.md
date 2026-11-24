@@ -1279,7 +1279,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean programmatic stop; 130 when stopped by SIGINT, after cleanup, with the one-line `taut: interrupted` diagnostic on stderr (SimpleBroker's `EXIT_INTERRUPTED` convention); 1 error; 2 unrecognized member / explicit thread or DM miss. An interrupt that lands before the watcher is constructed uses the same 130 and prints no traceback. |
 | `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
-| `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
+| `whoami [--explain] [--show-token]` | Resolved identity; with `--explain`, the evidence and rule; with `--show-token`, also includes the acting member's continuity token on stdout. Read-only selection ([IAN-3.3]). | 0 resolved; 1 error (incl. invalid or missing continuity token); 2 unrecognized |
 | `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current process claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
 | `summon PROVIDER_OR_NAME [THREAD ...]` | Provided by the separately installed `taut-summon` command package through [TAUT-8.6]. Without a compatible provider, exit 1 with a one-line install hint. Behavior lives in spec 04. | per spec 04 |
 | `dismiss NAME` | Provided by the same package and command interface; maps to Summon's stop operation. | per spec 04 |
@@ -1401,12 +1401,16 @@ exit classes apply equally to built-in and extension command adapters.
     (string or null); `whoami
     --explain` adds `explain` (object with the captured chain and the
     rule that matched; its internal layout is diagnostic, not a stable
-    contract);
+    contract); `whoami --show-token` adds `token` (the member's stored
+    continuity token string, or exits 1 if the member record has no stored
+    continuity token);
   - member **creation** (whichever verb caused it) emits one extra
     member-object line *first* — the normal member fields (including
     `persona` when supplied at creation) plus the one-time `token`
-    field and no `ts` — followed by the verb's primary object. The token never
-    appears in output again. Scripts must therefore select by field, not by line
+    field and no `ts` — followed by the verb's primary object. Aside from
+    that creation prelude, the token appears in CLI output only when
+    explicitly requested with `whoami --show-token` (or in a full workspace
+    `system dump`). Scripts must therefore select by field, not by line
     position, on paths that can create;
   - `init`: `db` (backend display target; a filesystem path for SQLite),
     `created` (bool: `true` iff this call committed the `taut_meta`
@@ -1603,8 +1607,11 @@ Summon re-summon.
 member through [IAN-3.3]'s read-only resolution. It raises the ordinary
 identity or token error when no selected member resolves. It does not create,
 heal, claim, touch activity, update anchor or fingerprint evidence, inspect
-unread state, or mutate membership or cursor state. `whoami()` uses this same
-read-only selection contract. Success or failure preserves the
+unread state, or mutate membership or cursor state. `TautClient.whoami(*,
+explain: bool = False, include_token: bool = False) -> Member` uses this same
+read-only selection contract (validating `bool` flags before resolution; when
+`include_token=True`, populating `Member.token` from the stored member row or
+raising `TokenError` when the row carries no continuity token). Success or failure preserves the
 client's existing `last_created_member` and `last_candidates` diagnostic
 objects exactly. The name is intentionally identity-oriented: continuity
 tokens are selectors, not credentials.
@@ -1634,15 +1641,21 @@ A persistent activity queue requested on a transient client belongs to that
 client's lazy BrokerSession scope and ends with `TautClient.close()` under
 [TAUT-3.4]. This does not make the client's ordinary operations persistent.
 
-`TautClient(..., inherit_environment_identity: bool = True)` controls only
-the constructor's fallback to the process-wide `TAUT_AS` and `TAUT_TOKEN`
-identity selectors. The default preserves the CLI and ordinary embedding
-behavior: a missing explicit selector may inherit its corresponding
-environment value. When false, the client ignores both environment variables
-and uses only the explicit `as_name=` and `token=` arguments. Storage
-selection, identity-resolution precedence, and all later identity semantics
-are unchanged. Long-lived multi-workspace embedders use false so one
-process-wide identity cannot override a workspace's explicit binding.
+`TautClient(..., inherit_environment_identity: bool = True, install_schema: bool =
+True)` controls constructor environment inheritance and schema installation.
+`inherit_environment_identity` controls only the constructor's fallback to the
+process-wide `TAUT_AS` and `TAUT_TOKEN` identity selectors: the default
+preserves CLI and ordinary embedding behavior, while `False` ignores both
+environment variables and uses only explicit `as_name=` and `token=` arguments
+so long-lived multi-workspace embedders cannot inherit a process-wide identity.
+`install_schema=True` preserves ordinary automatic sidecar schema installation
+on an existing target; `install_schema=False` validates `bool` and inspects
+SimpleBroker's metadata table and Taut's current sidecar schema version on a
+short-lived raw backend runner (qualified to the configured PostgreSQL schema on
+`postgres` so `search_path`'s `public` fallback cannot satisfy either check)
+before opening `Queue` or running broker setup,
+raising `NotInitializedError` without writing broker setup, schema migration, or
+sidecar DDL on an uninitialized or broker-only SQLite or PostgreSQL target.
 
 `joined_thread_names()` returns the acting member's current chat-thread names
 through read-only identity resolution. It does not update activity, record an
@@ -3235,6 +3248,14 @@ expression behavior.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
   stable actor per CLI read and uses broker timestamp metadata for count-free
   thread listings; also revises watch failure and debug contracts.
+
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
+  adds read-only `whoami --show-token` (`TautClient.whoami(...,
+  include_token=False)`), pre-setup non-installing `TautClient(...,
+  install_schema=False)`, optional launch-time `--workspace`/`--token`/`--as`
+  defaults and bounded per-workspace command queuing on `taut-mcp`, `#channel`
+  normalization across MCP schemas and `search`, and server-owned field-named
+  MCP schema diagnostics.
 
 - `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` — adds
   actor-free `onboard` (with `root`-contained preflight, `O_APPEND`

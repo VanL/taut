@@ -18,9 +18,17 @@ class WhoAmICommand:
             action="store_true",
             help="Include captured identity evidence and the rule that matched.",
         )
+        parser.add_argument(
+            "--show-token",
+            action="store_true",
+            help="Include the acting member's continuity token on stdout.",
+        )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        member = context.client().whoami(explain=args.explain)
+        member = context.client().whoami(
+            explain=args.explain,
+            include_token=args.show_token,
+        )
         emit_members(
             [member],
             json_output=context.json,

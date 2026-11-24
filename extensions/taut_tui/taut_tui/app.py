@@ -1454,6 +1454,9 @@ class TautApp(App[None]):
                 refresh_navigation=True,
             )
         elif invocation.path == ("whoami",):
+            if values.get("show_token"):
+                self._show_error("--show-token is CLI-only in the TUI.")
+                return True
             self._run_action(domain.show_identity(explain=bool(values.get("explain"))))
         else:
             return False

@@ -41,10 +41,13 @@ from taut.state import (
     ChannelRenameRow,
     MemberRow,
     MembershipRow,
+    NoSetupSQLRunner,
     SqlSidecarTautState,
     TautState,
     ThreadRow,
+    create_no_setup_runner,
     dialect_for_taut_target,
+    require_installed_taut_target,
 )
 
 from ._models import Member, Message
@@ -57,6 +60,21 @@ def _raise_invalid_project_config(
     """Re-raise a project-config parse or shape failure naming the file."""
 
     raise invalid_project_config_error(exc, project_config_name) from exc
+
+
+def _validate_client_init_arguments(
+    *,
+    db_path: str | Path | None,
+    broker_target: BrokerTarget | None,
+    broker_config: Config | None,
+    install_schema: bool,
+) -> None:
+    if not isinstance(install_schema, bool):
+        raise TypeError("install_schema must be a bool")
+    if (broker_target is None) != (broker_config is None):
+        raise ValueError("broker_target and broker_config must be supplied together")
+    if broker_target is not None and db_path is not None:
+        raise ValueError("broker_target cannot be combined with db_path")
 
 
 def _json_dumps(value: Any) -> str:
@@ -154,6 +172,8 @@ class _ClientBase(ABC):
     last_search_warnings: list[str]
     last_thread_display_names: dict[str, str]
     _meta_queue: Queue
+    _install_schema: bool
+    _no_setup_runner: NoSetupSQLRunner | None
     _persistent: bool
     _queue_cache: dict[str, Queue]
     _session: BrokerSession | None
@@ -175,13 +195,14 @@ class _ClientBase(ABC):
         identity_capture: identity.IdentityCapture | None = None,
         persistent: bool = False,
         inherit_environment_identity: bool = True,
+        install_schema: bool = True,
     ) -> None:
-        if (broker_target is None) != (broker_config is None):
-            raise ValueError(
-                "broker_target and broker_config must be supplied together"
-            )
-        if broker_target is not None and db_path is not None:
-            raise ValueError("broker_target cannot be combined with db_path")
+        _validate_client_init_arguments(
+            db_path=db_path,
+            broker_target=broker_target,
+            broker_config=broker_config,
+            install_schema=install_schema,
+        )
         self.config = load_config() if broker_config is None else broker_config
         self.target = self._resolve_target(db_path, broker_target=broker_target)
         reaction_config_path = (
@@ -195,6 +216,8 @@ class _ClientBase(ABC):
             self.as_name = as_name
             self.token = token
         self.identity_capture = identity_capture
+        self._install_schema = install_schema
+        self._no_setup_runner = None
         self._persistent = persistent
         self._queue_cache: dict[str, Queue] = {}
         self._session = None
@@ -204,7 +227,32 @@ class _ClientBase(ABC):
         self.last_notification_warnings = []
         self.last_search_warnings = []
         self.last_thread_display_names = {}
+        self._initialize_state(install_schema=install_schema)
+
+    def _refresh_sqlite_schema_proof(self) -> None:
+        if (
+            isinstance(self.target, BrokerTarget)
+            and self.target.backend_name != "sqlite"
+        ):
+            return
+        if self._transient_meta_queue is not None:
+            self._transient_meta_queue.has_pending()
+            return
+        refresh_queue = Queue(
+            META_QUEUE_NAME,
+            db_path=self.target,
+            persistent=False,
+            config=self.config,
+        )
         try:
+            refresh_queue.has_pending()
+        finally:
+            refresh_queue.close()
+
+    def _initialize_state(self, *, install_schema: bool) -> None:
+        try:
+            if not install_schema:
+                require_installed_taut_target(self.target, self.config)
             self._meta_queue = self.queue(META_QUEUE_NAME)
             if self._meta_queue.session is None:
                 self._transient_meta_queue = self._meta_queue
@@ -212,7 +260,8 @@ class _ClientBase(ABC):
                 self._meta_queue,
                 dialect_for_taut_target(self.target),
             )
-            self._state.ensure_schema()
+            if install_schema and self._state.ensure_schema():
+                self._refresh_sqlite_schema_proof()
         except BaseException as exc:
             cleanup_exc = capture_cleanup_failure(None, self.close)
             if cleanup_exc is not None:
@@ -222,6 +271,11 @@ class _ClientBase(ABC):
     def queue(self, name: str, *, persistent: bool | None = None) -> Queue:
         """Return a queue bound to this client's resolved target."""
 
+        effective_target = (
+            replace(self.target, config_path=None, used_project_scope=False)
+            if not self._install_schema and isinstance(self.target, BrokerTarget)
+            else self.target
+        )
         use_persistent = self._persistent if persistent is None else persistent
         if use_persistent:
             cached = self._queue_cache.get(name)
@@ -229,10 +283,19 @@ class _ClientBase(ABC):
                 return cached
             if self._session is None:
                 self._session = BrokerSession.connect(
-                    self.target,
+                    effective_target,
                     config=self.config,
                 )
             queue = self._session.queue(name)
+        elif not self._install_schema:
+            if self._no_setup_runner is None:
+                self._no_setup_runner = create_no_setup_runner(self.target, self.config)
+            queue = Queue(
+                name,
+                db_path=effective_target,
+                runner=self._no_setup_runner,
+                config=self.config,
+            )
         else:
             queue = Queue(
                 name,
@@ -267,6 +330,15 @@ class _ClientBase(ABC):
                 failure = resource_failure
             else:
                 failure.add_note(f"additional cleanup failed: {resource_failure}")
+
+        if self._no_setup_runner is not None:
+            runner_failure = cleanup_failure(self._no_setup_runner.close_owned)
+            if runner_failure is None:
+                self._no_setup_runner = None
+            elif failure is None:
+                failure = runner_failure
+            else:
+                failure.add_note(f"additional cleanup failed: {runner_failure}")
 
         if failure is not None:
             raise failure
