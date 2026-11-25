@@ -78,3 +78,26 @@ def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
     assert "pipx inject --include-apps taut-chat taut-mcp" in mcp
     assert "uv run python bin/release.py mcp --dry-run" in root
     assert "taut_mcp/vX.Y.Z" in root
+
+
+def test_root_manifest_declares_taut_chat_console_alias_and_default_extra() -> None:
+    manifest = _manifest("pyproject.toml")
+    project = manifest["project"]
+    assert isinstance(project, dict)
+    scripts = project["scripts"]
+    assert scripts == {
+        "taut": "taut.cli:main",
+        "taut-chat": "taut.cli:main",
+    }
+    optional = project["optional-dependencies"]
+    assert isinstance(optional, dict)
+    summon_version = _manifest("extensions/taut_summon/pyproject.toml")["project"][  # type: ignore[index]
+        "version"
+    ]
+    mcp_version = _manifest("extensions/taut_mcp/pyproject.toml")["project"]["version"]  # type: ignore[index]
+    tui_version = _manifest("extensions/taut_tui/pyproject.toml")["project"]["version"]  # type: ignore[index]
+    assert optional["default"] == [
+        f"taut-summon>={summon_version}",
+        f"taut-mcp>={mcp_version}",
+        f"taut-tui>={tui_version}",
+    ]

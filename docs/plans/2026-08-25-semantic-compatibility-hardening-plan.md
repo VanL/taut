@@ -4,7 +4,7 @@ Status: active, with SC-1 superseded by the SimpleBroker 8.2 config migration.
 SC-2 through SC-8 remain active and unchanged. Rebased on `28376fe9bfb39210b570e4c91dca40abece0027d`
 after the SimpleBroker 8 and E2 landings. Fresh independent review found no
 blocker. The owner ratified the plan for implementation on 2026-08-28, and the
-exact spec delta is promoted in the working tree.
+exact spec delta was promoted at dcf5d0b.
 
 Class: 5. This plan changes normative configuration, schema, identity,
 diagnostic, and first-party provider-discovery contracts. Hardening is required

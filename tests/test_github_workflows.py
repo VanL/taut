@@ -1348,8 +1348,8 @@ def test_pg_workflow_is_reusable_and_runs_pg_helper() -> None:
     )
     assert "ruff_suppression_index.py" not in workflow
     assert (
-        "mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests"
-        in workflow
+        "mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests "
+        "extensions/taut_pg/tests/conftest.py" in workflow
     )
 
 

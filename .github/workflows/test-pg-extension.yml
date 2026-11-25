@@ -86,5 +86,5 @@ jobs:
       - name: Type check extension with mypy
         timeout-minutes: 10
         run: |
-          uv run --extra dev mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
+          uv run --extra dev mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_pg/tests/conftest.py --config-file pyproject.toml
 

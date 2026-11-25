@@ -2,7 +2,7 @@
 
 Date: 2026-08-19
 
-Status: draft (see `docs/plans/README.md` status index)
+Status: active (see `docs/plans/README.md` status index)
 
 Owner: Taut maintainers
 

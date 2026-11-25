@@ -489,16 +489,19 @@ requires-dist = [
     { name = "simplebroker", specifier = ">=8.8.1" },
     { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=4.8.1" },
     { name = "taut-mcp", marker = "extra == 'all'", editable = "../taut_mcp" },
+    { name = "taut-mcp", marker = "extra == 'default'", editable = "../taut_mcp" },
     { name = "taut-pg", marker = "extra == 'all'", editable = "../taut_pg" },
     { name = "taut-summon", marker = "extra == 'all'", editable = "." },
+    { name = "taut-summon", marker = "extra == 'default'", editable = "." },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "." },
     { name = "taut-tui", marker = "extra == 'all'", editable = "../taut_tui" },
+    { name = "taut-tui", marker = "extra == 'default'", editable = "../taut_tui" },
     { name = "taut-tui", marker = "extra == 'dev'", editable = "../taut_tui" },
     { name = "taut-tui", marker = "extra == 'tui'", editable = "../taut_tui" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=7.2.2.20260518" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20260724" },
 ]
-provides-extras = ["all", "tui", "dev"]
+provides-extras = ["all", "default", "tui", "dev"]
 
 [[package]]
 name = "taut-summon"

@@ -853,22 +853,12 @@ def _replace_optional_dependency_floor(
     return f"{text[:body_start]}{updated_body}{text[body_end:]}", True
 
 
-def sync_root_all_dependencies(
+def _sync_root_extra_floors(
     *,
-    root_pyproject_path: Path = PYPROJECT_PATH,
-    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
-    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
-    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
-    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+    extra: str,
+    owners: tuple[tuple[str, Path], ...],
+    root_pyproject_path: Path,
 ) -> dict[str, str]:
-    """Set each root all-extra floor from its owning extension manifest."""
-
-    owners = (
-        ("taut-pg", pg_pyproject_path),
-        ("taut-summon", summon_pyproject_path),
-        ("taut-mcp", mcp_pyproject_path),
-        ("taut-tui", tui_pyproject_path),
-    )
     text = root_pyproject_path.read_text(encoding="utf-8")
     updated_packages: dict[str, str] = {}
     for package, manifest_path in owners:
@@ -879,7 +869,7 @@ def sync_root_all_dependencies(
         )
         text, changed = _replace_optional_dependency_floor(
             text,
-            extra="all",
+            extra=extra,
             package=package,
             version=version,
         )
@@ -888,6 +878,48 @@ def sync_root_all_dependencies(
     if updated_packages:
         root_pyproject_path.write_text(text, encoding="utf-8")
     return updated_packages
+
+
+def sync_root_all_dependencies(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> dict[str, str]:
+    """Set each root all-extra floor from its owning extension manifest."""
+
+    return _sync_root_extra_floors(
+        extra="all",
+        owners=(
+            ("taut-pg", pg_pyproject_path),
+            ("taut-summon", summon_pyproject_path),
+            ("taut-mcp", mcp_pyproject_path),
+            ("taut-tui", tui_pyproject_path),
+        ),
+        root_pyproject_path=root_pyproject_path,
+    )
+
+
+def sync_root_default_dependencies(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> dict[str, str]:
+    """Set each root default-extra floor from its owning extension manifest."""
+
+    return _sync_root_extra_floors(
+        extra="default",
+        owners=(
+            ("taut-summon", summon_pyproject_path),
+            ("taut-mcp", mcp_pyproject_path),
+            ("taut-tui", tui_pyproject_path),
+        ),
+        root_pyproject_path=root_pyproject_path,
+    )
 
 
 def sync_root_pg_dev_dependency(
@@ -2682,6 +2714,11 @@ def _print_dry_run_root_dependency_notes(
         for target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET, TUI_TARGET)
     )
     print(f"dry-run: would ensure root all extra requires {all_floors}")
+    default_floors = ", ".join(
+        f"{target.package_name}>={read_manifest_version(target)}"
+        for target in (SUMMON_TARGET, MCP_TARGET, TUI_TARGET)
+    )
+    print(f"dry-run: would ensure root default extra requires {default_floors}")
 
 
 def _report_dependency_sync(
@@ -2717,6 +2754,14 @@ def _sync_root_release_dependencies() -> None:
             f"{package}>={version}" for package, version in all_updates.items()
         )
         print(f"Updated root all extra: {updates}")
+    default_updates = sync_root_default_dependencies()
+    if not default_updates:
+        print("Root default extra already matches first-party extension versions")
+    else:
+        updates = ", ".join(
+            f"{package}>={version}" for package, version in default_updates.items()
+        )
+        print(f"Updated root default extra: {updates}")
     tui_root_updates = sync_root_tui_dependencies()
     if not tui_root_updates:
         print("Root TUI and dev extras already match taut-tui")

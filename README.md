@@ -87,7 +87,7 @@ default, or a few machines through the Postgres extension.
   expose `--json` (ndjson) output; the full-screen TUI and MCP use their native
   human and protocol transports. Agents are recognized automatically (see
   below).
-- **Human-first full-screen TUI** — install `taut-chat[tui]` and run
+- **Human-first full-screen TUI** — install `taut-chat[default]` or `taut-chat[tui]` and run
   `taut tui` for transcript-first navigation, native actions and forms,
   vi-like plus conventional keys, mouse focus, and state-preserving reflow.
 - **Real history** — ordinary reads never consume messages. Reading moves
@@ -130,25 +130,31 @@ default, or a few machines through the Postgres extension.
 
 ## Installation
 
-The product, import package, and command are still named Taut and `taut`. The
+The product, import package, and canonical command are named Taut and `taut`
+(the core distribution also installs a `taut-chat` console alias so
+`uvx taut-chat` and `pipx run taut-chat` invoke the same CLI directly). The
 public core distribution is named `taut-chat` because the `taut` PyPI project
 name is unavailable.
 
-For command-line use, install either the core application or the complete
-first-party extension bundle with `pipx`:
+For command-line use, install the minimal core application, the local
+SQLite-ready `default` bundle (`taut-summon`, `taut-mcp`, `taut-tui`), or the
+complete `all` bundle (adding `taut-pg`) with `pipx`:
 
 ```bash
 pipx install taut-chat
-# or include the human-first TUI
+# or include Summon, MCP, and the human-first TUI (no PostgreSQL driver)
+pipx install 'taut-chat[default]'
+# or include only the human-first TUI
 pipx install 'taut-chat[tui]'
-# or
+# or include every first-party extension including PostgreSQL
 pipx install 'taut-chat[all]'
 taut --help
 ```
 
-The pipx environment is consequently named `taut-chat`, even though the
-installed executable is `taut`. The `all` bundle makes Postgres, `taut summon`,
-`taut dismiss`, `taut mcp`, and `taut tui` available through that primary executable. Each
+The pipx environment is consequently named `taut-chat`, exposing both `taut`
+and `taut-chat`. The `default` bundle makes `taut summon`, `taut dismiss`,
+`taut mcp`, and `taut tui` available for local SQLite workspaces; `all` adds
+Postgres support (`taut-pg`). Each
 extension remains directly installable. To additionally expose the supported
 standalone `taut-summon` and `taut-mcp` convenience commands:
 
@@ -245,8 +251,8 @@ project root and run `taut init`. The explicit `TAUT_BACKEND*` settings are the
 no-project-file backend door. `TAUT_DB`, `--db`, and `db_path=` remain
 filesystem path selectors. Extensions use their own tags (`taut_pg/vX.Y.Z`,
 `taut_summon/vX.Y.Z`), so their versions do not generally have to
-match the core package version; the first PyPI publication is one
-coordinated version across all five distributions.
+match the core package version; coordinated `bin/release.py all --version X.Y.Z`
+batches publish synchronized versions across all five distributions.
 
 SimpleBroker 8 upgrades SQL targets from schema 5 to schema 6 and cannot share
 a target with v7 clients afterward. Treat this as a downtime cutover: stop all
@@ -324,9 +330,8 @@ Hosts can also pass optional launch defaults (`--workspace DIR`, plus
 `--token TOKEN` or `--as NAME`) so single-project or named-agent MCP
 registrations omit `workspace`/`token` on ordinary calls while keeping
 explicit per-call overrides available.
-The package is wired into the coordinated PyPI and immutable GitHub
-Release path; that configuration does not itself mean a release has
-been published.
+The package ships on PyPI as `taut-mcp` through the repository's coordinated
+Trusted Publishing and immutable GitHub Release pipeline.
 
 Installed, it registers the primary `taut mcp` launch path. The separately
 exposable `taut-mcp` script is a supported convenience alias over the same
@@ -374,7 +379,7 @@ $ taut watch
 $ taut log general -t --limit 1
 ── general ──────────────────────────────────────
   1837025672140161024  09:15 claude  yes. what broke?
-$ taut reply general 1837025672140161024 "moving this to a thread"
+$ taut reply 1837025672140161024 "moving this to a thread"
 ```
 
 Pipes work where you'd expect:
@@ -587,7 +592,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut leave THREAD` | Leave a thread; history stays |
 | `taut set name NAME` | Change your current display/routing name; old messages keep the old name |
 | `taut say THREAD\|@NAME\|DM_HANDLE [TEXT\|-] [--join]` | Post to a channel, sub-thread, person-addressed DM, or existing stable DM (stdin with `-` or a pipe); `--join` auto-joins/creates a top-level channel before posting; only `@NAME` may create a DM |
-| `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
+| `taut reply [THREAD] MSG_ID [TEXT\|-]` | Reply in a sub-thread of top-level channel message `MSG_ID` (optionally scoping to `THREAD`), creating it on first reply |
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
 | `taut message react MSG_ID REACTION` | Advance seen state and best-effort broadcast a consumable reaction pointer to the message's current non-actor audience |
@@ -702,7 +707,7 @@ a fenced coordination block in `AGENTS.md` / `CLAUDE.md`, and append default
 SQLite/lock lines to existing `.gitignore` / `.dockerignore` files (without
 creating absent ignore files). Pass `taut onboard --mcp` to add `"taut":
 {"command": "taut", "args": ["mcp"]}` to `.mcp.json` (the `taut-mcp` package is
-installed separately or via `taut-chat[all]`, and current MCP tool calls pass
+installed separately or via `taut-chat[default]` / `taut-chat[all]`, and current MCP tool calls pass
 explicit `workspace` and continuity `token` inputs per
 [spec 05](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md)).
 Any agent can print the full protocol reference directly from an installed
@@ -737,19 +742,24 @@ from taut import (
     TautClient,
 )
 
-client = TautClient()  # finds .taut.db like git finds .git
-# (or TautClient(db_path="…"))
-client.join("general")
-channel: Channel = client.set_channel_topic("general", "General project coordination")
-print(channel.topic, channel.topic_updated_by_name)
-message = client.say("general", "build finished: 312 passed")
-print(message.ts)
-shown = client.show_message(str(message.ts))  # peek; advances seen through it
-reaction: MessageReaction = client.react_to_message(
-    str(message.ts), "ack"
-)  # requires another current member; best-effort pointer fanout
-print(reaction.audience_count)
-deleted: MessageDeletion = client.delete_message(str(message.ts))
+with TautClient() as client:  # finds .taut.db like git finds .git (or TautClient(db_path="…"))
+    client.join("general")
+    channel: Channel = client.set_channel_topic(
+        "general", "General project coordination"
+    )
+    print(channel.topic, channel.topic_updated_by_name)
+    message = client.say("general", "build finished: 312 passed")
+    print(message.ts)
+    reply = client.reply(None, str(message.ts), "logs archived")
+    print(reply.thread)
+    shown = client.show_message(str(message.ts))  # peek; advances seen through it
+    reaction: MessageReaction = client.react_to_message(
+        str(message.ts), "ack"
+    )  # requires another current member; best-effort pointer fanout
+    print(reaction.audience_count)
+    deleted: MessageDeletion = client.delete_message(str(message.ts))
+
+client = TautClient()
 
 for msg in client.read(limit=100):  # up to 100 per joined thread; advances cursors
     print(msg.thread, msg.from_id, msg.from_name, msg.text)
@@ -1081,7 +1091,7 @@ uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/t
 uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests
 uv run --project extensions/taut_tui --extra dev ruff check extensions/taut_tui/taut_tui extensions/taut_tui/tests
 uv run --project extensions/taut_tui --extra dev ruff format --check extensions/taut_tui/taut_tui extensions/taut_tui/tests
-uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
+uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_pg/tests/conftest.py --config-file pyproject.toml
 # separate run: each extension's tests carry a top-level conftest module,
 # and one mypy invocation cannot hold two modules named `conftest`
 uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
@@ -1126,9 +1136,9 @@ the package's top-level PyPI Trusted Publisher, verifies PyPI filenames and
 SHA-256 digests, and only then publishes the GitHub Release as immutable. It
 does not rebuild.
 
-Before the first real release, enable immutable GitHub Releases and create a
-`pypi` environment whose custom tag policies are exactly `v*`, `taut_pg/v*`,
-`taut_summon/v*`, `taut_mcp/v*`, and `taut_tui/v*`. Configure five PyPI Trusted Publishers
+Repository release configuration requires immutable GitHub Releases and a
+`pypi` environment whose custom tag policies are `v*`, `taut_pg/v*`,
+`taut_summon/v*`, `taut_mcp/v*`, and `taut_tui/v*`, paired with five PyPI Trusted Publishers
 for repository `VanL/taut`, environment `pypi`, and the exact top-level
 workflow for each distribution:
 

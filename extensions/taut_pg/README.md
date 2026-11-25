@@ -33,10 +33,10 @@ server extension.
 
 ## Installation
 
-The core distribution is `taut-chat`; it still installs the `taut` command and
-import package. `taut-pg` keeps its own distribution name and
-`taut_pg/vX.Y.Z` tag stream. Once the first coordinated PyPI release is
-published:
+The core distribution is `taut-chat`; it installs the `taut` and `taut-chat`
+commands and the `taut` import package. `taut-pg` keeps its own distribution
+name and `taut_pg/vX.Y.Z` tag stream. Install via `pipx install 'taut-chat[all]'`
+or inject alongside core:
 
 ```bash
 pipx install taut-chat
@@ -77,8 +77,8 @@ taut join general
 
 `taut init` initializes the configured schema and tables; it does not
 provision the database. `taut init --json` reports `db` as the resolved
-backend display target, and for Postgres `created` is `false` because
-Taut has no public backend creation signal.
+backend display target, with `created: true` on first sidecar initialization of
+that PostgreSQL schema and `false` when Taut sidecar state is already installed.
 
 `TAUT_DB`, `--db`, and `db_path=` remain filesystem path selectors. Use
 `.taut.toml` to select Postgres.

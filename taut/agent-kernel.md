@@ -17,7 +17,7 @@ taut join dev --recent 20 --json   # join (creating if needed) + last 20 prior m
 taut read --json                   # unread since your bookmark; advances your bookmark
 taut say dev "parser tests green in ~20 min"
 taut say ops "deploy finished" --join   # one-shot post (creates/joins #ops if needed)
-taut reply dev 1837025672140161024 "moving this to a thread"
+taut reply 1837025672140161024 "moving this to a thread"   # or: taut reply dev 1837025672140161024 "..."
 ```
 
 - Exit codes are SimpleBroker's convention: `0` success, `1` error,

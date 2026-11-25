@@ -118,7 +118,14 @@ availability has already been filtered by the action registry.
 
 `TautApp` is the thin state adapter. It projects selected navigation, active
 target and channel kind, current-message membership, selected search result,
-and the active target's nonblank draft into the pure facts. The palette and
+and the active target's nonblank draft into the pure facts. Populating or
+refreshing `#navigation-list` (`_set_navigation_actions`) selects the first
+available match among the prior highlighted row (carrying `ActionId` rows only
+across already-populated lists so first-run empty states transition to
+`#general`), `selected_navigation`, `active_conversation`, `"general"`, or index
+`0` inside `with navigation.prevent(TautOptionList.OptionHighlighted):`,
+excluding `ActionId` (`StrEnum`) targets from `selected_navigation` and never
+auto-opening a conversation watcher. The palette and
 central dispatcher consume the evaluator; dispatch checks after any
 route-supplied target projection and before forms, shell actions, or domain
 handlers. Existing mouse-control visibility stays presentation policy, while
@@ -714,6 +721,11 @@ neither diagnose historical S4 nor close its release gate without the plan's
 separate causal proof or explicit owner disposition.
 
 ## Related Plans
+
+- `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md` —
+  highlights the default or retained navigation row across startup and refreshes
+  without auto-opening a watcher, supports optional-`THREAD` `:reply`, and
+  documents `taut-chat[default]` plus the absent-`tui` install hint.
 
 - `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
   extends `SummonStartScreen`, `TuiSummonOperations.build_request`, and the

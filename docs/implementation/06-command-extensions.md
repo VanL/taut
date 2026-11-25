@@ -141,9 +141,10 @@ storage client, driver, provider adapters, PTY code, or start any work.
 
 Each entry-point key must equal `CommandSpec.name`, and each command is one
 entry point. The distribution name and version come from installed metadata
-and become diagnostic provenance. Static built-ins report normalized owner
-`taut-chat`, even though their import package and console command remain
-`taut`. For reserved first-party names, the normalized extension distribution
+and become diagnostic provenance. Static built-ins report normalized owner `taut-chat`; the import package
+remains `taut`, and `taut-chat` installs both `taut` (canonical) and
+`taut-chat` (distribution-matching console alias) bound to `taut.cli:main`
+(alongside the `default` SQLite convenience extra and the full `all` extra). For reserved first-party names, the normalized extension distribution
 name is also the ownership selector. It is not an authentication mechanism;
 installed command code is already trusted in-process.
 The manifest and implementation modules must both be included in the built
@@ -287,7 +288,11 @@ not fall back to older code.
 
 Core retains `taut/commands/_summon_compat.py` only as the absent-extension
 install-hint path. It does not import or delegate to another Summon version.
-When synchronized current Summon is installed, its entry points win.
+When synchronized current Summon is installed, its entry points win. For the
+unreserved optional first-party `mcp` and `tui` verbs, `taut/commands/_dispatch.py`
+appends a one-line install hint (`taut-mcp` / `taut-tui` or `taut-chat[default]`)
+to `unknown command: <verb>` while keeping uninstalled extensions out of
+`CommandRegistry` and root help.
 
 There are two cached registry paths in CLI dispatch. `taut --version` uses
 neither. Direct execution of a known core built-in uses the static snapshot and
@@ -524,6 +529,8 @@ product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md`
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md`
 - retired: 2026-08-01-summon-rich-host-global-state-plan — source `1ad1b8d`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - retired: 2026-07-28-channel-topics-plan — source `3a1ae8e`; see the ledger in `docs/plans/README.md`.

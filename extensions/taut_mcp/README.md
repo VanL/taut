@@ -155,14 +155,16 @@ consuming or mutating call.
 ## Install and Run
 
 The extension distribution remains `taut-mcp`; its core dependency is the
-`taut-chat` distribution, which still provides `import taut` and the `taut`
-command. Installed MCP registers `taut mcp` as its primary extension path. The
-standalone `taut-mcp` executable is a supported convenience alias over the same
-process runner. The repository's coordinated PyPI and immutable GitHub Release
-path is configured, but configuring it does not publish a release. Once the
-first coordinated PyPI version is published:
+`taut-chat` distribution, which provides `import taut` plus the `taut` and
+`taut-chat` commands. Installed MCP registers `taut mcp` as its primary
+extension path (without this package, `taut mcp` exits 1 with an install hint
+and stays out of `taut --help`). The standalone `taut-mcp` executable is a
+supported convenience alias over the same process runner. Install via core's
+`default` or `all` extra:
 
 ```bash
+pipx install 'taut-chat[default]'
+# or include PostgreSQL support as well
 pipx install 'taut-chat[all]'
 taut mcp
 ```

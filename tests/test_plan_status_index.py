@@ -231,3 +231,36 @@ def test_current_repository_plan_status_index_passes() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_plan_status_index_ok_line_reports_derived_tier_counts(tmp_path: Path) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    rows = [
+        ("p1.md", "active", "no"),
+        ("p2.md", "promoted", "no"),
+        ("p3.md", "completed", "yes"),
+        ("p4.md", "completed", "no"),
+        ("p5.md", "superseded", "no"),
+        ("p6.md", "status-review", "no"),
+        ("p7.md", "retired-pending", "no"),
+    ]
+    for name, _status, _exemplar in rows:
+        (plans / name).write_text(f"# {name}\n", encoding="utf-8")
+    index = plans / "README.md"
+    _write_index(index, rows)
+
+    result = _run(index, plans)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "plan status index OK (" in result.stdout
+    assert "7 total:" in result.stdout
+    assert "active 1" in result.stdout
+    assert "promoted 1" in result.stdout
+    assert "status-review 1" in result.stdout
+    assert "completed 2" in result.stdout
+    assert "superseded 1" in result.stdout
+    assert "retired-pending 1" in result.stdout
+    assert (
+        "harvest candidates (completed/superseded non-exemplars): 2)" in result.stdout
+    )

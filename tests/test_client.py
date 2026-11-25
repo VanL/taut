@@ -7044,3 +7044,48 @@ def test_search_normalizes_hash_channel_selectors_and_rejects_malformed(
                 alice.search("needle", channels=[bad_channel])
     finally:
         alice.close()
+
+
+def test_client_context_manager_closes_handles_and_preserves_body_exceptions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+
+    with TautClient(db_path=db_path, as_name="van", persistent=True) as persistent_inst:
+        assert persistent_inst._persistent is True
+        persistent_inst.join("general")
+        assert persistent_inst._session is not None
+    assert persistent_inst._session is None
+
+    with TautClient(db_path=db_path, as_name="van") as ephemeral_inst:
+        assert ephemeral_inst._persistent is False
+        assert ephemeral_inst._transient_meta_queue is not None
+    assert ephemeral_inst._transient_meta_queue is None
+
+    raising_inst: TautClient | None = None
+    with (
+        pytest.raises(ValueError, match="^body boom$"),
+        TautClient(db_path=db_path, as_name="van", persistent=True) as inst,
+    ):
+        raising_inst = inst
+        inst.join("general")
+        assert inst._session is not None
+        raise ValueError("body boom")
+    assert raising_inst is not None
+    assert raising_inst._session is None
+
+    with (
+        pytest.raises(ValueError, match="^body boom with close failure") as exc_info,
+        TautClient(db_path=db_path, as_name="van") as broken_close_inst,
+    ):
+        monkeypatch.setattr(
+            broken_close_inst,
+            "close",
+            lambda: (_ for _ in ()).throw(RuntimeError("close boom")),
+        )
+        raise ValueError("body boom with close failure")
+    assert exc_info.value.args == ("body boom with close failure",)
+    notes = getattr(exc_info.value, "__notes__", [])
+    assert any("client context cleanup failed: close boom" in note for note in notes)

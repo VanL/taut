@@ -30,6 +30,10 @@ CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 MCP_STAGE_TIMEOUT_SECONDS = 20.0
 MCP_SHUTDOWN_TIMEOUT_SECONDS = 20.0
 MATRIX_PYTHON_MIN_MINOR = 12
+EXPECTED_CORE_CONSOLE_SCRIPTS = (
+    ("taut", "taut.cli:main"),
+    ("taut-chat", "taut.cli:main"),
+)
 EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
     ("dismiss", "taut_summon.command_manifest:dismiss"),
     ("summon", "taut_summon.command_manifest:summon"),
@@ -53,6 +57,7 @@ class WheelMetadata:
     requirements: tuple[str, ...]
     command_entry_points: tuple[tuple[str, str], ...]
     sha256: str
+    console_scripts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,33 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_wheel_entry_points(
+    wheel: zipfile.ZipFile, path: Path
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    candidates = [
+        name
+        for name in wheel.namelist()
+        if name.endswith(".dist-info/entry_points.txt")
+    ]
+    if len(candidates) > 1:
+        _fail(f"wheel must contain at most one .dist-info/entry_points.txt: {path}")
+    if not candidates:
+        return (), ()
+    parser = _CaseSensitiveConfigParser(interpolation=None)
+    parser.read_string(wheel.read(candidates[0]).decode())
+    commands = (
+        tuple(sorted(parser.items("taut.commands")))
+        if parser.has_section("taut.commands")
+        else ()
+    )
+    scripts = (
+        tuple(sorted(parser.items("console_scripts")))
+        if parser.has_section("console_scripts")
+        else ()
+    )
+    return commands, scripts
+
+
 def _read_wheel_metadata(path: Path) -> WheelMetadata:
     try:
         with zipfile.ZipFile(path) as wheel:
@@ -113,22 +145,9 @@ def _read_wheel_metadata(path: Path) -> WheelMetadata:
             if len(candidates) != 1:
                 _fail(f"wheel must contain exactly one .dist-info/METADATA: {path}")
             message = BytesParser().parsebytes(wheel.read(candidates[0]))
-            entry_point_candidates = [
-                name
-                for name in wheel.namelist()
-                if name.endswith(".dist-info/entry_points.txt")
-            ]
-            if len(entry_point_candidates) > 1:
-                _fail(
-                    "wheel must contain at most one .dist-info/entry_points.txt: "
-                    f"{path}"
-                )
-            command_entry_points: tuple[tuple[str, str], ...] = ()
-            if entry_point_candidates:
-                parser = _CaseSensitiveConfigParser(interpolation=None)
-                parser.read_string(wheel.read(entry_point_candidates[0]).decode())
-                if parser.has_section("taut.commands"):
-                    command_entry_points = tuple(sorted(parser.items("taut.commands")))
+            command_entry_points, console_scripts = _parse_wheel_entry_points(
+                wheel, path
+            )
     except (
         OSError,
         UnicodeDecodeError,
@@ -148,6 +167,7 @@ def _read_wheel_metadata(path: Path) -> WheelMetadata:
         requirements=tuple(message.get_all("Requires-Dist", [])),
         command_entry_points=command_entry_points,
         sha256=_sha256(path),
+        console_scripts=console_scripts,
     )
 
 
@@ -173,6 +193,37 @@ def _require_exact_dependency(
         _fail(
             f"{metadata.name} {metadata.version} METADATA must contain exactly one "
             f"unmarked Requires-Dist {requirement!r}; found: {rendered}"
+        )
+
+
+def _validate_wheel_entry_points(core: WheelMetadata, summon: WheelMetadata) -> None:
+    if core.console_scripts != EXPECTED_CORE_CONSOLE_SCRIPTS:
+        rendered = (
+            ", ".join(f"{name}={target}" for name, target in core.console_scripts)
+            or "<none>"
+        )
+        _fail(
+            "new core wheel must publish console_scripts taut and taut-chat bound to "
+            f"taut.cli:main; found: {rendered}"
+        )
+    if core.command_entry_points:
+        rendered = ", ".join(
+            f"{name}={target}" for name, target in core.command_entry_points
+        )
+        _fail(
+            "new core wheel must not publish taut.commands entry points; "
+            f"found: {rendered}"
+        )
+    if summon.command_entry_points != EXPECTED_SUMMON_COMMAND_ENTRY_POINTS:
+        rendered = (
+            ", ".join(
+                f"{name}={target}" for name, target in summon.command_entry_points
+            )
+            or "<none>"
+        )
+        _fail(
+            "new Summon wheel must publish exactly the summon and dismiss "
+            f"taut.commands entry points; found: {rendered}"
         )
 
 
@@ -214,25 +265,7 @@ def _validate_new_metadata(
             "new core and MCP wheels must publish the same single unmarked "
             "SimpleBroker requirement"
         )
-    if core.command_entry_points:
-        rendered = ", ".join(
-            f"{name}={target}" for name, target in core.command_entry_points
-        )
-        _fail(
-            "new core wheel must not publish taut.commands entry points; "
-            f"found: {rendered}"
-        )
-    if summon.command_entry_points != EXPECTED_SUMMON_COMMAND_ENTRY_POINTS:
-        rendered = (
-            ", ".join(
-                f"{name}={target}" for name, target in summon.command_entry_points
-            )
-            or "<none>"
-        )
-        _fail(
-            "new Summon wheel must publish exactly the summon and dismiss "
-            f"taut.commands entry points; found: {rendered}"
-        )
+    _validate_wheel_entry_points(core, summon)
 
 
 def _clean_environment() -> dict[str, str]:
@@ -524,6 +557,18 @@ def _case_new_core(*, wheel: Path, work: Path, env: dict[str, str], uv: str) -> 
         name="01-new-core", work=work, env=env, uv=uv
     )
     _install(python=python, artifacts=(wheel,), cwd=case_root, env=env, uv=uv)
+    taut_chat_console = python.with_name(
+        "taut-chat.exe" if os.name == "nt" else "taut-chat"
+    )
+    if not taut_chat_console.is_file():
+        _fail("installed taut-chat console entry point is missing")
+    version_out = _run(
+        [str(taut_chat_console), "--version"],
+        cwd=case_root,
+        env=env,
+    )
+    if not version_out.stdout.startswith("taut "):
+        _fail(f"unexpected taut-chat --version output: {version_out.stdout!r}")
     probe = _run_python_probe(
         python=python,
         cwd=case_root,

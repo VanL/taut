@@ -27,6 +27,8 @@ from taut._exceptions import (
     BlankMessageError,
     EmptyResultError,
     MembershipError,
+    MessageIdNotFoundError,
+    MessageIdResolutionError,
     NotFoundError,
     TautError,
     TokenError,
@@ -1790,3 +1792,52 @@ def test_project_whoami_include_token_install_schema_and_hash_search_contract(
         ] == [msg.ts]
     finally:
         van.close()
+
+
+def test_project_optional_thread_reply_contract(taut_project: Path) -> None:
+    TautClient.init()
+    with (
+        TautClient(as_name="alice") as alice,
+        TautClient(as_name="bob") as bob,
+    ):
+        alice.join("general")
+        bob.join("general")
+        alice.join("ops")
+        origin = alice.say("general", "top-level parent")
+        ops_origin = alice.say("ops", "ops parent")
+        dm_origin = alice.say("@bob", "private dm parent")
+
+        # [TAUT-6.5] blank filtering precedes msg_id validation and lookup.
+        with pytest.raises(BlankMessageError):
+            bob.reply(None, "not-a-valid-id", "\u200b")
+        with pytest.raises(BlankMessageError):
+            bob.reply("general", "not-a-valid-id", "   ")
+
+        with pytest.raises(TypeError):
+            bob.reply(None, origin.ts, "ack")  # type: ignore[arg-type]
+
+        for bad_id in ("12345", "9999999999999999999"):
+            with pytest.raises(MessageIdResolutionError) as none_exc:
+                bob.reply(None, bad_id, "ack")
+            assert type(none_exc.value) is MessageIdResolutionError
+            with pytest.raises(MessageIdResolutionError) as explicit_exc:
+                bob.reply("general", bad_id, "ack")
+            assert type(explicit_exc.value) is MessageIdResolutionError
+
+        reply_msg = bob.reply(None, str(origin.ts), "cross-channel ack")
+        assert reply_msg.thread == f"general.{origin.ts}"
+        assert reply_msg.text == "cross-channel ack"
+        inbox_items = alice.inbox()
+        assert any(
+            item.type == "reply" and item.thread == f"general.{origin.ts}"
+            for item in inbox_items
+        )
+
+        for unreachable_id in (
+            "1000000000000000000",
+            str(ops_origin.ts),
+            str(reply_msg.ts),
+            str(dm_origin.ts),
+        ):
+            with pytest.raises(MessageIdNotFoundError):
+                bob.reply(None, unreachable_id, "unreachable")

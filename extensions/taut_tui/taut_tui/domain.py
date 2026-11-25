@@ -183,7 +183,7 @@ class TuiDomainActions:
 
     def reply_message(
         self,
-        channel: str,
+        channel: str | None,
         message_id: str | int,
         text: str,
     ) -> Future[Message]:

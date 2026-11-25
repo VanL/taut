@@ -436,6 +436,11 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
                 '    "taut-mcp>=0.5.0",',
                 '    "taut-tui>=0.5.0",',
                 "]",
+                "default = [",
+                '    "taut-summon>=0.5.0",',
+                '    "taut-mcp>=0.5.0",',
+                '    "taut-tui>=0.5.0",',
+                "]",
                 "tui = [",
                 '    "taut-tui>=0.5.0",',
                 "]",
@@ -628,6 +633,10 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
             'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
             "[project.optional-dependencies]\nall = [\n"
             '    "taut-pg>=0.5.0",\n'
+            '    "taut-summon>=0.5.0",\n'
+            '    "taut-mcp>=0.5.0",\n'
+            '    "taut-tui>=0.5.0",\n]\n'
+            "default = [\n"
             '    "taut-summon>=0.5.0",\n'
             '    "taut-mcp>=0.5.0",\n'
             '    "taut-tui>=0.5.0",\n]\n'
@@ -990,6 +999,81 @@ def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> No
     )
 
 
+def test_sync_root_default_dependencies_updates_only_default_extra(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    root_pyproject_path.write_text(
+        "[project]\n"
+        'name = "taut-chat"\n'
+        'version = "0.9.12"\n\n'
+        "[project.optional-dependencies]\n"
+        "all = [\n"
+        '    "taut-pg>=0.1.0",\n'
+        '    "taut-summon>=0.1.0",\n'
+        '    "taut-mcp>=0.1.0",\n'
+        '    "taut-tui>=0.1.0",\n'
+        "]\n"
+        "default = [\n"
+        '    "taut-summon>=0.1.0",\n'
+        '    "taut-mcp>=0.1.0",\n'
+        '    "taut-tui>=0.1.0",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    manifests: dict[str, Path] = {}
+    for name, version in (
+        ("summon", "0.6.0"),
+        ("mcp", "0.7.0"),
+        ("tui", "0.8.0"),
+    ):
+        path = tmp_path / f"{name}.toml"
+        path.write_text(
+            f'[project]\nname = "taut-{name}"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+        manifests[name] = path
+
+    updated = release.sync_root_default_dependencies(
+        root_pyproject_path=root_pyproject_path,
+        summon_pyproject_path=manifests["summon"],
+        mcp_pyproject_path=manifests["mcp"],
+        tui_pyproject_path=manifests["tui"],
+    )
+
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    assert updated == {
+        "taut-summon": "0.6.0",
+        "taut-mcp": "0.7.0",
+        "taut-tui": "0.8.0",
+    }
+    assert (
+        "all = [\n"
+        '    "taut-pg>=0.1.0",\n'
+        '    "taut-summon>=0.1.0",\n'
+        '    "taut-mcp>=0.1.0",\n'
+        '    "taut-tui>=0.1.0",\n'
+        "]"
+    ) in text
+    assert (
+        "default = [\n"
+        '    "taut-summon>=0.6.0",\n'
+        '    "taut-mcp>=0.7.0",\n'
+        '    "taut-tui>=0.8.0",\n'
+        "]"
+    ) in text
+    assert (
+        release.sync_root_default_dependencies(
+            root_pyproject_path=root_pyproject_path,
+            summon_pyproject_path=manifests["summon"],
+            mcp_pyproject_path=manifests["mcp"],
+            tui_pyproject_path=manifests["tui"],
+        )
+        == {}
+    )
+
+
 def test_sync_root_tui_dependencies_updates_tui_and_dev_extras(tmp_path: Path) -> None:
     release = _load_release_module()
     root_pyproject_path = tmp_path / "pyproject.toml"
@@ -1277,6 +1361,14 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         "sync_pg_tui_dev_dependency",
         record("tui-to-pg-dev", "0.8.8"),
     )
+    monkeypatch.setattr(
+        release,
+        "sync_root_default_dependencies",
+        record(
+            "extensions-to-root-default",
+            {"taut-summon": "0.8.8", "taut-mcp": "0.8.8", "taut-tui": "0.8.8"},
+        ),
+    )
 
     release._sync_root_release_dependencies()
 
@@ -1285,6 +1377,7 @@ def test_release_sync_updates_all_first_party_dependency_directions(
             "root-to-summon": 1,
             "pg-runtime-to-root-dev": 1,
             "extensions-to-root-all": 1,
+            "extensions-to-root-default": 1,
             "pg-to-root": 1,
             "summon-to-root": 1,
             "mcp-to-root": 1,

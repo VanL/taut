@@ -2,7 +2,7 @@
 
 Status: Implemented, including the post-review `ESC`-gating and symmetric
 keyboard-reset follow-ups; automated verification and independent review
-passed. Changes are uncommitted. The physical-terminal observation remains
+passed. Implementation landed at bd8ff4e and shipped in v0.9.9 (c894059). The physical-terminal observation remains
 pending and is explicitly waived for the owner-requested 0.9.9 release.
 
 Class: 5 (spec-changing) and risky under [DOM-5]: the change revises the

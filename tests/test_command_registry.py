@@ -1265,6 +1265,14 @@ def test_repeated_exact_value_globals_use_textual_last_value() -> None:
         (("--",), "usage: taut"),
         (("--wat", "whoami"), "unrecognized root option: --wat"),
         (("nosuchverb",), "unknown command: nosuchverb"),
+        (
+            ("tui",),
+            "unknown command: tui (install taut-tui or 'taut-chat[default]' to enable 'taut tui')",
+        ),
+        (
+            ("mcp",),
+            "unknown command: mcp (install taut-mcp or 'taut-chat[default]' to enable 'taut mcp')",
+        ),
         (("--db",), "argument --db: expected one value"),
     ],
 )
@@ -3638,7 +3646,7 @@ def test_registry_identity_not_found_paths_keep_exit_two(tmp_path: Path) -> None
     assert err == "thread not found: missing\n"
 
     class UnrelatedNotFoundClient(TautClient):
-        def reply(self, thread: str, msg_id: str, text: str) -> Any:
+        def reply(self, thread: str | None, msg_id: str, text: str) -> Any:
             nonlocal reply_called
             reply_called = True
             del thread, msg_id, text
@@ -3809,13 +3817,13 @@ def test_registry_reply_adds_usage_hint_only_for_message_id_failures(
     assert result == 1
     assert out == ""
     assert "full 19-digit message id" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in err
 
     result, out, err = _dispatch_static([*root, "general", "123", "child"])
     assert result == 1
     assert out == ""
     assert "full 19-digit message id" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in err
 
     result, out, err = _dispatch_static(
         [*root, "general", "1000000000000000000", "child"]
@@ -3823,7 +3831,7 @@ def test_registry_reply_adds_usage_hint_only_for_message_id_failures(
     assert result == 2
     assert out == ""
     assert "message not found: 1000000000000000000" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in err
 
     result, out, err = _dispatch_static([*root, "missing", "1234", "child"])
     assert result == 1
@@ -3847,7 +3855,7 @@ def test_registry_reply_renders_notification_warning_after_real_write(
         setup.close()
 
     class WarningAfterReplyClient(TautClient):
-        def reply(self, thread: str, msg_id: str, text: str) -> Any:
+        def reply(self, thread: str | None, msg_id: str, text: str) -> Any:
             message = super().reply(thread, msg_id, text)
             self.last_notification_warnings.append("injected reply warning")
             return message

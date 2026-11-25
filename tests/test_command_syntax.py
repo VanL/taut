@@ -243,3 +243,53 @@ def test_post_verb_global_is_not_extracted_from_local_option_value_slot() -> Non
     literal = parse_command_line("summon claude -- --help --version", syntax=syntax)
     assert literal.action is None
     assert literal.values["threads"] == ["--help", "--version"]
+
+
+def test_reply_syntax_supports_optional_thread_and_rejects_ambiguous_single_non_id() -> (
+    None
+):
+    from taut.commands.syntax import (
+        CommandSyntaxError,
+        command_nodes,
+        core_command_syntax,
+        format_command_syntax,
+        parse_command_line,
+    )
+
+    syntax = core_command_syntax()
+    reply_node = next(node for node in command_nodes(syntax) if node.path == ("reply",))
+    assert format_command_syntax(reply_node).startswith("reply [THREAD] MSG_ID [TEXT]")
+
+    three_arg = parse_command_line(
+        "reply general 1837025672140161024 hello", syntax=syntax
+    )
+    assert three_arg.values["thread"] == "general"
+    assert three_arg.values["msg_id"] == "1837025672140161024"
+    assert three_arg.values["text"] == "hello"
+
+    two_arg_text = parse_command_line("reply 1837025672140161024 hello", syntax=syntax)
+    assert "thread" not in two_arg_text.values
+    assert two_arg_text.values["msg_id"] == "1837025672140161024"
+    assert two_arg_text.values["text"] == "hello"
+
+    two_arg_digit_channel = parse_command_line(
+        "reply 2026 1837025672140161024", syntax=syntax
+    )
+    assert two_arg_digit_channel.values["thread"] == "2026"
+    assert two_arg_digit_channel.values["msg_id"] == "1837025672140161024"
+    assert "text" not in two_arg_digit_channel.values
+
+    one_arg_piped = parse_command_line("reply 1837025672140161024", syntax=syntax)
+    assert "thread" not in one_arg_piped.values
+    assert one_arg_piped.values["msg_id"] == "1837025672140161024"
+    assert "text" not in one_arg_piped.values
+
+    for bad_line in ("reply", "reply general", "reply 12345"):
+        with pytest.raises(CommandSyntaxError, match="missing required value: msg_id"):
+            parse_command_line(bad_line, syntax=syntax)
+
+    with pytest.raises(CommandSyntaxError, match="unexpected value: extra"):
+        parse_command_line(
+            "reply general 1837025672140161024 hi extra",
+            syntax=syntax,
+        )

@@ -1430,6 +1430,11 @@ all = [
     { name = "taut-summon" },
     { name = "taut-tui" },
 ]
+default = [
+    { name = "taut-mcp" },
+    { name = "taut-summon" },
+    { name = "taut-tui" },
+]
 dev = [
     { name = "build" },
     { name = "hypothesis" },
@@ -1465,16 +1470,19 @@ requires-dist = [
     { name = "simplebroker", specifier = ">=8.8.1" },
     { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=4.8.1" },
     { name = "taut-mcp", marker = "extra == 'all'", editable = "extensions/taut_mcp" },
+    { name = "taut-mcp", marker = "extra == 'default'", editable = "extensions/taut_mcp" },
     { name = "taut-pg", marker = "extra == 'all'", editable = "extensions/taut_pg" },
     { name = "taut-summon", marker = "extra == 'all'", editable = "extensions/taut_summon" },
+    { name = "taut-summon", marker = "extra == 'default'", editable = "extensions/taut_summon" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "extensions/taut_summon" },
     { name = "taut-tui", marker = "extra == 'all'", editable = "extensions/taut_tui" },
+    { name = "taut-tui", marker = "extra == 'default'", editable = "extensions/taut_tui" },
     { name = "taut-tui", marker = "extra == 'dev'", editable = "extensions/taut_tui" },
     { name = "taut-tui", marker = "extra == 'tui'", editable = "extensions/taut_tui" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=7.2.2.20260518" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20260724" },
 ]
-provides-extras = ["all", "tui", "dev"]
+provides-extras = ["all", "default", "tui", "dev"]
 
 [[package]]
 name = "taut-mcp"

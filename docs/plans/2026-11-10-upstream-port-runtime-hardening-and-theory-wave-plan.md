@@ -1,7 +1,7 @@
 # Upstream Port, Runtime Hardening, Python 3.12–3.15 Rotation, and Theory/Coalescing Wave Plan
 
 - **Date:** 2026-11-10
-- **Status:** promoted
+- **Status:** completed
 - **Class:** 5+P (Class 5 spec-changing across specs `01`, `02`, `03`, `04`, `07`, and `08` + Class 4 hardening triggers for load-bearing `simplebroker`/`simplebroker-pg` floor raises, Python support-window rotation from `3.11–3.14` to `3.12–3.15`, vendored Weft `MultiQueueWatcher` concurrency/signal synchronization, OS process-liveness/zombie classification across identity and Summon single-driver claims, and operator-owned dump file permissions + `+P` process-changing modifier for `agent-theory @ e6ac579` guidance/gate propagation, dynamic Ruff `0.17.4` rule-inventory enforcement, and authorized `[DOM-14]` lessons coalescing)
 - **Plan type:** implementation with spec revision, upstream porting, runtime bug remediation, agent-theory propagation, and authorized lessons coalescing
 - **Owner:** Taut engineering

@@ -158,13 +158,15 @@ has a confirmation path.
 The TUI implementation ships in the separate first-party distribution
 `taut-tui`, import package `taut_tui`. Textual is its required terminal
 framework and is not a core `taut-chat` runtime dependency. The convenience
-extras `taut-chat[tui]` and `taut-chat[all]` install `taut-tui`; they do not
-move its implementation or dependency ownership into core.
+extras `taut-chat[tui]`, `taut-chat[default]`, and `taut-chat[all]` install
+`taut-tui`; they do not move its implementation or dependency ownership into
+core.
 
 Normal imports, `taut --version`, root help, ordinary commands, and
 `taut tui --help` do not import Textual or initialize TUI state. Only actual
-TUI execution loads the framework. Without the extension, `tui` is an ordinary
-unknown command and root help does not list it. An incomplete `taut-tui`
+TUI execution loads the framework. Without the extension, root help does not
+list `tui`, and `taut tui` exits 1 as `unknown command: tui` with a one-line
+install hint naming `taut-tui` and `taut-chat[default]`. An incomplete `taut-tui`
 installation missing Textual produces one actionable reinstall diagnostic and
 no traceback. A broken installed Textual dependency is reported as the actual
 import failure, not mislabelled as a missing dependency.
@@ -203,7 +205,12 @@ work.
 
 On an initialized workspace, startup resolves the acting identity through the
 ordinary public client and enters the last session's in-memory default only;
-version 1 writes no TUI preference file. On an absent local workspace, the
+version 1 writes no TUI preference file. Populating or refreshing the navigation
+list highlights the retained navigation target, the active conversation,
+`#general` when joined, or the first navigation item without emitting synthetic
+highlight feedback or auto-opening a conversation, so pressing Enter immediately
+opens the highlighted item while unread counts and consumable notifications
+remain untouched until explicit activation. On an absent local workspace, the
 empty state offers `workspace.initialize` for the resolved local target. On an
 unrecognized identity, it offers native join or rejoin flows. Backend,
 configuration, permission, and malformed-target failures do not masquerade as
@@ -549,8 +556,9 @@ The CLI's omitted-text and `-` stdin forms for `say` and `reply`, project-file
 `onboard`, `join --recent`, and `whoami --show-token` are syntax-recognized but
 CLI-only in the TUI. The TUI has no process-stdin command source, opens full
 channel history natively, and keeps continuity tokens out of shared interactive
-chrome; explicit `say ... --join` executes through the native send binding and
-refreshes navigation.
+chrome; explicit `say ... --join` and both `:reply THREAD MSG_ID TEXT` and
+`:reply MSG_ID TEXT` execute through the native bindings (`say --join` refreshes
+navigation).
 
 ### [TUI-7.2] Forms and validation
 
@@ -1112,6 +1120,11 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md` —
+  highlights the default/retained navigation row across startup and refreshes
+  without auto-opening a watcher, extends `:reply` with optional `THREAD`, and
+  records `taut-chat[default]` and the absent-`tui` install hint in [TUI-3.1].
 
 - `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
   extends `SummonStartScreen`, `TuiSummonOperations.build_request`, and the

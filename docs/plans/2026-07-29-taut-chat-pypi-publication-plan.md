@@ -1,6 +1,7 @@
 # Taut Chat PyPI Publication Plan
 
 Date: 2026-07-29
+Status: completed
 
 Class: 5. This change replaces the public core distribution identity, revises
 the release and compatibility contracts, introduces PyPI Trusted Publishing,

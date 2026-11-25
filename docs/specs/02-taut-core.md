@@ -1265,7 +1265,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `channel topic CHANNEL TEXT` / `channel topic CHANNEL --clear` | Set one exact one-line topic or explicitly clear it. Requires an existing acting member and current channel membership. A same-value set and absent clear are successful no-ops. No stdin form. | 0 changed or no-op; 1 usage, invalid topic, corruption, or error; 2 no such channel / unrecognized member / not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
 | `say TARGET [TEXT\|-] [--join]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` retains every [IAN-5.1] channel/sub-thread form, including quoted `#channel`, and also accepts `@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle. Without `--join`, channel and sub-thread targets require existing membership. With `--join`, `TARGET` must be a top-level channel (sub-threads and DM targets exit 1); Taut resolves or creates the acting member once and joins/creates the channel (writing the standard creation/join notice to the queue when not already a member) before posting; if the later message write fails, any committed member/channel/join state remains durable. `@route` may create the deterministic conversation; `dm.d_*` requires an existing fully valid actor-accessible conversation and never creates or heals one. Prints message id with `-t` only when a message is written. | 0 wrote; 1 malformed syntax on a nonblank attempt, `--join` on non-channel target, or error; 2 blank filtered / not a member / no such member / inaccessible or invalid stable DM |
-| `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. MSG_ID is the exact 19-digit message id, as for `message show`, `message delete`, and `message react`; there is no short form. Any other value is a malformed argument. | 0 wrote; 1 error, including a malformed MSG_ID; 2 blank filtered / no such message / unrecognized member |
+| `reply [THREAD] MSG_ID [TEXT\|-]` | Post into the sub-thread of top-level channel message MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. When THREAD is supplied, requires membership in THREAD; when THREAD is omitted, locates MSG_ID across the acting member's joined top-level channels. Two positional values are interpreted as `THREAD MSG_ID` (piped stdin) when the second is a 19-digit MSG_ID and the first is not, otherwise as `MSG_ID TEXT\|-`; a single positional value must be a 19-digit MSG_ID (piped stdin) or exits 1 as a usage error. MSG_ID is the exact 19-digit message id within SimpleBroker's signed 64-bit timestamp range, as for `message show`, `message delete`, and `message react`; there is no short form. Any other value is a malformed argument. | 0 wrote; 1 usage or error, including a malformed MSG_ID; 2 blank filtered / no such message / not a member / unrecognized member |
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
 | `message react MSG_ID REACTION` | Send one configured reaction to current members of the exact source thread except the actor. Advances the actor's high-water cursor and attempts one atomic best-effort exact-name broadcast to every requested notification queue. A broadcast failure warns; repeating may duplicate. | 0 valid operation, including a broadcast warning; 1 malformed/config/cursor error; 2 unrecognized member / inaccessible, ineligible, or recipient-empty target |
@@ -1335,7 +1335,11 @@ syntax and recovery role, and 0/1/2 exit classes.
 Root help is registry-backed. It must remain usable when an unrelated installed
 command is broken or incompatible. A selected unavailable command exits 1 with
 its distribution, entry point, and compatibility failure; it never produces a
-traceback. Literal `--`, global-option placement, usage exit 1, and the 0/1/2
+traceback. Selecting an uninstalled command exits 1 with `unknown command:
+<verb>`; for the optional first-party `mcp` and `tui` commands, that one-line
+diagnostic appends an install hint naming the owning distribution (`taut-mcp` or
+`taut-tui`) and `taut-chat[default]` while keeping uninstalled commands out of
+root help. Literal `--`, global-option placement, usage exit 1, and the 0/1/2
 exit classes apply equally to built-in and extension command adapters.
 
 ### [TAUT-8.2] Output contract
@@ -1465,7 +1469,12 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `MessageIdResolutionError`, and its not-found subtype
 `MessageIdNotFoundError`,
-`escape_terminal_text`, and `__version__`. The package ships typed
+`escape_terminal_text`, and `__version__`. `TautClient` supports the context-manager
+protocol (`with TautClient(...) as client:`), calling `close()` on exit (attaching
+any cleanup error as a note when unwinding a body exception) without implicitly
+changing `persistent`, and `TautClient.reply(thread, msg_id, text)` accepts
+`thread: str | None`, resolving `msg_id` across the acting member's joined
+top-level channels when `thread` is `None`. The package ships typed
 (`py.typed`) and includes `taut/defaults.toml` and `taut/agent-kernel.md` in
 both source and wheel distributions.
 
@@ -1992,8 +2001,10 @@ commands retain context-stream authority and terminal-policy preflight.
 
 The core distribution publishes an `all` optional-dependency extra containing
 the compatible `taut-pg`, `taut-summon`, `taut-mcp`, and `taut-tui`
-distributions. It is a
-convenience bundle, not a merger of package ownership: each extension remains
+distributions, a `default` optional-dependency extra containing the local
+SQLite-ready `taut-summon`, `taut-mcp`, and `taut-tui` distributions, and a
+`tui` extra containing `taut-tui`. They are
+convenience bundles, not a merger of package ownership: each extension remains
 separately versioned and directly installable, and core does not import or
 initialize an extension until its registered surface is selected.
 
@@ -2039,7 +2050,9 @@ executes a mirrored command. A rich host may recognize an extension command
 without executing it when no native binding has been installed for that host.
 The root syntax wrapper owns pre-verb global options, post-verb declarations,
 root actions such as `--help` and `--version`, and the released precedence
-rules. These are part of the shared grammar rather than ad hoc surface logic.
+rules, including `reply`'s shared `[THREAD] MSG_ID [TEXT]` positional
+disambiguation rule from [TAUT-8.1]. These are part of the shared grammar
+rather than ad hoc surface logic.
 
 Ordinary command parsers use argparse's ordered parsing policy. An adapter
 whose top-level grammar has variable-length positionals on both sides of local
@@ -2090,10 +2103,11 @@ reserved-slot selection. This is deterministic provenance policy, not package
 authentication.
 
 The core distribution's normalized installed owner is `taut-chat`; the import
-package and console command remain `taut`. Static built-in command diagnostics
-use `taut-chat` as their distribution provenance. The reserved first-party
-`summon` and `dismiss` owner remains the separately installed `taut-summon`
-distribution.
+package remains `taut`, and the distribution installs both `taut` (canonical)
+and `taut-chat` (distribution-matching console alias) bound to `taut.cli:main`.
+Static built-in command diagnostics use `taut-chat` as their distribution
+provenance. The reserved first-party `summon` and `dismiss` owner remains the
+separately installed `taut-summon` distribution.
 
 Registry construction loads every discovered manifest so root help can show a
 complete, deterministic inventory and isolated availability diagnostics. It
@@ -2691,7 +2705,7 @@ Release targets:
 - `core` (aliases: `root`, `taut`) releases distribution `taut-chat` from the
   repository root with a `vX.Y.Z` tag and
   `.github/workflows/release-gate.yml`. It continues to install import package
-  and console command `taut`.
+  `taut` and console commands `taut` and `taut-chat`.
 - `pg` releases `taut-pg` from `extensions/taut_pg` with a
   `taut_pg/vX.Y.Z` tag and `.github/workflows/release-gate-pg.yml`.
 - `summon` releases `taut-summon` from `extensions/taut_summon` with a
@@ -2748,8 +2762,10 @@ Helper obligations:
   `uv lock` in its project, reconcile the TUI lock with plain `uv lock` in its
   project, and do not create a PG lock.
   The PG, Summon, MCP, and TUI manifests respectively own the four version floors
-  in the root `all` extra; normal release preparation reconciles all four on
-  every invocation after selected manifest versions are written.
+  in the root `all` extra, and the Summon, MCP, and TUI manifests own the three
+  version floors in the root `default` extra; normal release preparation
+  reconciles both extras on every invocation after selected manifest versions
+  are written.
 - Stage only the release-file allowlist and create the local
   release-preparation commit before prechecks. The prechecks verify that exact
   commit. `--checks-only` remains non-mutating and reports drift; `--dry-run`
@@ -3252,6 +3268,12 @@ expression behavior.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
   stable actor per CLI read and uses broker timestamp metadata for count-free
   thread listings; also revises watch failure and debug contracts.
+
+- `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md` —
+  adds the `taut-chat` console script alias, `taut-chat[default]` convenience
+  extra (synchronized in `bin/release.py`), `mcp`/`tui` absent-extension
+  unknown-command hints, optional-`THREAD` `reply` across `TautClient`, CLI, and
+  `[TAUT-8.7]` command syntax, and `TautClient` context-manager support.
 
 - `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
   adds `agy` automatic-name pool entries in `taut/_constants.py`, [TAUT-8.7]

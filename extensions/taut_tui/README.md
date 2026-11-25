@@ -5,18 +5,20 @@ the public capabilities of `taut-chat` and loaded first-party extensions in a
 full-screen Textual application. It does not define a second chat model or
 derive forms from CLI arguments.
 
-Install it beside core, or use core's convenience extra:
+Install it beside core, or use core's `tui` or `default` convenience extra:
 
 ```bash
 python -m pip install taut-chat taut-tui
-# equivalent convenience install
+# equivalent convenience installs
 python -m pip install 'taut-chat[tui]'
+python -m pip install 'taut-chat[default]'
 taut tui
 ```
 
 The extension publishes `tui` through the `taut.commands` entry-point group.
 There is intentionally no separate `taut-tui` console script. Without this
-distribution installed, core does not claim the `tui` command.
+distribution installed, root help omits `tui` and `taut tui` exits 1 with an
+install hint.
 
 The interface provides transcript-first navigation, a multiline composer
 (Enter sends; Ctrl-Enter, Shift-Enter, or Ctrl-J inserts a newline; Ctrl-Tab

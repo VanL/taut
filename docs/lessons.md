@@ -96,6 +96,43 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-11-25: Pass `docs/program-theory.md` ([THEORY-1]–[THEORY-5.A6]) as an
+  explicit primary lens in cross-family plan and completed-work review briefs
+  alongside defect hunting. Pure defect reviews reward defensive ceremony (extra
+  overloads, sentinel types, duplicate discovery or parser layers, and wrapper
+  flags over standard shell tools); auditing each slice against the program
+  theory's problem/boundary/mechanism alignment catches over-engineering before
+  promotion.
+
+- 2026-11-25: CLI commands that accept optional trailing text via `stdin` must
+  validate non-`stdin` positional tokens before reading `stdin` and probe
+  malformed invocations with `stdin=subprocess.DEVNULL`. Otherwise an agent
+  subprocess with `stdin` bound to `/dev/null` that omits or mistypes an earlier
+  positional reads empty `stdin` and silently exits `2` as a blank message
+  ([TAUT-6.5]) instead of exiting `1` as a usage error. Inside `Command.run()`,
+  translate syntax errors into typed domain errors rather than calling
+  `parser.error()` so `taut/commands/_dispatch.py` never renders `SystemExit(1)`
+  to `stderr`.
+
+- 2026-11-25: `StrEnum` members satisfy `isinstance(value, str)`, so mixed union
+  targets such as `str | ActionId` in `extensions/taut_tui/taut_tui/app.py` must
+  guard with `isinstance(value, ActionId)` before storing string-only
+  conversation state. When preserving option-list highlights across refreshes,
+  retain `ActionId` rows only across already-populated lists so first-run
+  empty-state actions (`ActionId.CHANNEL_JOIN`) do not shadow `#general` after
+  joining.
+
+- 2026-11-25: Child agent harnesses spawned inside POSIX PTY sessions inherit an
+  ignored (`SIG_IGN`) `SIGHUP` disposition across `exec` unless explicitly
+  reset, and PTY slaves miss host terminal resizes unless window geometry is
+  propagated across attach. Reset `SIGHUP` to `SIG_DFL` in the
+  controlling-terminal trampoline
+  (`extensions/taut_summon/taut_summon/_process_domain_posix.py`) before
+  acquiring the controlling terminal and `os.execvpe`, and keep copying the host
+  terminal's `TIOCGWINSZ` onto the PTY master throughout attach (on entry and on
+  each size change), while keeping synthetic PTY test peers draining master
+  output per the 2026-07-12 rule so `[SUM]`'s `TCSADRAIN` restore completes.
+
 - 2026-11-10: OS process liveness is distinct from creation-token readability.
   Exited or zombie processes (`psutil.STATUS_ZOMBIE`, `not proc.is_running()`,
   or Linux `/proc/<pid>/stat` state `'Z'`) retain a readable PID and creation

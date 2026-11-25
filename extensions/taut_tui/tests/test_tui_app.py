@@ -5978,3 +5978,209 @@ def test_tui_whoami_show_token_is_cli_only(tmp_path: Path) -> None:
             )
 
     asyncio.run(exercise())
+
+
+def test_tui_reply_command_optional_thread_and_stdin_rejection(tmp_path: Path) -> None:
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / "tui-reply.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    try:
+        alice.join("general")
+        bob.join("general")
+        origin = bob.say("general", "parent for tui reply")
+    finally:
+        alice.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(120, 40)):
+            await observed(app).navigation()
+            syntax = core_command_syntax()
+
+            for stdin_form in (
+                f"reply {origin.ts}",
+                f"reply general {origin.ts}",
+                f"reply {origin.ts} -",
+            ):
+                app._dispatch_command_invocation(
+                    parse_command_line(stdin_form, syntax=syntax)
+                )
+                assert "CLI-only in TUI: reply with stdin" in str(
+                    app.query_one("#inspector-body").render()
+                )
+
+            two_arg = observed(app).action("reply_message")
+            deadline = observed(app).scope.now() + 5
+            app._dispatch_command_invocation(
+                parse_command_line(f'reply {origin.ts} "two-arg ack"', syntax=syntax)
+            )
+            await two_arg.wait(deadline)
+
+        second = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with second.run_test(size=(120, 40)):
+            await observed(second).navigation()
+            syntax = core_command_syntax()
+            three_arg = observed(second).action("reply_message")
+            deadline = observed(second).scope.now() + 5
+            second._dispatch_command_invocation(
+                parse_command_line(
+                    f'reply general {origin.ts} "three-arg ack"', syntax=syntax
+                )
+            )
+            await three_arg.wait(deadline)
+
+    try:
+        asyncio.run(exercise())
+        texts = [msg.text for msg in bob.log(f"general.{origin.ts}")]
+        assert texts == ["two-arg ack", "three-arg ack"]
+    finally:
+        bob.close()
+
+
+def test_tui_navigation_highlights_default_and_preserves_targets_without_opening_watcher(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    # 1) Uninitialized workspace: index 0 highlighted, selected_navigation stays None.
+    absent_db = tmp_path / "absent.db"
+
+    async def exercise_uninitialized() -> None:
+        app = TautApp(db_path=str(absent_db), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await observed(app).navigation()
+            assert app._navigation_targets == [ActionId.WORKSPACE_INITIALIZE]
+            assert navigation.highlighted == 0
+            assert app.visual_state.selected_navigation is None
+            assert app.visual_state.active_conversation is None
+
+    asyncio.run(exercise_uninitialized())
+
+    # 2) Unrecognized identity empty state -> join general transitions highlight to #general
+    # (and does not retain empty-state ActionId.CHANNEL_JOIN at index 2).
+    empty_db = tmp_path / "empty-to-populated.db"
+    TautClient.init(db_path=empty_db)
+
+    async def exercise_empty_to_populated() -> None:
+        app = TautApp(db_path=str(empty_db), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await observed(app).navigation()
+            assert app._navigation_targets == [
+                ActionId.CHANNEL_JOIN,
+                ActionId.IDENTITY_REJOIN,
+            ]
+            assert navigation.highlighted == 0
+            assert app.visual_state.selected_navigation is None
+
+            assert app._domain is not None
+            assert app._session is not None
+            act_wait = observed(app).action("join_channel")
+            deadline = observed(app).scope.now() + 5
+            app._run_action(
+                app._domain.join_channel("general"), refresh_navigation=False
+            )
+            await act_wait.wait(deadline)
+            nav_fut = app._session.refresh_navigation()
+            nav_fut.result(timeout=5.0)
+            app._apply_navigation_result(nav_fut)
+            assert ActionId.CHANNEL_JOIN in app._navigation_targets
+            general_idx = app._navigation_targets.index("general")
+            assert navigation.highlighted == general_idx
+            assert app.visual_state.selected_navigation == "general"
+
+    asyncio.run(exercise_empty_to_populated())
+
+    db_path = tmp_path / "nav-highlight.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    try:
+        alice.join("alpha")
+        alice.join("general")
+        bob.join("general")
+        alice.read("general")
+        unread_msg = bob.say("general", "unread for @alice")
+    finally:
+        alice.close()
+        bob.close()
+
+    # 3) Populated launch with ("alpha", "general") highlights #general (index 1),
+    # leaves unread/inbox untouched, and preserves both channel ("alpha") and
+    # ActionId.NOTIFICATIONS_OPEN highlights across refresh without polluting selected_navigation.
+    async def exercise_populated() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await observed(app).navigation()
+            assert app._navigation_targets[:2] == ["alpha", "general"]
+            assert navigation.highlighted == 1
+            assert app.visual_state.selected_navigation == "general"
+            assert app.visual_state.active_conversation is None
+
+            probe = TautClient(db_path=db_path, as_name="alice")
+            try:
+                general_thread = next(
+                    t for t in probe.list_threads() if t.name == "general"
+                )
+                assert general_thread.unread is True
+                assert any(
+                    item.message_ts == unread_msg.ts
+                    for item in probe.peek_inbox(limit=20)
+                )
+            finally:
+                probe.close()
+
+            # Channel row highlight ("alpha" at index 0) survives refresh_navigation().
+            navigation.focus()
+            navigation.highlighted = 0
+            await pilot.pause()
+            assert app.visual_state.selected_navigation == "alpha"
+
+            assert app._session is not None
+            alpha_fut = app._session.refresh_navigation()
+            alpha_fut.result(timeout=5.0)
+            app._apply_navigation_result(alpha_fut)
+            await pilot.pause()
+            assert navigation.highlighted == 0
+            assert app.visual_state.selected_navigation == "alpha"
+
+            # Highlighting an ActionId row clears selected_navigation and survives refresh.
+            notif_idx = app._navigation_targets.index(ActionId.NOTIFICATIONS_OPEN)
+            navigation.highlighted = notif_idx
+            await pilot.pause()
+            assert app.visual_state.selected_navigation is None
+
+            nav_fut = app._session.refresh_navigation()
+            nav_fut.result(timeout=5.0)
+            app._apply_navigation_result(nav_fut)
+            await pilot.pause()
+            assert navigation.highlighted == notif_idx
+            assert app.visual_state.selected_navigation is None
+
+    asyncio.run(exercise_populated())
+
+    # 4) Fresh populated launch -> immediate Enter opens #general with zero manual highlight setup.
+    async def exercise_fresh_launch_enter() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await observed(app).navigation()
+            assert app._navigation_targets[:2] == ["alpha", "general"]
+            assert navigation.highlighted == 1
+            assert app.visual_state.selected_navigation == "general"
+            assert app.visual_state.active_conversation is None
+
+            navigation.focus()
+            await pilot.press("enter")
+            await observed(app).conversation()
+            assert app.visual_state.active_conversation == "general"
+
+    asyncio.run(exercise_fresh_launch_enter())

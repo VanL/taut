@@ -213,28 +213,31 @@ class MessagingMixin(_ClientBase):
         member = self._require_member(resolved)
         return self._say_chat_thread(address.thread, member, text)
 
-    def reply(self, thread: str, msg_id: str, text: str) -> Message:
-        if is_blank_message_text(text):
-            raise BlankMessageError("blank message")
-        if MESSAGE_ID_RE.fullmatch(msg_id) is None:
-            raise MessageIdResolutionError(
-                "message id must be a full 19-digit message id"
-            )
-        thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
-        self._ensure_no_incomplete_channel_rename()
-        parent_thread = self._state.get_thread(thread)
-        if parent_thread is None:
-            raise NotFoundError(f"thread not found: {thread}")
-        resolved = self._resolve_member(create=False)
-        member = self._require_member(resolved)
-        parent_membership = self._state.get_membership(
-            thread=thread, member_id=member["member_id"]
-        )
-        if parent_membership is None:
-            raise MembershipError(
-                f"{member['display_name']} is not a member of {thread}"
-            )
-        parent = self._resolve_message_id(thread, msg_id)
+    def _locate_joined_channel_message(
+        self,
+        exact: int,
+        msg_id: str,
+        member: MemberRow,
+    ) -> tuple[ThreadRow, Message]:
+        channel_rows: dict[str, ThreadRow] = {}
+        for membership in self._state.list_memberships(member["member_id"]):
+            row = self._state.get_thread(membership["thread"])
+            if row is not None and row["kind"] == "channel":
+                channel_rows[membership["thread"]] = row
+        located = self._locate_exact_message(exact, channel_rows)
+        if located is None:
+            raise MessageIdNotFoundError(f"message not found: {msg_id}")
+        return channel_rows[located.message.thread], located.message
+
+    def _reply_to_parent(
+        self,
+        *,
+        thread: str,
+        parent_thread: ThreadRow,
+        member: MemberRow,
+        parent: Message,
+        text: str,
+    ) -> Message:
         origin = parent.ts
         child_thread = f"{thread}.{origin}"
         child_queue = self.queue(child_thread)
@@ -313,6 +316,47 @@ class MessagingMixin(_ClientBase):
             own_message_ts=message.ts,
         )
         return message
+
+    def reply(self, thread: str | None, msg_id: str, text: str) -> Message:
+        if is_blank_message_text(text):
+            raise BlankMessageError("blank message")
+        try:
+            exact = _validate_exact_message_id(msg_id)
+        except ValueError as exc:
+            raise MessageIdResolutionError(
+                "message id must be a full 19-digit message id"
+            ) from exc
+        if thread is not None:
+            thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
+            self._ensure_no_incomplete_channel_rename()
+            parent_thread = self._state.get_thread(thread)
+            if parent_thread is None:
+                raise NotFoundError(f"thread not found: {thread}")
+            resolved = self._resolve_member(create=False)
+            member = self._require_member(resolved)
+            if (
+                self._state.get_membership(thread=thread, member_id=member["member_id"])
+                is None
+            ):
+                raise MembershipError(
+                    f"{member['display_name']} is not a member of {thread}"
+                )
+            parent = self._resolve_message_id(thread, exact, msg_id)
+        else:
+            self._ensure_no_incomplete_channel_rename()
+            resolved = self._resolve_member(create=False)
+            member = self._require_member(resolved)
+            parent_thread, parent = self._locate_joined_channel_message(
+                exact, msg_id, member
+            )
+            thread = parent.thread
+        return self._reply_to_parent(
+            thread=thread,
+            parent_thread=parent_thread,
+            member=member,
+            parent=parent,
+            text=text,
+        )
 
     def read(
         self,
@@ -839,13 +883,13 @@ class MessagingMixin(_ClientBase):
             return None
         return participants
 
-    def _resolve_message_id(self, thread: str, msg_id: str) -> Message:
+    def _resolve_message_id(
+        self,
+        thread: str,
+        exact: int,
+        msg_id: str,
+    ) -> Message:
         queue = self.queue(thread)
-        if MESSAGE_ID_RE.fullmatch(msg_id) is None:
-            raise MessageIdResolutionError(
-                "message id must be a full 19-digit message id"
-            )
-        exact = int(msg_id)
         found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
         if found is None:
             raise MessageIdNotFoundError(f"message not found: {msg_id}")

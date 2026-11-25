@@ -38,9 +38,9 @@ Command registration and rich-host composition are documented in
 
 ## Installation
 
-The core distribution is `taut-chat`; it still installs the `taut` command and
-import package. The extension remains `taut-summon`. Once the first coordinated
-PyPI release is published:
+The core distribution is `taut-chat`; it installs the `taut` and `taut-chat`
+commands and the `taut` import package. The extension remains `taut-summon`.
+Install via `pipx install 'taut-chat[default]'` or inject alongside core:
 
 ```bash
 pipx install taut-chat

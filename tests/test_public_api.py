@@ -435,6 +435,17 @@ def test_onboard_reports_and_signatures_are_exact_frozen_slotted_public_values()
     assert "install_schema" in ctor_params
     assert ctor_params["install_schema"].default is True
 
+    reply_params = inspect.signature(taut.TautClient.reply).parameters
+    assert list(reply_params) == ["self", "thread", "msg_id", "text"]
+    assert reply_params["thread"].default is inspect.Parameter.empty
+    assert list(inspect.signature(taut.TautClient.__enter__).parameters) == ["self"]
+    assert list(inspect.signature(taut.TautClient.__exit__).parameters) == [
+        "self",
+        "exc_type",
+        "exc",
+        "tb",
+    ]
+
 
 def test_static_typing_rejects_unknown_public_export(tmp_path: Path) -> None:
     probe = tmp_path / "unknown_taut_export.py"

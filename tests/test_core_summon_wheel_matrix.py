@@ -200,6 +200,7 @@ def _write_wheel(
     version: str,
     requirements: tuple[str, ...],
     command_entry_points: tuple[tuple[str, str], ...] | None = None,
+    console_scripts: tuple[tuple[str, str], ...] | None = None,
 ) -> Path:
     metadata = [
         "Metadata-Version: 2.3",
@@ -225,15 +226,37 @@ def _write_wheel(
             if name == "taut-summon"
             else ()
         )
+    if console_scripts is None:
+        console_scripts = (
+            (
+                ("taut", "taut.cli:main"),
+                ("taut-chat", "taut.cli:main"),
+            )
+            if name == "taut-chat"
+            else ()
+        )
     with zipfile.ZipFile(path, "w") as wheel:
         wheel.writestr(f"{dist_info}-{version}.dist-info/METADATA", "\n".join(metadata))
-        if command_entry_points:
-            rendered = "[taut.commands]\n" + "".join(
-                f"{command} = {target}\n" for command, target in command_entry_points
+        sections: list[str] = []
+        if console_scripts:
+            sections.append(
+                "[console_scripts]\n"
+                + "".join(
+                    f"{script} = {target}\n" for script, target in console_scripts
+                )
             )
+        if command_entry_points:
+            sections.append(
+                "[taut.commands]\n"
+                + "".join(
+                    f"{command} = {target}\n"
+                    for command, target in command_entry_points
+                )
+            )
+        if sections:
             wheel.writestr(
                 f"{dist_info}-{version}.dist-info/entry_points.txt",
-                rendered,
+                "\n".join(sections),
             )
     return path
 
@@ -1113,6 +1136,52 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
 
 
 @pytest.mark.parametrize(
+    "console_scripts",
+    (
+        (),
+        (("taut", "taut.cli:main"),),
+        (("taut", "taut.cli:main"), ("taut-chat", "wrong.module:main")),
+    ),
+)
+def test_wheel_matrix_checker_requires_taut_and_taut_chat_console_scripts(
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+    console_scripts: tuple[tuple[str, str], ...],
+) -> None:
+    core = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
+            name="taut-chat",
+            version="0.6.0",
+            requirements=("simplebroker>=8.2.2",),
+            console_scripts=console_scripts,
+        )
+    )
+    summon = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
+            name="taut-summon",
+            version="0.6.0",
+            requirements=("taut-chat==0.6.0",),
+        )
+    )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name="taut-mcp",
+            version="0.6.0",
+            requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
+        )
+    )
+
+    with pytest.raises(
+        wheel_matrix_module.WheelMatrixError,
+        match="new core wheel must publish console_scripts",
+    ):
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
+
+
+@pytest.mark.parametrize(
     "entry_points",
     (
         (),
@@ -1293,6 +1362,27 @@ def test_new_core_case_accepts_obsolete_reactor_guard(
     _root, python, site_packages = _make_venv(tmp_path)
     _write_fake_taut(site_packages)
     _write_distribution(site_packages, name="simplebroker", version="7.4.1")
+    taut_chat_console = python.with_name(
+        "taut-chat.exe" if os.name == "nt" else "taut-chat"
+    )
+    if os.name == "nt":
+        taut_chat_console.write_bytes(b"fake")
+        real_run = wheel_matrix_module._run
+        monkeypatch.setattr(
+            wheel_matrix_module,
+            "_run",
+            lambda command, **kwargs: (
+                subprocess.CompletedProcess(command, 0, "taut 0.6.0\n", "")
+                if command == [str(taut_chat_console), "--version"]
+                else real_run(command, **kwargs)
+            ),
+        )
+    else:
+        taut_chat_console.write_text(
+            f"#!{python}\nprint('taut 0.6.0')\n",
+            encoding="utf-8",
+        )
+        taut_chat_console.chmod(0o755)
     monkeypatch.setattr(
         wheel_matrix_module,
         "_create_environment",

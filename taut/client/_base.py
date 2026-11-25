@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Self
 
 from simplebroker import (
     BrokerSession,
@@ -342,6 +342,22 @@ class _ClientBase(ABC):
 
         if failure is not None:
             raise failure
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        if exc is None:
+            self.close()
+            return
+        cleanup_exc = capture_cleanup_failure(None, self.close)
+        if cleanup_exc is not None:
+            exc.add_note(f"client context cleanup failed: {cleanup_exc}")
 
     def _enqueue_search_message(self, *, message_ts: int, thread: str) -> None:
         """Best-effort durable invalidation after canonical source success."""

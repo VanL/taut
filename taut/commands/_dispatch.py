@@ -76,6 +76,10 @@ _ROOT_LONG_OPTIONS = (
     "--quiet",
 )
 _INTERRUPTED_EXIT = 130
+_FIRST_PARTY_COMMAND_HINTS = {
+    "mcp": "taut-mcp",
+    "tui": "taut-tui",
+}
 
 
 def dispatch(
@@ -163,7 +167,13 @@ def _dispatch(
     try:
         selected = command_registry.get(verb)
     except KeyError:
-        _write_usage_error(f"unknown command: {verb}", error_stream)
+        hint_pkg = _FIRST_PARTY_COMMAND_HINTS.get(verb)
+        suffix = (
+            f" (install {hint_pkg} or 'taut-chat[default]' to enable 'taut {verb}')"
+            if hint_pkg is not None
+            else ""
+        )
+        _write_usage_error(f"unknown command: {verb}{suffix}", error_stream)
         return 1
     if selected.error is not None or selected.spec is None:
         _write_diagnostic_lines(

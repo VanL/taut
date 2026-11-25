@@ -17,6 +17,8 @@ from enum import StrEnum
 from importlib import metadata
 from types import MappingProxyType
 
+from taut._constants import MESSAGE_ID_RE
+
 _NEGATIVE_NUMBER_RE = re.compile(r"^-\d+$|^-\d*\.\d+$")
 
 
@@ -470,11 +472,50 @@ def _consume_post_or_local_option(
     return consumed
 
 
+def resolve_reply_positionals(
+    items: Sequence[str],
+) -> tuple[str | None, str, str | None]:
+    """Classify reply positionals under [TAUT-8.1] / [TAUT-8.7]."""
+
+    if len(items) == 3:
+        return items[0], items[1], items[2]
+    if len(items) == 2:
+        first, second = items
+        if (
+            MESSAGE_ID_RE.fullmatch(second) is not None
+            and MESSAGE_ID_RE.fullmatch(first) is None
+        ):
+            return first, second, None
+        return None, first, second
+    if len(items) == 1:
+        if MESSAGE_ID_RE.fullmatch(items[0]) is not None:
+            return None, items[0], None
+        raise CommandSyntaxError("missing required value: msg_id")
+    if not items:
+        raise CommandSyntaxError("missing required value: msg_id")
+    raise CommandSyntaxError(f"unexpected value: {items[3]}")
+
+
+def _assign_reply_positionals(
+    positional_tokens: Sequence[str],
+    values: dict[str, object],
+) -> None:
+    thread, msg_id, text = resolve_reply_positionals(positional_tokens)
+    if thread is not None:
+        values["thread"] = thread
+    values["msg_id"] = msg_id
+    if text is not None:
+        values["text"] = text
+
+
 def _assign_positionals(
     positional_tokens: Sequence[str],
     node: CommandSyntax,
     values: dict[str, object],
 ) -> None:
+    if node.path == ("reply",):
+        _assign_reply_positionals(positional_tokens, values)
+        return
     positional_index = 0
     for positional in node.positionals:
         raw_values, positional_index = _take_positional(
@@ -916,7 +957,11 @@ def core_command_syntax() -> RootCommandSyntax:
         _node(
             ("reply",),
             "Reply to a message in a thread.",
-            positionals=(_pos("thread"), _pos("msg_id"), _pos("text", required=False)),
+            positionals=(
+                _pos("thread", required=False),
+                _pos("msg_id"),
+                _pos("text", required=False),
+            ),
             post_verb_globals=common,
         ),
         message,

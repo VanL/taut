@@ -783,7 +783,9 @@ class TautApp(App[None]):
             selected = self._navigation_targets[event.option_index]
             self.visual_state = replace(
                 self.visual_state,
-                selected_navigation=selected if isinstance(selected, str) else None,
+                selected_navigation=(
+                    None if isinstance(selected, ActionId) else selected
+                ),
             )
         elif event.option_list.id == "transcript":
             transcript = self._query_base("#transcript", TautTranscript)
@@ -1526,9 +1528,9 @@ class TautApp(App[None]):
                 refresh_navigation=join,
             )
         else:
-            self._run_action(
-                domain.reply_message(str(values["thread"]), str(values["msg_id"]), text)
-            )
+            raw_thread = values.get("thread")
+            channel = str(raw_thread) if raw_thread is not None else None
+            self._run_action(domain.reply_message(channel, str(values["msg_id"]), text))
 
     def _dispatch_message_operation(
         self,
@@ -3327,15 +3329,50 @@ class TautApp(App[None]):
         if self._message_rows and reply_threads != previous_reply_threads:
             self._render_messages(self._message_rows)
 
+    def _prior_navigation_target(
+        self,
+        navigation: TautOptionList,
+    ) -> str | ActionId | None:
+        idx = navigation.highlighted
+        if idx is None or not (0 <= idx < len(self._navigation_targets)):
+            return None
+        prior = self._navigation_targets[idx]
+        if (
+            isinstance(prior, ActionId)
+            and ActionId.NOTIFICATIONS_OPEN not in self._navigation_targets
+        ):
+            return None
+        return prior
+
     def _set_navigation_actions(
         self,
         targets: tuple[str | ActionId, ...],
         labels: tuple[str, ...],
     ) -> None:
         navigation = self._query_base("#navigation-list", TautOptionList)
+        prior = self._prior_navigation_target(navigation)
         navigation.clear_options()
         navigation.add_options(labels)
         self._navigation_targets = list(targets)
+        highlighted: int | None = None
+        for candidate in (
+            prior,
+            self.visual_state.selected_navigation,
+            self.visual_state.active_conversation,
+            "general",
+        ):
+            if candidate is not None and candidate in targets:
+                highlighted = targets.index(candidate)
+                break
+        if highlighted is None and targets:
+            highlighted = 0
+        with navigation.prevent(TautOptionList.OptionHighlighted):
+            navigation.highlighted = highlighted
+        selected = targets[highlighted] if highlighted is not None else None
+        self.visual_state = replace(
+            self.visual_state,
+            selected_navigation=None if isinstance(selected, ActionId) else selected,
+        )
 
     def _commit_conversation_from_worker(
         self,

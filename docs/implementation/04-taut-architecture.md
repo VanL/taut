@@ -976,11 +976,20 @@ The core CLI is a thin call into the command dispatcher. Root parsing consumes
 only root options and the selected verb; the selected adapter configures its
 own core-created parser. Root help still owns the cross-command exit classes,
 token trust boundary, and JSON diagnostic rule. Explicit `main([])` is distinct
-from `main(None)`: only `None` reads process argv. The client classifies runtime
+from `main(None)`: only `None` reads process argv. `TautClient` also implements
+the context-manager protocol (`_ClientBase.__enter__` / `__exit__`), calling
+`close()` on normal exit and routing unwinding cleanup through
+`capture_cleanup_failure` + `exc.add_note(...)` without implicitly mutating
+`persistent`. `TautClient.reply(thread: str | None, msg_id, text)` accepts
+`thread=None` to locate `msg_id` across the acting member's joined top-level
+channels via `_locate_exact_message`, sharing `resolve_reply_positionals`
+(`[TAUT-8.1]` / `[TAUT-8.7]`) between the CLI `reply` adapter and the command
+syntax parser. The client classifies runtime
 reply-id failures with `MessageIdResolutionError`; not-found cases use its
 `MessageIdNotFoundError` subtype, which also remains a `NotFoundError` so exit 2
-is stable. The reply adapter catches that typed family and adds the owning
-command form plus the exact full-id rule to stderr. Unrelated
+is stable. The reply adapter catches that typed family (and translates
+single-token non-ID positional syntax errors before touching `stdin`) and adds
+the owning command form plus the exact full-id rule to stderr. Unrelated
 `NotFoundError` messages are never classified by their prose.
 
 Top-level verb dispatch now lives under `taut/commands/`. Lightweight
@@ -1273,6 +1282,8 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md`
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md`
 - `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md`
 - `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md`
 - `docs/plans/2026-11-23-phase-0-bug-and-performance-remediation-plan.md`

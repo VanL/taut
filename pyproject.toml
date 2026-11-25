@@ -42,6 +42,11 @@ all = [
     "taut-mcp>=0.9.12",
     "taut-tui>=0.9.12",
 ]
+default = [
+    "taut-summon>=0.9.12",
+    "taut-mcp>=0.9.12",
+    "taut-tui>=0.9.12",
+]
 tui = [
     "taut-tui>=0.9.12",
 ]
@@ -64,6 +69,7 @@ dev = [
 
 [project.scripts]
 taut = "taut.cli:main"
+taut-chat = "taut.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/VanL/taut"

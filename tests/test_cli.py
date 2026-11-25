@@ -3189,12 +3189,109 @@ def test_cli_reply_short_id_is_malformed_and_does_not_move_bookmark(
     assert rc == 1
     assert out == ""
     assert "full 19-digit message id" in err
-    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in err
     bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
     try:
         assert [message.ts for message in bob.read("general")] == [root_ts]
     finally:
         bob.close()
+
+
+def test_cli_reply_optional_thread_piped_and_devnull_matrix(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "2026", cwd=tmp_path)[0] == 0
+    root_ts = _say_ts(tmp_path, "van", "general", "root")
+    year_ts = _say_ts(tmp_path, "van", "2026", "year root")
+
+    # 2-arg explicit text (THREAD omitted)
+    rc, out, err = run_cli(
+        "--as", "van", "reply", str(root_ts), "omitted thread", "--json", cwd=tmp_path
+    )
+    assert rc == 0, err
+    assert json.loads(out)["thread"] == f"general.{root_ts}"
+
+    # 2-arg '-' stdin (THREAD omitted)
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "reply",
+        str(root_ts),
+        "-",
+        "--json",
+        cwd=tmp_path,
+        stdin="dash stdin",
+    )
+    assert rc == 0, err
+    assert json.loads(out)["text"] == "dash stdin"
+
+    # 1-arg piped stdin (THREAD omitted)
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "reply",
+        str(root_ts),
+        "--json",
+        cwd=tmp_path,
+        stdin="one arg piped",
+    )
+    assert rc == 0, err
+    assert json.loads(out)["text"] == "one arg piped"
+
+    # 2-arg piped stdin with digit-only channel name '2026'
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "reply",
+        "2026",
+        str(year_ts),
+        "--json",
+        cwd=tmp_path,
+        stdin="digit channel piped",
+    )
+    assert rc == 0, err
+    assert json.loads(out)["thread"] == f"2026.{year_ts}"
+
+    # Explicit THREAD out-of-int64-range 19-digit MSG_ID exits 1 with usage hint
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "reply",
+        "general",
+        "9999999999999999999",
+        "hi",
+        cwd=tmp_path,
+    )
+    assert rc == 1
+    assert out == ""
+    assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in err
+
+    # Blank text still exits 2 silently before MSG_ID validation
+    rc, out, err = run_cli("--as", "van", "reply", "12345", "\u200b", cwd=tmp_path)
+    assert (rc, out, err) == (2, "", "")
+
+    # Real subprocess probes with stdin=DEVNULL must exit 1 without SystemExit noise
+    env = build_cli_env()
+    for bad_args in (
+        ("reply", "general"),
+        ("reply", "12345"),
+        ("reply", "12345", "hi"),
+        ("reply", "general", "hi"),
+    ):
+        proc = subprocess.run(
+            [sys.executable, "-m", "taut.cli", "--as", "van", *bad_args],
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 1, (bad_args, proc.stdout, proc.stderr)
+        assert proc.stdout == ""
+        assert proc.stderr != ""
+        assert "SystemExit" not in proc.stderr
+        assert "usage: taut reply [THREAD] MSG_ID [TEXT|-]" in proc.stderr
 
 
 def test_cli_repeated_join_is_silent_and_keeps_cursor(tmp_path: Path) -> None:

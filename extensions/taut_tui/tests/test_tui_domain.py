@@ -114,6 +114,9 @@ def test_direct_message_and_reply_flows_keep_core_target_semantics(
         reply = actions.reply_message("general", origin.ts, "reviewed").result(
             timeout=5
         )
+        reply_omitted = actions.reply_message(
+            None, origin.ts, "reviewed without channel"
+        ).result(timeout=5)
     finally:
         session.close()
         system.close()
@@ -122,6 +125,7 @@ def test_direct_message_and_reply_flows_keep_core_target_semantics(
 
     assert direct.thread.startswith("dm.")
     assert reply.thread == f"general.{origin.ts}"
+    assert reply_omitted.thread == f"general.{origin.ts}"
 
 
 def test_empty_real_search_returns_the_domain_empty_collection(tmp_path: Path) -> None:

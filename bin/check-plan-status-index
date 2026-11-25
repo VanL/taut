@@ -22,17 +22,16 @@ prose_lines = importlib.import_module("bin.markdown_fences").prose_lines
 
 DEFAULT_INDEX = Path("docs/plans/README.md")
 DEFAULT_PLANS_DIR = Path("docs/plans")
-ALLOWED_STATUSES = frozenset(
-    {
-        "draft",
-        "active",
-        "promoted",
-        "status-review",
-        "completed",
-        "superseded",
-        "retired-pending",
-    }
+STATUS_DISPLAY_ORDER = (
+    "draft",
+    "active",
+    "promoted",
+    "status-review",
+    "completed",
+    "superseded",
+    "retired-pending",
 )
+ALLOWED_STATUSES = frozenset(STATUS_DISPLAY_ORDER)
 ALLOWED_EXEMPLAR_VALUES = frozenset({"yes", "no"})
 PLAN_CELL_RE = re.compile(r"^`([A-Za-z0-9._-]+\.md)`$")
 EXPECTED_HEADER = ("Plan", "Status", "Exemplar", "Note")
@@ -87,10 +86,14 @@ def parse_rows(text: str) -> tuple[list[tuple[str, str, str]], bool]:  # noqa: C
     return rows, True
 
 
-def check(index_text: str, plans_dir: Path, index_path: Path) -> list[str]:
+def _check_rows(
+    index_text: str,
+    plans_dir: Path,
+    index_path: Path,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
     rows, well_formed = parse_rows(index_text)
     if not well_formed:
-        return ["malformed or missing plan status table"]
+        return [], ["malformed or missing plan status table"]
 
     problems: list[str] = []
     names = [plan for plan, _status, _exemplar in rows]
@@ -114,6 +117,11 @@ def check(index_text: str, plans_dir: Path, index_path: Path) -> list[str]:
         problems.append(f"missing index row: {name}")
     for name in sorted(indexed - plan_files):
         problems.append(f"index row has no plan file: {name}")
+    return rows, problems
+
+
+def check(index_text: str, plans_dir: Path, index_path: Path) -> list[str]:
+    _rows, problems = _check_rows(index_text, plans_dir, index_path)
     return problems
 
 
@@ -126,12 +134,13 @@ def run(index: Path, plans_dir: Path) -> int:
     if not plans_dir.is_dir():
         print(f"check-plan-status-index: plans directory is missing: {plans_dir}")
         return 2
-    problems = check(text, plans_dir, index)
+    rows, problems = _check_rows(text, plans_dir, index)
     if problems:
         for problem in problems:
             print(f"check-plan-status-index: {problem}")
         return 1
-    print(f"check-plan-status-index: {index} plan status index OK")
+    summary = _format_tier_summary(rows)
+    print(f"check-plan-status-index: {index} plan status index OK {summary}")
     return 0
 
 
@@ -174,6 +183,25 @@ def self_test() -> int:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-005] excep
         return 1
     print("check-plan-status-index self-test: all contract probes pass")
     return 0
+
+
+def _format_tier_summary(rows: list[tuple[str, str, str]]) -> str:
+    by_status = Counter(status for _name, status, _exemplar in rows)
+    breakdown = ", ".join(
+        f"{status} {by_status[status]}"
+        for status in STATUS_DISPLAY_ORDER
+        if by_status[status]
+    )
+    harvest = sum(
+        1
+        for _name, status, exemplar in rows
+        if status in {"completed", "superseded"} and exemplar == "no"
+    )
+    detail = f": {breakdown}" if breakdown else ""
+    return (
+        f"({len(rows)} total{detail}; "
+        f"harvest candidates (completed/superseded non-exemplars): {harvest})"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
