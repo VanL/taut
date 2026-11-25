@@ -200,16 +200,6 @@ def _prepare_invocation(
     environment: _DispatchEnvironment,
 ) -> _PreparedInvocation | int:
     try:
-        if literal_tail:
-            command_tail, post = ["--", *tail], _RootValues()
-        else:
-            assert selected.spec is not None
-            command_tail, post = _extract_post_globals(tail, selected.spec)
-        merged = _merge_globals(root, post)
-    except _UsageError as exc:
-        _write_usage_error(str(exc), environment.stderr, prog=f"taut {verb}")
-        return 1
-    try:
         command = _load_command(selected)
         assert selected.spec is not None
         parser = _build_command_parser(
@@ -217,17 +207,13 @@ def _prepare_invocation(
             command,
             environment.stdout,
             environment.stderr,
-            escape_description=(
-                (not selected.spec.raw_stdio_transport and not merged.json)
-                or _command_tail_requests_help(command_tail)
-            ),
         )
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
             raise
         _capture_boundary_exception(
             exc,
-            db_path=merged.db_path,
+            db_path=root.db_path,
             operation=f"command.load:{verb}",
         )
         from taut.commands._rendering import _TerminalOutputPolicyError
@@ -236,6 +222,26 @@ def _prepare_invocation(
             raise
         _write_selected_error(selected, exc, environment.stderr)
         return 1
+    try:
+        if literal_tail:
+            command_tail, post = ["--", *tail], _RootValues()
+        else:
+            command_tail, post = _extract_post_globals(
+                tail,
+                selected.spec,
+                parser=parser,
+            )
+        merged = _merge_globals(root, post)
+    except _UsageError as exc:
+        _write_usage_error(str(exc), environment.stderr, prog=f"taut {verb}")
+        return 1
+    if (
+        (not selected.spec.raw_stdio_transport and not merged.json)
+        or _command_tail_requests_help(command_tail)
+    ) and parser.description:
+        from taut.commands._rendering import _escape_human_text
+
+        parser.description = _escape_human_text(parser.description)
     try:
         parse_tail = ["--", *command_tail] if selected.verbatim_tail else command_tail
         args = parser.parse_command_args(parse_tail)
@@ -445,9 +451,12 @@ def _canonicalize_root_long_option(token: str) -> str:
 def _extract_post_globals(
     tail: list[str],
     spec: CommandSpec,
+    *,
+    parser: argparse.ArgumentParser | None = None,
 ) -> tuple[list[str], _RootValues]:
     values = _RootValues()
     remaining: list[str] = []
+    active_parser = parser
     i = 0
     while i < len(tail):
         token = tail[i]
@@ -459,8 +468,55 @@ def _extract_post_globals(
             i += consumed
             continue
         remaining.append(token)
+        if active_parser is not None:
+            active_parser = _advance_subparser(active_parser, token)
+            slots = _local_mandatory_value_slots(active_parser, token)
+        else:
+            slots = 0
         i += 1
+        for _ in range(slots):
+            if i >= len(tail) or tail[i] == "--":
+                break
+            remaining.append(tail[i])
+            i += 1
     return remaining, values
+
+
+def _advance_subparser(
+    parser: argparse.ArgumentParser,
+    token: str,
+) -> argparse.ArgumentParser:
+    if token.startswith("-"):
+        return parser
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            child = action.choices.get(token)
+            return child if child is not None else parser
+    return parser
+
+
+def _local_mandatory_value_slots(
+    parser: argparse.ArgumentParser,
+    token: str,
+) -> int:
+    if "=" in token or not token.startswith("-") or token == "-":
+        return 0
+    action: argparse.Action | None = None
+    if token.startswith("--"):
+        action = parser._option_string_actions.get(token)
+        if action is None:
+            matches = parser._get_option_tuples(token)
+            if len(matches) == 1:
+                action = matches[0][0]
+    elif len(token) == 2:
+        action = parser._option_string_actions.get(token)
+    if action is None or str(action.dest).startswith("_root_"):
+        return 0
+    if action.nargs is None:
+        return 1
+    if isinstance(action.nargs, int) and action.nargs >= 1:
+        return action.nargs
+    return 0
 
 
 def _consume_global(
@@ -546,18 +602,10 @@ def _build_command_parser(
     command: Any,
     stdout: TextIO,
     stderr: TextIO,
-    *,
-    escape_description: bool,
 ) -> CommandArgumentParser:
-    description = spec.summary
-    if escape_description:
-        from taut.commands._rendering import _escape_human_text
-
-        description = _escape_human_text(description)
-
     parser = CommandArgumentParser(
         prog=f"taut {spec.name}",
-        description=description,
+        description=spec.summary,
         stdout=stdout,
         stderr=stderr,
     )

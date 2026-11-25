@@ -184,6 +184,15 @@ class SummonSessionRow(TypedDict):
     updated_ts: int
 
 
+def _parse_summon_schema_version(raw: object) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise SummonSchemaVersionError("summon schema metadata is unreadable")
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise SummonSchemaVersionError("summon schema metadata is unreadable") from exc
+
+
 def ensure_summon_schema(queue: Queue) -> None:
     """Install or validate the summon sidecar schema (fail-closed gate)."""
 
@@ -195,7 +204,7 @@ def ensure_summon_schema(queue: Queue) -> None:
             (SUMMON_SCHEMA_VERSION_KEY,),
         )
         if row is not None:
-            version = int(row[0])
+            version = _parse_summon_schema_version(row[0])
             if version > SUMMON_SCHEMA_VERSION:
                 raise SummonSchemaVersionError(
                     f"summon schema version {version} is newer than supported "
@@ -236,7 +245,9 @@ def get_summon_schema_version(queue: Queue) -> int | None:
             _SELECT_SUMMON_SCHEMA_VERSION,
             (SUMMON_SCHEMA_VERSION_KEY,),
         )
-    return None if row is None else int(row[0])
+    if row is None:
+        return None
+    return _parse_summon_schema_version(row[0])
 
 
 def validate_summon_schema(queue: Queue) -> None:
@@ -244,7 +255,7 @@ def validate_summon_schema(queue: Queue) -> None:
 
     try:
         version = get_summon_schema_version(queue)
-    except (DatabaseError, TypeError, ValueError) as exc:
+    except DatabaseError as exc:
         raise SummonSchemaVersionError("summon schema metadata is unreadable") from exc
     if version not in (2, 3, SUMMON_SCHEMA_VERSION):
         raise SummonSchemaVersionError(

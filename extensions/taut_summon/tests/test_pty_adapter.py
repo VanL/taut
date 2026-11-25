@@ -1044,9 +1044,11 @@ def _assert_termios_restored(fd: int, saved: list[Any]) -> None:
 
 def test_registry_maps_named_harnesses_to_pty_specs() -> None:
     expected = {
+        "agy": "agy",
         "claude": "claude",
         "codex": "codex",
         "coder": "coder",
+        "gemini": "gemini",
         "grok": "grok",
         "qwen": "qwen",
         "kimi": "kimi",

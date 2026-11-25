@@ -50,7 +50,7 @@ def _assert_only_structural_newlines(text: str, *, expected_tabs: int = 0) -> No
 def test_standalone_human_records_escape_all_dynamic_status_fields(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from taut_summon.cli import _print_live_member, _print_status
+    from taut_summon.commands import render_live_member, render_status
 
     unsafe_suffix = "\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
     escaped_suffix = r"\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
@@ -71,14 +71,17 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
             "status.detail-value",
         )
     }
-    _print_live_member(
+    render_live_member(
+        sys.stdout,
         SummonedMember(
             member_id="m_" + "a" * 26,
             name=fields["live.name"],
             provider=fields["live.provider"],
-        )
+        ),
+        as_json=False,
     )
-    _print_status(
+    render_status(
+        sys.stdout,
         SummonStatus(
             member_id="m_" + "a" * 26,
             name=fields["status.name"],
@@ -89,7 +92,8 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
             details={
                 fields["status.detail-key"]: fields["status.detail-value"],
             },
-        )
+        ),
+        as_json=False,
     )
 
     output = capsys.readouterr().out
@@ -106,7 +110,7 @@ def test_standalone_human_records_inherit_project_terminal_policy(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from taut_summon.cli import _print_live_member
+    from taut_summon.commands import render_live_member
 
     (tmp_path / ".taut.toml").write_text(
         "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
@@ -124,12 +128,14 @@ def test_standalone_human_records_inherit_project_terminal_policy(
     )
     monkeypatch.chdir(tmp_path)
 
-    _print_live_member(
+    render_live_member(
+        sys.stdout,
         SummonedMember(
             member_id="m_" + "a" * 26,
             name="MARK",
             provider="provider",
-        )
+        ),
+        as_json=False,
     )
 
     assert capsys.readouterr().out.startswith(r"\x4d\x41\x52\x4b" + "\t")
@@ -1221,3 +1227,255 @@ def test_cli_status_with_name_reports_nothing_summoned_exit_2(
     assert rc == 2
     assert "nothing summoned as 'claude'" in err
     assert out == ""
+
+
+def test_summon_help_lists_registered_providers_without_touching_storage(
+    run_summon_cli: SummonCliRunner, tmp_path: Path
+) -> None:
+    db = tmp_path / ".taut.db"
+    rc1, out1, err1 = taut_cli("summon", "--help", db=db, cwd=tmp_path)
+    rc2, out2, err2 = run_summon_cli("run", "--help", cwd=tmp_path)
+    assert rc1 == rc2 == 0
+    assert err1 == err2 == ""
+    for expected in ("agy", "claude", "codex", "gemini", "qwen", "--provider-arg"):
+        assert expected in out1
+        assert expected in out2
+    assert not db.exists()
+
+
+def test_root_summon_status_parity_and_multi_record_ndjson(
+    run_summon_cli: SummonCliRunner, tmp_path: Path
+) -> None:
+    import json
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+
+    # Empty workspace -> exit 2 with empty stdout even under --json.
+    for rc_empty, out_empty, err_empty in (
+        taut_cli("summon", "--status", "--json", db=db, cwd=tmp_path),
+        taut_cli("--json", "summon", "--status", db=db, cwd=tmp_path),
+        run_summon_cli("status", "--json", "--db", db, cwd=tmp_path),
+    ):
+        assert rc_empty == 2
+        assert out_empty == ""
+        assert "nothing summoned" in err_empty
+
+    # Option-shaped name after '--' -> exit 2 nothing summoned as '-q'.
+    rc_dash, out_dash, err_dash = taut_cli(
+        "summon", "--status", "--", "-q", db=db, cwd=tmp_path
+    )
+    assert rc_dash == 2
+    assert out_dash == ""
+    assert "nothing summoned as '-q'" in err_dash
+
+    # Populate 2 non-dead sessions (1 live, 1 indeterminate) -> 2 NDJSON lines.
+    created: list[tuple[str, str]] = []
+    for member_name in ("alpha", "beta"):
+        client = TautClient(db_path=db, as_name=member_name)
+        try:
+            client.join("general")
+            m = client.last_created_member
+            assert m is not None and m.token is not None
+            created.append((m.member_id, m.token))
+        finally:
+            client.close()
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        ensure_summon_schema(queue)
+        pid, start = capture_driver_evidence(os.getpid())
+        record_session(
+            queue,
+            member_id=created[0][0],
+            token=created[0][1],
+            provider="scripted",
+            driver_pid=pid,
+            driver_start_time=start,
+            updated_ts=queue.generate_timestamp(),
+        )
+        record_session(
+            queue,
+            member_id=created[1][0],
+            token=created[1][1],
+            provider="claude",
+            updated_ts=queue.generate_timestamp(),
+        )
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_summon_sessions SET driver_pid = ? WHERE member_id = ?",
+                (pid, created[1][0]),
+            )
+    finally:
+        queue.close()
+
+    for rc_live, out_live, err_live in (
+        taut_cli("summon", "--status", "--json", db=db, cwd=tmp_path),
+        taut_cli("--json", "summon", "--status", db=db, cwd=tmp_path),
+        run_summon_cli("status", "--json", "--db", db, cwd=tmp_path),
+    ):
+        assert rc_live == 0, err_live
+        assert err_live == ""
+        lines = [line for line in out_live.splitlines() if line.strip()]
+        assert len(lines) == 2
+        records = [json.loads(line) for line in lines]
+        assert {r["name"] for r in records} == {"alpha", "beta"}
+        assert all(r["status"] == "live" for r in records)
+
+    # Foreground summon/run with --json without --status -> exit 1.
+    for rc_fg, out_fg, err_fg in (
+        taut_cli("summon", "claude", "--json", db=db, cwd=tmp_path),
+        taut_cli("--json", "summon", "claude", db=db, cwd=tmp_path),
+        run_summon_cli("run", "claude", "--json", "--db", db, cwd=tmp_path),
+    ):
+        assert rc_fg == 1
+        assert out_fg == ""
+        assert "--json" in err_fg
+
+
+def test_cli_option_value_slot_protection_and_load_failure_db_isolation(
+    run_summon_cli: SummonCliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from taut_summon._adapter import get_adapter
+    from taut_summon._pty import PtyAdapter
+    from taut_summon.command_manifest import summon as summon_manifest
+    from taut_summon.commands.summon import create_command
+
+    from taut.commands import _dispatch as dispatch_module
+    from taut.commands._protocol import CommandSpec, GlobalOption
+    from taut.commands._registry import CommandRegistry, RegisteredCommand
+
+    other_db = tmp_path / "other.db"
+    root_db = tmp_path / "root.db"
+    TautClient.init(db_path=other_db)
+
+    # Direct _extract_post_globals proof: value slot of --provider-arg protects --db=other.db.
+    summon_parser = dispatch_module._build_command_parser(
+        summon_manifest,
+        create_command(),
+        io.StringIO(),
+        io.StringIO(),
+    )
+    remaining, extracted = dispatch_module._extract_post_globals(
+        ["claude", "--provider-arg", f"--db={other_db}", "general"],
+        summon_manifest,
+        parser=summon_parser,
+    )
+    assert extracted.db_path is None
+    assert remaining == ["claude", "--provider-arg", f"--db={other_db}", "general"]
+
+    # Both CLIs reject --db=other.db and --db other.db inside --provider-arg's value slot
+    # as missing --provider-arg values and never touch initialized other.db.
+    for extra in (
+        ("--provider-arg", f"--db={other_db}", "general"),
+        ("--provider-arg", "--db", str(other_db)),
+    ):
+        rc1, _, err1 = taut_cli(
+            "summon",
+            "claude",
+            *extra,
+            db=root_db,
+            cwd=tmp_path,
+        )
+        rc2, _, err2 = run_summon_cli(
+            "run",
+            "claude",
+            *extra,
+            cwd=tmp_path,
+        )
+        assert rc1 == 1
+        assert rc2 == 1
+        assert "expected one argument" in err1
+        assert "expected one argument" in err2
+
+    check_other = TautClient(db_path=other_db)
+    try:
+        assert check_other.who() == []
+    finally:
+        check_other.close()
+
+    # --d resolves to --detach on standalone parser as well (--db is exact-only).
+    parsed = build_parser().parse_args(["run", "claude", "--d"])
+    assert run_request(parsed).detach is True
+
+    # Literal '-- --help --version' parses as thread names on standalone parser.
+    parsed_lit = build_parser().parse_args(
+        ["run", "claude", "--", "--help", "--version"]
+    )
+    assert run_request(parsed_lit).threads == ("--help", "--version")
+
+    # Inline --provider-arg=--flag ordering matches (*base_argv, *provider_args).
+    parsed_order = build_parser().parse_args(
+        [
+            "run",
+            "claude",
+            "--provider-arg=--allowedTools=Bash(taut *),Bash(taut-chat *)",
+            "--provider-arg=--model",
+            "--provider-arg",
+            "opus",
+        ]
+    )
+    req_order = run_request(parsed_order)
+    assert req_order.provider_args == (
+        "--allowedTools=Bash(taut *),Bash(taut-chat *)",
+        "--model",
+        "opus",
+    )
+    base_adapter = get_adapter("claude")
+    assert isinstance(base_adapter, PtyAdapter)
+    combined = base_adapter.with_extra_args(req_order.provider_args)
+    assert combined._spec.argv == (
+        "claude",
+        "--allowedTools=Bash(taut *),Bash(taut-chat *)",
+        "--model",
+        "opus",
+    )
+
+    # Forced adapter-load failure captures against root.db_path, never scanning tail for --db=other.db.
+    captured_dbs: list[str | None] = []
+
+    def spy_capture(
+        exc: BaseException,
+        *,
+        context: object = None,
+        db_path: str | None = None,
+        operation: str,
+    ) -> None:
+        del exc, context, operation
+        captured_dbs.append(db_path)
+
+    monkeypatch.setattr(dispatch_module, "_capture_boundary_exception", spy_capture)
+    broken_spec = CommandSpec(
+        command_api_version=1,
+        name="summon",
+        summary="broken",
+        post_verb_globals=frozenset({GlobalOption.DB}),
+        implementation="taut_summon.commands.summon:nonexistent_factory",
+    )
+    reg = CommandRegistry(entry_points=())
+    reg._by_name["summon"] = RegisteredCommand(
+        name="summon",
+        distribution_name="taut-summon",
+        distribution_version="0.9.12",
+        entry_point=None,
+        spec=broken_spec,
+        error=None,
+    )
+    rc_load = dispatch_module.dispatch(
+        [
+            "--db",
+            str(root_db),
+            "summon",
+            "claude",
+            "--provider-arg",
+            f"--db={other_db}",
+        ],
+        registry=reg,
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert rc_load == 1
+    assert captured_dbs == [str(root_db)]

@@ -2772,22 +2772,24 @@ def test_mouth_proof_scripted_runs_taut_say(
 def test_post_claim_fatal_error_releases_ledger(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
-    # A fatal error after the session row is claimed (an unreadable
-    # --system-prompt-file, raised in _supervise before spawn) must leave NO
-    # live driver evidence on the ledger row — the centralized, ownership-
+    # A fatal error after the session row is claimed (a missing PTY target
+    # executable failing synchronously at spawn inside _supervise) must leave
+    # NO live driver evidence on the ledger row — the centralized, ownership-
     # checked release in the supervisor's finally ([SUM-8] cleanup).
+    missing_bin = tmp_path / "does-not-exist-bin"
     driver = driver_factory(
         summon_db,
-        "scripted",
+        "postclaim-probe",
         "general",
-        extra_args=("--system-prompt-file", str(tmp_path / "does-not-exist.md")),
-        tag="badprompt",
+        provider="pty",
+        extra_env={"TAUT_SUMMON_PTY_ARGV": json.dumps([str(missing_bin)])},
+        tag="badspawn",
     )
     assert driver.wait() == 1
-    assert "system-prompt-file" in driver.stderr_tail()
+    assert "failed to spawn PTY harness" in driver.stderr_tail()
 
-    member = _member_by_name(summon_db, "scripted")
-    assert member is not None  # bootstrap created the member before the fatal read
+    member = _member_by_name(summon_db, "postclaim-probe")
+    assert member is not None  # bootstrap created the member before the fatal spawn
     row = _session_row(summon_db, member.member_id)
     assert row is not None
     assert row["driver_pid"] is None
@@ -3554,3 +3556,184 @@ def test_rate_audit_process_leave_rejoin_resumes_on_fresh_live_queue(
         message="post-rejoin queue audited by the process backstop",
     )
     assert driver.stop() == 0
+
+
+def test_driver_local_request_validation_and_bootstrap_provider_args_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import sqlite3
+
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+    from taut_summon._driver import SummonDriver, run_driver
+    from taut_summon._state import ensure_summon_schema, get_session, record_session
+
+    delete_db = tmp_path / "preflight_delete.db"
+    TautClient.init(db_path=delete_db)
+    peer = TautClient(db_path=delete_db, as_name="human-peer")
+    try:
+        peer.join("general")
+    finally:
+        peer.close()
+    with sqlite3.connect(delete_db) as conn:
+        assert (
+            conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0].lower()
+            == "delete"
+        )
+
+    bad_utf8 = tmp_path / "bad_prompt.bin"
+    bad_utf8.write_bytes(b"\xff\xfe\xfd")
+    no_tty_interaction = ShellSummonInteraction(
+        input_stream=io.StringIO(""),
+        output_stream=io.StringIO(),
+    )
+
+    def make_req(
+        name: str,
+        *,
+        provider_flag: str | None = None,
+        provider_args: tuple[str, ...] = (),
+        attach: bool = False,
+        detach: bool = False,
+        system_prompt_file: str | None = None,
+    ) -> SummonRequest:
+        return SummonRequest(
+            name=name,
+            threads=("general",),
+            persona=None,
+            system_prompt_file=system_prompt_file,
+            rate_limit=None,
+            attach=attach,
+            detach=detach,
+            provider_flag=provider_flag,
+            takeover=False,
+            provider_args=provider_args,
+        )
+
+    def stop_on_ready(handle: Any) -> None:
+        handle.request_stop()
+
+    # Pure local request validation fails before opening storage or installing Summon schema:
+    for bad_req in (
+        make_req("agent", provider_flag="unknown-adapter", detach=True),
+        make_req(
+            "agent", provider_flag="scripted", provider_args=("--extra",), detach=True
+        ),
+        make_req("claude", provider_args=("",), detach=True),
+        make_req("claude", provider_args=("bad\x00",), detach=True),
+        make_req("claude", system_prompt_file=str(bad_utf8), detach=True),
+        make_req("claude", attach=True),
+    ):
+        with pytest.raises(SummonOperationError):
+            SummonController(db_path=delete_db).run_foreground(
+                bad_req,
+                no_tty_interaction,
+                on_ready=stop_on_ready,
+            )
+
+    with sqlite3.connect(delete_db) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "taut_summon_sessions" not in tables
+
+    # Single UTF-8 decode before bootstrap survives post-bootstrap prompt unlink:
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("Custom preflighted orientation.", encoding="utf-8")
+    live_db = tmp_path / "boot_prompt.db"
+    TautClient.init(db_path=live_db)
+    seen_prompts: list[str] = []
+
+    orig_bootstrap = SummonDriver._bootstrap
+
+    def unlink_prompt_after_bootstrap(self: SummonDriver, client: TautClient) -> Any:
+        res = orig_bootstrap(self, client)
+        if prompt_file.exists():
+            prompt_file.unlink()
+        return res
+
+    monkeypatch.setattr(SummonDriver, "_bootstrap", unlink_prompt_after_bootstrap)
+
+    orig_sys_prompt = SummonDriver._system_prompt
+
+    def spy_sys_prompt(self: SummonDriver, boot: Any, db_display: str) -> str:
+        val = orig_sys_prompt(self, boot, db_display)
+        seen_prompts.append(val)
+        return val
+
+    monkeypatch.setattr(SummonDriver, "_system_prompt", spy_sys_prompt)
+    run_driver(
+        make_req(
+            "scripted",
+            detach=True,
+            system_prompt_file=str(prompt_file),
+        ),
+        no_tty_interaction,
+        db_path=str(live_db),
+        on_ready=stop_on_ready,
+    )
+    assert seen_prompts == ["Custom preflighted orientation."]
+
+    # Stored scripted session row refuses --provider-arg in _bootstrap before claim_driver() writes driver_pid:
+    race_db = tmp_path / "race.db"
+    TautClient.init(db_path=race_db)
+    c_race = TautClient(db_path=race_db, as_name="racer")
+    try:
+        c_race.join("general")
+        m_race = c_race.last_created_member
+        assert m_race is not None and m_race.token is not None
+        racer_id = m_race.member_id
+        racer_token = m_race.token
+    finally:
+        c_race.close()
+
+    def inject_scripted_row_before_bootstrap(
+        self: SummonDriver, client: TautClient
+    ) -> Any:
+        q = Queue("taut.summon_state", db_path=str(race_db))
+        try:
+            ensure_summon_schema(q)
+            record_session(
+                q,
+                member_id=racer_id,
+                token=racer_token,
+                provider="scripted",
+                driver_pid=None,
+                driver_start_time=None,
+                updated_ts=q.generate_timestamp(),
+            )
+        finally:
+            q.close()
+        return orig_bootstrap(self, client)
+
+    monkeypatch.setattr(
+        SummonDriver, "_bootstrap", inject_scripted_row_before_bootstrap
+    )
+    with pytest.raises(SummonOperationError, match="provider 'scripted'"):
+        run_driver(
+            make_req(
+                "racer",
+                provider_args=("--extra",),
+                detach=True,
+            ),
+            no_tty_interaction,
+            db_path=str(race_db),
+            on_ready=stop_on_ready,
+        )
+    q_check = Queue("taut.summon_state", db_path=str(race_db))
+    try:
+        row_after = get_session(q_check, m_race.member_id)
+        assert row_after is not None
+        assert row_after["driver_pid"] is None
+    finally:
+        q_check.close()

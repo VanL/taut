@@ -15,7 +15,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from taut_summon._adapter import AdapterError, AdapterHandle
 
@@ -110,6 +110,13 @@ class PtyAdapter:
     @property
     def argv(self) -> tuple[str, ...]:
         return self._spec.argv
+
+    def with_extra_args(self, extra_args: tuple[str, ...]) -> PtyAdapter:
+        """Return a `PtyAdapter` appending pass-through arguments."""
+
+        if not extra_args:
+            return self
+        return PtyAdapter(replace(self._spec, argv=(*self._spec.argv, *extra_args)))
 
     def spawn(
         self,
@@ -358,6 +365,10 @@ class _TerminalState:
             return ESC + b"[200~" + sanitized.encode() + ESC + b"[201~\r"
         return sanitized.replace("\n", " ").encode() + b"\r"
 
+    def resize(self, *, rows: int, cols: int) -> None:
+        with self._lock:
+            self._responder.resize(rows=rows, cols=cols)
+
     def observe_output(
         self, data: bytes, *, answer_queries: bool = True
     ) -> tuple[bytes, ...]:
@@ -368,9 +379,7 @@ class _TerminalState:
             self._tail_buffer.extend(data)
             if len(self._tail_buffer) > _OUTPUT_TAIL_RAW_CAP:
                 del self._tail_buffer[: len(self._tail_buffer) - _OUTPUT_TAIL_RAW_CAP]
-            if answer_queries:
-                return tuple(self._responder.feed(data))
-            return ()
+            return tuple(self._responder.feed(data, answer_queries=answer_queries))
 
     def mark_stalled(self, *, now: float | None = None) -> None:
         with self._lock:
@@ -503,7 +512,12 @@ class _TerminalResponder:
     def scan_steps(self) -> int:
         return self._scan_steps
 
-    def feed(self, data: bytes) -> list[bytes]:
+    def resize(self, *, rows: int, cols: int) -> None:
+        self._rows = rows
+        self._cols = cols
+        self._row, self._col = self._clamp(self._row, self._col)
+
+    def feed(self, data: bytes, *, answer_queries: bool = True) -> list[bytes]:
         replies: list[bytes] = []
         self._buffer += data
         while True:
@@ -529,7 +543,7 @@ class _TerminalResponder:
             if parsed is None:
                 self._bound_incomplete_buffer()
                 return replies
-            reply = self._handle_sequence(parsed)
+            reply = self._handle_sequence(parsed, answer_queries=answer_queries)
             if reply:
                 replies.append(reply)
 
@@ -591,10 +605,15 @@ class _TerminalResponder:
         self._scan_index = len(self._buffer)
         return None
 
-    def _handle_sequence(self, seq: bytes) -> bytes | None:
+    def _handle_sequence(
+        self, seq: bytes, *, answer_queries: bool = True
+    ) -> bytes | None:
         if seq.startswith(ESC + b"["):
+            if not answer_queries:
+                self._track_cursor(seq[2:-1], seq[-1:])
+                return None
             return self._handle_csi(seq)
-        if seq.startswith(ESC + b"]"):
+        if seq.startswith(ESC + b"]") and answer_queries:
             return self._handle_osc(seq)
         return None
 

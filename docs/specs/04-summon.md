@@ -87,25 +87,53 @@ terminal domain.
 
 ```text
 taut summon PROVIDER_OR_NAME [THREAD ...] [flags]   # default thread: general
+taut summon --status [NAME] [--json]
 taut dismiss NAME
 ```
 
   Core supplies only the absent-package install hint; it contains no Summon
   domain logic and does not delegate to an older extension CLI. Current
-  Summon entry points own both reserved command slots.
+  Summon entry points own both reserved command slots, keeping `post_verb_globals`
+  pinned to `{GlobalOption.DB}` so undeclared root-global lookalikes remain in
+  the Summon parser's tail.
 - The extension also installs `taut-summon run|stop|status`. Both console
   surfaces are adapters over the public [SUM-13] controller. They share
-  request models, provider/name resolution, results, error semantics, and
-  tests; neither console surface invokes the other's `main()` or parses the
-  other's output.
+  request models, provider/name resolution, registered-provider help text,
+  status/stop results, error semantics, and tests; neither console surface
+  invokes the other's `main()` or parses the other's output.
 
   Both first-party console surfaces use `taut.escape_terminal_text` for
   Taut-owned dynamic human text and diagnostics under [TAUT-6.4]. JSON/domain
-  values remain exact.
+  values remain exact. For administrative/inspection commands (`status` /
+  `--status`, `stop` / `dismiss`) and pre-attach failures of foreground `run`,
+  every non-zero exit (`1` or `2`) leaves `stdout` empty and writes its
+  diagnostic to `stderr` even when `--json` is active. JSON output (`--json` or
+  root `taut --json`, emitting one JSON object per line in NDJSON framing per
+  [TAUT-8.2]) is supported on:
+  - `taut summon --status` / `taut-summon status`: projects
+    `SummonController.list_live()` (every non-`dead` ledger claim, including
+    `"indeterminate"` rows, matching human `<name>\t<provider>\tlive`); exit `0`
+    emits one `{"member_id": str, "name": str, "provider": str, "status":
+    "live"}` JSON object per line, and exit `2` (nothing summoned) emits nothing
+    on `stdout`. Bare `list_live()` failures carry `fault_plane=None`.
+  - `taut summon --status NAME` / `taut-summon status NAME`: resolves any
+    non-`dead` ledger claim (`"live"` or `"indeterminate"`) and performs a
+    correlated `STATUS` control round-trip; a valid correlated reply exits `0`
+    with one line `{"member_id": str, "name": str, "driver": str, "provider":
+    str, "thread_count": int, "cursor_lag": dict[str, int], "details": dict[str,
+    JSONPrimitive]}`, while exit `2` (nothing summoned) or `1` (error or
+    `DriverUnresponsive` timeout, carrying `STATUS_FAULT_PLANES` when
+    `TAUT_SUMMON_STATUS_FAULT_PLANE=1`) emits nothing on `stdout`.
+  Passing `--json` to an interactive foreground `summon`/`run` invocation
+  without `--status` is a usage error (exit `1`).
 
   `taut summon X ...` remains behaviorally equivalent to
-  `taut-summon run X ...`, and `taut dismiss X` remains equivalent to
-  `taut-summon stop X`. Both surfaces share one resolution contract:
+  `taut-summon run X ...`, `taut summon --status [NAME]` is equivalent to
+  `taut-summon status [NAME]`, and `taut dismiss X` remains equivalent to
+  `taut-summon stop X`. Both run surfaces surface the sorted registered provider
+  names in `--help` and accept repeatable `--provider-arg ARG` (using inline
+  `--provider-arg=--flag` for option-shaped values). Both surfaces share one
+  resolution contract:
   `run NAME_OR_PROVIDER [THREAD ...]` — the positional is always the
   **member name**; the provider resolves in order: (1) `--provider`
   when given (a re-summon whose session row disagrees is an error
@@ -476,18 +504,23 @@ before the pump starts. `orientation_via_inject` controls whether the
 persona/orientation is delivered by a first injected turn rather than a
 spawn-time system-prompt flag.
 
-### [SUM-7.2] Adapters shipped
+### [SUM-7.2] Adapters shipped and pass-through arguments
 
 - `pty` is the sole production adapter. It hosts every named provider
-  (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`, `opencode`, `pi`, and
-  future interactive CLIs) through the same terminal path. Provider entries
-  contain only the executable argv and values already represented by
-  `PtySpec`; they are not protocol adapters.
+  (`agy`, `claude`, `coder`, `codex`, `gemini`, `grok`, `kimi`, `opencode`,
+  `pi`, `qwen`, and future interactive CLIs) through the same terminal path.
+  Provider entries contain only the executable argv and values already
+  represented by `PtySpec`; they are not protocol adapters.
 - `scripted` is a packaged test registration for the same PTY adapter. Its
   real interactive child publishes terminal readiness, accepts terminal
   input, records received turns, and exercises explicit Taut commands. It is
   the anti-mocking seam for downstream conformance and contains no second
   adapter or wire protocol.
+- Repeatable pass-through arguments (`--provider-arg ARG`, ordered as
+  `(*base_argv, *provider_args)`) customize `PtyAdapter` per foreground run
+  without schema changes. Explicit `--provider-arg` values must be non-empty
+  strings without NUL bytes and are rejected before session-row claim or
+  mutation on `scripted`.
 
 ### [SUM-7.4] PTY shell adapter
 
@@ -523,7 +556,19 @@ deadlines. Invalid configuration and
 any pre-publication setup/spawn exception releases every acquired terminal
 resource and surfaces as `AdapterError`.
 The POSIX threaded driver uses `start_new_session=True`, never `preexec_fn` or
-`pty.fork()`.
+`pty.fork()`. Inside the POSIX controlling-terminal child trampoline, `SIGHUP`
+is reset to `SIG_DFL` before `TIOCSCTTY` and `os.execvpe` so an inherited
+`SIG_IGN` from a `nohup` ancestor cannot defeat controlling-terminal `SIGHUP`
+delivery on driver death ([SUM-11]).
+
+During POSIX `attach()`, the bridge reads the leased host terminal's window
+dimensions (`TIOCGWINSZ` on `output_fd`, falling back to `input_fd`) on entry
+and on its existing 100 ms `select` loop ([THEORY-3]). Unset or non-positive
+readings (`rows <= 0` or `cols <= 0`) are ignored; valid size changes are
+forwarded to the PTY master (`TIOCSWINSZ`) and applied to
+`_TerminalState.resize(rows, cols)`, clamping stored `(cursor_row, cursor_col)`
+so detached DSR `ESC[6n` replies after detach never report out-of-bounds
+coordinates.
 
 Validation exists only for values constructible through `PtySpec` or the
 documented `TAUT_SUMMON_PTY_*` environment variables. Platform setup errors
@@ -809,16 +854,26 @@ ownership path, and raises `AdapterError` after best-effort cleanup. Cleanup
 errors do not replace an existing primary exception; interrupt after retirement
 is a no-op and cannot touch a reused fd.
 
-**Pre-attach acknowledgement.** After resolving that the first provider
-generation will actually attach, but before spawning that generation, Summon
-asks the host interaction to present a typed terminal-attach notice and
+**Pre-bootstrap input validation and pre-attach acknowledgement.** Before
+opening storage or calling `ensure_summon_schema()`, Summon validates local
+request inputs (`--provider` adapter lookup when explicit, `--provider-arg`
+values, UTF-8 `--system-prompt-file` readability once, and `--attach` host
+terminal availability when attach is supported), and `_bootstrap()` re-verifies
+the resolved provider's adapter capabilities and `--provider-arg` constraints
+before `replace_legacy_provider()` or `claim_driver()` mutates
+`taut_summon_sessions`.
+
+After `_bootstrap()` claims the driver slot, and after resolving that the first
+provider generation will actually attach, but before spawning that generation,
+Summon asks the host interaction to present a typed terminal-attach notice and
 return an explicit proceed/cancel decision. The notice identifies the member
 and provider and supplies the Summon-owned detach hint. Every host must make
 four facts clear: this screen is provider setup rather than Taut chat; the
 user should complete only trust, login, model, or equivalent setup; the user
 returns with `Ctrl-\ Ctrl-\`; and the foreground Summon run continues after
-detach. The shell requires an Enter acknowledgement. A rich host may use a
-native confirmation that was opened by this exact attach decision.
+detach. The shell accepts a blank Enter, `y`, or `yes` (case-insensitively,
+ignoring surrounding whitespace); EOF or any other input cancels. A rich host
+may use a native confirmation that was opened by this exact attach decision.
 
 For the first-generation attach decision, cancellation is a normal
 pre-spawn end. It starts no provider child, terminal lease, event pump,
@@ -1258,12 +1313,15 @@ rewriting its version marker is not a v2 fixture.
   decides whether to restart it.
 - Driver crash: cursors and ledger make restart safe (at-least-once
   injection); stale session driver evidence is reclaimable. Because the
-  PTY slave is the provider's controlling terminal, closing the master on
-  driver death delivers the operating system's `SIGHUP` to the provider's
-  foreground group. Taut promises nothing beyond that OS behavior: a provider
-  that ignores `SIGHUP` may survive even though ordinary dead-driver evidence
-  permits a new claim, so Taut cannot prevent duplicate providers in that
-  case. Taut adds no provider census or watchdog for this residual risk.
+  PTY slave is the provider's controlling terminal and the POSIX child
+  trampoline resets `SIGHUP` to `SIG_DFL` before `TIOCSCTTY` and `exec`,
+  closing the master on driver death delivers the operating system's `SIGHUP`
+  to the provider's foreground group even when the parent shell ran under
+  `nohup`. Taut promises nothing beyond that OS behavior: a provider executable
+  that installs its own `SIGHUP` ignore handler after `exec` may survive even
+  though ordinary dead-driver evidence permits a new claim, so Taut cannot
+  prevent duplicate providers in that case. Taut adds no provider census or
+  watchdog for this residual risk.
 - An unexpected `Exception` escaping the standalone `taut-summon` outer
   adapter is offered once to [TAUT-13] with its parsed subcommand and database
   selector, then the same exception re-raises. Expected `CommandError`, policy,
@@ -1603,17 +1661,22 @@ evidence release, no callback before startup failure, and unchanged CLI
 behavior and timing when the callback is absent. A host must not derive
 foreground ownership by diffing `list_live()` snapshots.
 
-`SummonController` is bound to one optional database path. It exposes sorted
+`SummonController` is bound to one optional database path. Importing
+`SummonController` and calling `provider_names()` does not import broker, core
+client, control, state, driver, or PTY runtime modules. It exposes sorted
 provider names through `provider_names()` without constructing adapters; live
 session summaries through `list_live()`; one correlated live status; one
 confirmed stop result; and a blocking foreground run with keyword-only
 `install_signal_handlers: bool = False` and
 `on_ready: Callable[[SummonRunHandle], None] | None = None` that returns no
-value on clean completion. `list_live()` returns an empty tuple when no database or no
-live rows exist; command adapters, not embedders, translate that empty result to
-the nothing-summoned exit class. The request model contains `name`, `threads`,
-`persona`, `system_prompt_file`, `rate_limit`, `attach`, `detach`,
-`provider_flag`, and `takeover`; the database path belongs to the controller.
+value on clean completion. `list_live()`, `status()`, and `stop()` inspect
+existing state through a non-installing client first so uninitialized,
+broker-only, empty, dead, or malformed targets perform no setup or sidecar
+writes (`list_live()` returns an empty tuple when no database or no live rows
+exist; command adapters translate that empty result to the nothing-summoned
+exit class). The request model contains `name`, `threads`, `persona`,
+`system_prompt_file`, `rate_limit`, `attach`, `detach`, `provider_flag`,
+`takeover`, and `provider_args`; the database path belongs to the controller.
 A live summary contains member id, current name, and provider. A stop result
 contains member id and current name. Status contains
 those identity/provider values plus driver, thread count, cursor lag, and
@@ -1621,10 +1684,12 @@ defensive copies of remaining validated JSON-primitive detail fields; it never
 exposes a raw reply.
 
 Public controller operations return typed domain results and raise typed
-`NothingSummoned`, `DriverUnresponsive`, or `SummonOperationError`. They do not
-print, return CLI exit codes, or require callers to parse human or JSON output.
-Command adapters own rendering and map `NothingSummoned` to exit 2 and the other
-public operation errors to exit 1.
+`NothingSummoned`, `DriverUnresponsive`, or `SummonOperationError` (including
+malformed or non-numeric `summon_schema_version` metadata normalized through
+`SummonSchemaVersionError`). They do not print, return CLI exit codes, or
+require callers to parse human or JSON output. Command adapters own rendering
+and map `NothingSummoned` to exit 2 and the other public operation errors to
+exit 1.
 
 [SUM-13] verification crosses the public controller boundary with real
 process environment and signal APIs. It proves environment non-mutation
@@ -1673,6 +1738,14 @@ tail plus the `--attach` instruction.
   owner, states the driver-crash guarantee, reaps fixture process groups on
   every test path, removes live-harness false skips, and adds the real root-CLI
   host-PTY scenario.
+
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md`
+  — adds `agy` and `gemini` PTY providers, lazy `SummonController`
+  `provider_names()` imports, root `taut summon --status [NAME]` + NDJSON
+  parity, repeatable `--provider-arg`, non-installing passive controller
+  inspection on `TautClient(..., install_schema=False)`, local pre-DB request
+  validation, `y`/`yes`/Enter attach confirmation, POSIX `TIOCGWINSZ` attach
+  resize sync, and child `SIGHUP` `SIG_DFL` reset.
 
 - `docs/plans/2026-09-23-summon-enhanced-keyboard-detach-plan.md` — makes the
   default detach chord semantic across legacy, Kitty CSI-u, and xterm

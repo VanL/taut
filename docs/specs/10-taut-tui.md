@@ -754,14 +754,17 @@ install hint without importing private modules.
 
 The start form obtains provider names from `provider_names()` and constructs a
 typed `SummonRequest`. It exposes name, conversations, provider, persona,
-system-prompt file, rate limit, terminal, attach/detach, and takeover without
-reusing the CLI parser; the selected provider populates `provider_flag`.
-Status calls the controller and displays correlated live status. Dismiss calls
-confirmed `stop()`. Chat member presence and live
+system-prompt file, rate limit, provider arguments, attach/detach, and
+takeover without reusing the CLI parser; the selected provider populates
+`provider_flag`. Status calls the controller and displays correlated live
+status. Dismiss calls confirmed `stop()`. Chat member presence and live
 driver status are separate labelled observations.
 
 When `taut-summon` is available, the TUI registers native textual mirror
-bindings for `summon` and `dismiss` through the public controller boundary.
+bindings for `summon` and `dismiss` through the public controller boundary
+(including repeatable `--provider-arg`; administrative CLI flags `--status`
+and `--json` remain CLI-only because the TUI owns native list/status actions
+and in-process foreground supervision).
 `:summon grok` is a typed request, not a CLI invocation. The existing
 foreground ownership, readiness, terminal lease, logging, and shutdown rules
 remain authoritative.
@@ -1109,6 +1112,12 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
+  extends `SummonStartScreen`, `TuiSummonOperations.build_request`, and the
+  `:summon` mirror with `provider_args` (while removing the stale nonexistent
+  `terminal` start-form noun from [TUI-11.1] and recording `--status` and
+  `--json` on `summon` as CLI-only).
 
 - `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
   records the [TUI-7.1] explicit CLI-only disposition for `whoami --show-token`.

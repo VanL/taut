@@ -171,6 +171,7 @@ class TuiSummonOperations:
         detach: bool,
         provider_flag: str | None,
         takeover: bool,
+        provider_args: tuple[str, ...] = (),
     ) -> object:
         """Construct the public typed request without reusing CLI parsing."""
 
@@ -185,6 +186,7 @@ class TuiSummonOperations:
             detach=detach,
             provider_flag=provider_flag,
             takeover=takeover,
+            provider_args=provider_args,
         )
 
     def list_live(self) -> tuple[object, ...]:

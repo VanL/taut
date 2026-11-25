@@ -60,11 +60,13 @@ minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-ra -q --strict-markers -n auto --dist loadgroup"
 markers = [
+    "requires_agy: live smoke tests that spawn the installed agy CLI",
     "requires_claude: live smoke tests that spawn the installed claude CLI (skipped when absent)",
     "requires_live_harness: live PTY harness smoke tests; local by default, CI opt-in",
     "requires_local_llm: local-LLM-backed PTY smoke tests; local by default, prepared CI opt-in",
     "requires_codex: live smoke tests that spawn the installed codex CLI",
     "requires_coder: live smoke tests that spawn the installed coder CLI",
+    "requires_gemini: live smoke tests that spawn the installed gemini CLI",
     "requires_grok: live smoke tests that spawn the installed grok CLI",
     "requires_qwen: live smoke tests that spawn the installed qwen CLI",
     "requires_kimi: live smoke tests that spawn the installed kimi CLI",

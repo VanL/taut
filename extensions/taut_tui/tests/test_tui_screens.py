@@ -500,6 +500,9 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
             app.screen.query_one("#summon-persona", Input).value = "careful"
             app.screen.query_one("#summon-system-prompt", Input).value = "prompt.md"
             app.screen.query_one("#summon-rate-limit", Input).value = "12"
+            app.screen.query_one(
+                "#summon-provider-args", Input
+            ).value = "--model 'claude opus'"
             for selector in (
                 "#summon-attach",
                 "#summon-takeover",
@@ -523,6 +526,7 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
             attach=True,
             detach=False,
             takeover=True,
+            provider_args=("--model", "claude opus"),
         )
     ]
 

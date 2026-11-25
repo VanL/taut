@@ -196,3 +196,50 @@ def test_core_syntax_recognizes_every_released_command_path(
     from taut.commands.syntax import core_command_syntax, parse_command_line
 
     assert parse_command_line(text, syntax=core_command_syntax()).path == path
+
+
+def test_post_verb_global_is_not_extracted_from_local_option_value_slot() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import (
+        CommandSyntaxError,
+        core_command_syntax,
+        merge_command_syntax,
+        parse_command_line,
+    )
+
+    syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+    with pytest.raises(CommandSyntaxError):
+        parse_command_line(
+            "summon claude --provider-arg --db=other.db general",
+            syntax=syntax,
+        )
+    with pytest.raises(CommandSyntaxError):
+        parse_command_line(
+            "summon claude --provider-arg --db other.db",
+            syntax=syntax,
+        )
+
+    inline = parse_command_line(
+        "summon claude --provider-arg=--model --provider-arg opus --provider-arg=--db=other.db",
+        syntax=syntax,
+    )
+    assert inline.values["provider_args"] == ["--model", "opus", "--db=other.db"]
+    assert "db_path" not in inline.values
+
+    abbrev = parse_command_line("summon claude --d", syntax=syntax)
+    assert abbrev.values["detach"] is True
+
+    # F1 regression: prefix matching on list-default options never hashes OptionSyntax.
+    search_abbrev = parse_command_line("search needle --ch general", syntax=syntax)
+    assert search_abbrev.values["channel"] == ["general"]
+    provider_arg_abbrev = parse_command_line(
+        "summon claude --provider-a=--model", syntax=syntax
+    )
+    assert provider_arg_abbrev.values["provider_args"] == ["--model"]
+    with pytest.raises(CommandSyntaxError, match="ambiguous option: --p"):
+        parse_command_line("summon claude --p", syntax=syntax)
+
+    literal = parse_command_line("summon claude -- --help --version", syntax=syntax)
+    assert literal.action is None
+    assert literal.values["threads"] == ["--help", "--version"]

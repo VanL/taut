@@ -465,13 +465,8 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
             "argparse.error",
         ),
         (
-            "extensions/taut_summon/taut_summon/cli.py",
-            "_print_live_member",
-            ".write",
-        ),
-        (
-            "extensions/taut_summon/taut_summon/cli.py",
-            "_print_status",
+            "extensions/taut_summon/taut_summon/commands/__init__.py",
+            "_write_human_line",
             ".write",
         ),
         (
@@ -481,7 +476,17 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ),
         (
             "extensions/taut_summon/taut_summon/commands/__init__.py",
-            "_write_human_line",
+            "write_ndjson_record",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/__init__.py",
+            "render_live_member",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/__init__.py",
+            "render_status",
             ".write",
         ),
         (

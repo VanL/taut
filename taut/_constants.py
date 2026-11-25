@@ -87,6 +87,7 @@ INFRASTRUCTURE_BASENAMES: Final[tuple[str, ...]] = (
 )
 
 PER_BASENAME_NAME_POOLS: Final[dict[str, tuple[str, ...]]] = {
+    "agy": ("Agatha", "Agnes", "Agis", "Agathon"),
     "claude": ("Claudette", "Claudius", "Claudion", "Claudine"),
     "codex": ("Codette", "Codexter", "Codius", "Codine"),
     "gemini": ("Gemina", "Geminus", "Gemma", "Gem"),

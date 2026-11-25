@@ -559,6 +559,40 @@ def test_shell_interaction_eof_cancels_attach(
     )
 
 
+@pytest.mark.parametrize(
+    ("raw_input", "expected"),
+    [
+        ("\n", True),
+        ("\r\n", True),
+        ("y\n", True),
+        ("Y\r\n", True),
+        (" yes \n", True),
+        ("y", True),
+        ("", False),
+        ("n\n", False),
+        ("no\n", False),
+        ("not-enter\n", False),
+    ],
+)
+def test_shell_interaction_accepts_enter_y_and_yes_case_insensitively(
+    raw_input: str,
+    expected: bool,
+) -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    decision = ShellSummonInteraction(
+        input_stream=io.StringIO(raw_input),
+        output_stream=io.StringIO(),
+    ).confirm_terminal_attach(
+        TerminalAttachNotice(
+            member="claude",
+            provider="claude",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+    )
+    assert decision is expected
+
+
 def test_shell_interaction_uses_complete_partial_pipe_line_after_writer_close() -> None:
     from taut_summon import ShellSummonInteraction, TerminalAttachNotice
 

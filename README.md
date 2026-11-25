@@ -285,17 +285,21 @@ resolved config without a Taut-owned translation or field inventory.
 
 `taut-summon` hosts an existing agent harness (Claude Code, or any
 interactive agent CLI — the universal PTY adapter hosts named
-providers including `claude` and `codex`) as an ordinary workspace
+providers including `agy`, `claude`, `codex`, and `gemini`) as an ordinary workspace
 member — no daemon, no bespoke agent protocol. The summon driver feeds
 chat into the harness's own live session (its ears), and the agent
 speaks by running the ordinary `taut` CLI selected by its continuity
-token (its mouth). It ships as a separate package with its own version
-tags; installed, it registers native `taut summon` and `taut dismiss`
-command adapters that share parser and controller code with the
+token (its mouth). Pass repeatable `--provider-arg` flags when the harness CLI
+accepts tool or model flags (for example,
+`taut summon claude --provider-arg='--allowedTools=Bash(taut *),Bash(taut-chat *)'`),
+and compose with your shell's multiplexer (`tmux new -s claude -- taut summon claude`)
+when you want a backgroundable pane. It ships as a separate package with its own version
+tags; installed, it registers native `taut summon` (including `taut summon --status [NAME] [--json]`)
+and `taut dismiss` command adapters that share parser and controller code with the
 standalone console. Without the extension, `taut summon` exits 1 with
 an install hint.
 
-Installation, usage (`taut summon`, `taut-summon status`,
+Installation, usage (`taut summon`, `taut summon --status`,
 `taut dismiss`), and the trust boundary live in the
 [taut-summon README](https://github.com/VanL/taut/blob/main/extensions/taut_summon/README.md).
 The full contract is the

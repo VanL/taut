@@ -200,12 +200,20 @@ class PosixPtyHandle:
         saved = termios.tcgetattr(input_fd)
         tty.setraw(input_fd)
         matcher = self._terminal.detach_matcher(detach_chord)
+        last_size: tuple[int, int] | None = None
         result = "eof"
         try:
             while True:
                 if shutdown.is_set():
                     result = "shutdown"
                     break
+                last_size = _sync_attach_winsize(
+                    self._master_fd,
+                    self._terminal,
+                    input_fd=input_fd,
+                    output_fd=output_fd,
+                    last_size=last_size,
+                )
                 ambiguity_wait = matcher.seconds_until_deadline()
                 wait_timeout = (
                     0.1 if ambiguity_wait is None else min(0.1, ambiguity_wait)
@@ -613,6 +621,37 @@ class PosixPtyHandle:
         except OSError as exc:
             if exc.errno != errno.EBADF:
                 raise
+
+
+def _read_winsize(fd: int) -> tuple[int, int] | None:
+    try:
+        packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\x00" * 8)
+    except OSError:
+        return None
+    rows, cols, _, _ = struct.unpack("HHHH", packed)
+    if rows <= 0 or cols <= 0:
+        return None
+    return rows, cols
+
+
+def _sync_attach_winsize(
+    master_fd: int,
+    terminal: _TerminalState,
+    *,
+    input_fd: int,
+    output_fd: int,
+    last_size: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    size = _read_winsize(output_fd) or _read_winsize(input_fd)
+    if size is None or size == last_size:
+        return last_size
+    rows, cols = size
+    try:
+        _set_winsize(master_fd, rows, cols)
+    except OSError:
+        return last_size
+    terminal.resize(rows=rows, cols=cols)
+    return size
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:

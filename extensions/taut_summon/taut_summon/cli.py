@@ -24,7 +24,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from taut import escape_terminal_text
 from taut.commands import CommandContext, CommandError
@@ -33,13 +33,12 @@ from taut_summon.commands import (
     STATUS_FAULT_PLANES,
     StatusFaultPlane,
     _write_human_line,
+    emit_status_inspection,
 )
 from taut_summon.models import (
     NothingSummoned,
-    SummonedMember,
     SummonOperationError,
     SummonRequest,
-    SummonStatus,
 )
 
 _STATUS_FAULT_PLANE_ENV = "TAUT_SUMMON_STATUS_FAULT_PLANE"
@@ -68,6 +67,16 @@ class _SummonArgumentParser(argparse.ArgumentParser):
         self.print_usage(sys.stderr)
         safe_message = escape_terminal_text(message)
         self.exit(1, f"{self.prog}: error: {safe_message}\n")
+
+    def _get_option_tuples(self, option_string: str) -> list[tuple[Any, ...]]:
+        """Keep --db exact-only while preserving local long-option abbreviations."""
+
+        option_prefix = option_string.partition("=")[0]
+        return [
+            option_tuple
+            for option_tuple in super()._get_option_tuples(option_string)
+            if option_tuple[0].dest != "db_path" or option_tuple[1] == option_prefix
+        ]
 
 
 class _SummonRootArgumentParser(_SummonArgumentParser):
@@ -143,6 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Current summoned-member name; omit to list all live sessions.",
     )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit successful stdout records as NDJSON; errors remain text on stderr.",
+    )
     p.add_argument("--db", dest="db_path", metavar="PATH", help=DATABASE_HELP)
     p.set_defaults(func=_cmd_status)
 
@@ -154,7 +168,11 @@ def _add_run_arguments(
 ) -> None:
     from taut_summon.commands.summon import configure_parser, create_command
 
-    configure_parser(parser, include_db=True, require_name=require_name)
+    configure_parser(
+        parser,
+        include_db=True,
+        require_name=require_name,
+    )
     parser.set_defaults(command="run", command_factory=create_command)
 
 
@@ -208,16 +226,10 @@ def _db_suffix(args: argparse.Namespace) -> str:
 def _cmd_status(args: argparse.Namespace) -> int:
     from taut_summon.controller import SummonController
 
+    as_json = bool(getattr(args, "json", False))
     controller = SummonController(db_path=args.db_path)
     try:
-        if args.name is None:
-            members = controller.list_live()
-            if not members:
-                raise NothingSummoned("nothing summoned")
-            for member in members:
-                _print_live_member(member)
-        else:
-            _print_status(controller.status(args.name))
+        emit_status_inspection(sys.stdout, controller, args.name, as_json=as_json)
     except NothingSummoned as exc:
         _print_operation_error(exc, args)
         return 2
@@ -232,39 +244,6 @@ def _print_operation_error(exc: SummonOperationError, args: argparse.Namespace) 
     if plane in STATUS_FAULT_PLANES:
         _emit_status_fault_plane(plane, exc)
     _write_human_line(sys.stderr, f"{exc}{_db_suffix(args)}")
-
-
-def _print_live_member(member: SummonedMember) -> None:
-    fields = (
-        escape_terminal_text(member.name),
-        escape_terminal_text(member.provider),
-        "live",
-    )
-    sys.stdout.write("\t".join(fields) + "\n")
-
-
-def _print_status(status: SummonStatus) -> None:
-    lag = status.cursor_lag
-    lag_text = (
-        ", ".join(
-            f"#{escape_terminal_text(thread)}:{count}"
-            for thread, count in sorted(lag.items())
-        )
-        if lag
-        else "caught up"
-    )
-    fields = [
-        escape_terminal_text(status.name),
-        f"provider={escape_terminal_text(status.provider)}",
-        f"driver={escape_terminal_text(status.driver)}",
-        f"threads={status.thread_count}",
-        f"lag={lag_text}",
-    ]
-    fields.extend(
-        f"{escape_terminal_text(key)}={escape_terminal_text(str(value))}"
-        for key, value in sorted(status.details.items())
-    )
-    sys.stdout.write("\t".join(fields) + "\n")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -303,14 +282,15 @@ def _run_parsed(
     if not hasattr(args, "func") and not hasattr(args, "command_factory"):
         parser.print_help(sys.stderr)
         return 1
-    escape_terminal_text("")
+    if not getattr(args, "json", False):
+        escape_terminal_text("")
     if hasattr(args, "func"):
         return int(args.func(args))
     context = CommandContext(
         db_path=args.db_path,
         as_name=None,
         continuity_token=None,
-        json=False,
+        json=bool(getattr(args, "json", False)),
         timestamps=False,
         quiet=False,
         stdin=sys.stdin,

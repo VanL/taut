@@ -417,6 +417,12 @@ class SummonInteraction(Protocol):
         ...
 
 
+def _accepts_attach_confirmation(line: str | None) -> bool:
+    if not line:
+        return False
+    return line.strip().casefold() in {"", "y", "yes"}
+
+
 class ShellSummonInteraction:
     """Terminal interaction for the standalone shell command surface."""
 
@@ -468,24 +474,23 @@ class ShellSummonInteraction:
             f"When setup is complete, return to Taut with {detach_hint}.\n"
             "This foreground Summon command keeps running after detach; "
             "chat from another terminal.\n"
-            "Press Enter to continue, or type anything else to cancel: "
+            "Press Enter to continue (or y/yes; anything else cancels): "
         )
         self._output_stream.flush()
         if cancel is None:
-            return self._input_stream.readline() in {"\n", "\r\n"}
+            return _accepts_attach_confirmation(self._input_stream.readline())
         if _is_windows():
-            return _windows_cancelable_readline(self._input_stream, cancel) in {
-                "\n",
-                "\r\n",
-            }
+            return _accepts_attach_confirmation(
+                _windows_cancelable_readline(self._input_stream, cancel)
+            )
         try:
             input_fd = self._input_stream.fileno()
         except (AttributeError, OSError):
-            return self._input_stream.readline() in {"\n", "\r\n"}
+            return _accepts_attach_confirmation(self._input_stream.readline())
         while not cancel.is_set():
             ready, _, _ = select.select([input_fd], [], [], 0.1)
             if ready:
-                return self._input_stream.readline() in {"\n", "\r\n"}
+                return _accepts_attach_confirmation(self._input_stream.readline())
         return False
 
     @contextmanager

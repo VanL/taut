@@ -9,12 +9,15 @@ Spec references:
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import metadata
 from types import MappingProxyType
+
+_NEGATIVE_NUMBER_RE = re.compile(r"^-\d+$|^-\d*\.\d+$")
 
 
 class ValueKind(StrEnum):
@@ -252,37 +255,27 @@ def parse_command_line(
         raise CommandSyntaxError(f"unknown command: {tokens[0]}", token_index=0)
 
     tokens = tokens[1:]
-    tokens, post_values = _extract_post_globals(
-        tokens,
-        command_node.post_verb_globals,
-        syntax.globals,
-    )
-    values.update(post_values)
-
-    current = command_node
-    while tokens and current.children:
-        child = _find_child(tokens[0], current.children)
-        if child is None:
-            break
-        current = child
-        tokens = tokens[1:]
-
-    # Command help is an action, not a requirement to supply the command's
-    # normal positionals. It is still attached to the most specific path.
-    action = next(
-        (value for value in tokens if value in ("-h", "--help", "--version")),
-        None,
+    current, tail = _resolve_subcommand_path(tokens, command_node, values)
+    action, positional_tokens, node_values = _scan_node_tokens(
+        tail,
+        current,
+        global_values=values,
     )
     if action is not None:
         return CommandInvocation(
             current.path,
             MappingProxyType(dict(values)),
             source,
-            "help" if action != "--version" else "version",
+            action,
         )
-
-    parsed = _parse_node(tokens, current)
-    values.update(parsed)
+    if current.children and not positional_tokens:
+        raise CommandSyntaxError(
+            "choose a subcommand: "
+            + ", ".join(child.path[-1] for child in current.children)
+        )
+    _assign_positionals(positional_tokens, current, node_values)
+    _validate_node(current, node_values)
+    values.update(node_values)
     return CommandInvocation(current.path, MappingProxyType(dict(values)), source)
 
 
@@ -372,82 +365,53 @@ def _extract_root_prefix(
     return remaining, None
 
 
-def _extract_post_globals(
+def _resolve_subcommand_path(
     tokens: list[str],
-    allowed: Sequence[GlobalOptionSyntax],
-    all_globals: Sequence[GlobalOptionSyntax],
-) -> tuple[list[str], dict[str, object]]:
-    allowed_map = _spelling_map(allowed)
-    all_map = _spelling_map(all_globals)
-    values: dict[str, object] = {
-        option.name: False for option in allowed if not option.takes_value
-    }
-    remaining: list[str] = []
+    command_node: CommandSyntax,
+    global_values: dict[str, object],
+) -> tuple[CommandSyntax, list[str]]:
+    current = command_node
     index = 0
-    while index < len(tokens):
+    while index < len(tokens) and current.children:
         token = tokens[index]
         if token == "--":
-            remaining.extend(tokens[index:])
             break
-        matched = _match_option(token, allowed_map)
+        matched = _match_option(token, _spelling_map(current.post_verb_globals))
         if matched is not None:
             option, inline_value = matched
             consumed, value = _consume_declared_option(
                 tokens, index, option, inline_value
             )
-            _store_value(values, option.name, value, multiple=False)
+            _store_value(global_values, option.name, value, multiple=False)
             index += consumed
             continue
-        all_match = _match_option(token, all_map)
-        if token.startswith("--") and all_match is not None:
-            # It is a known root option, but this command did not declare it
-            # after the verb. Preserve it for the leaf parser, then continue
-            # scanning so a later declared global is still extracted.
-            known, inline_value = all_match
-            remaining.append(token)
-            if known.takes_value and inline_value is None:
-                if index + 1 >= len(tokens):
-                    raise CommandSyntaxError(
-                        f"option {known.spellings[0]} expects a value",
-                        token_index=index,
-                    )
-                remaining.append(tokens[index + 1])
-                index += 2
-            else:
-                index += 1
-            continue
-        remaining.append(token)
+        child = _find_child(token, current.children)
+        if child is None:
+            break
+        current = child
         index += 1
-    return remaining, values
+    return current, tokens[index:]
 
 
-def _parse_node(tokens: list[str], node: CommandSyntax) -> dict[str, object]:
-    if node.children and not tokens:
-        raise CommandSyntaxError(
-            "choose a subcommand: "
-            + ", ".join(child.path[-1] for child in node.children)
-        )
+def _scan_node_tokens(
+    tokens: Sequence[str],
+    node: CommandSyntax,
+    *,
+    global_values: dict[str, object],
+) -> tuple[str | None, list[str], dict[str, object]]:
+    post_map = _spelling_map(node.post_verb_globals)
     option_map = {
         spelling: option for option in node.options for spelling in option.spellings
     }
-    values: dict[str, object] = {
+    node_values: dict[str, object] = {
         option.name: (
-            list(option.default) if isinstance(option.default, list) else option.default
+            list(option.default)
+            if isinstance(option.default, (list, tuple))
+            else option.default
         )
         for option in node.options
         if option.default is not None
     }
-    positional_tokens = _consume_node_options(tokens, option_map, values)
-    _assign_positionals(positional_tokens, node, values)
-    _validate_node(node, values)
-    return values
-
-
-def _consume_node_options(
-    tokens: Sequence[str],
-    option_map: Mapping[str, OptionSyntax],
-    values: dict[str, object],
-) -> list[str]:
     positional_tokens: list[str] = []
     literal = False
     index = 0
@@ -457,22 +421,53 @@ def _consume_node_options(
             literal = True
             index += 1
             continue
-        if not literal and token.startswith("-") and token != "-":
-            matched = _match_local_option(token, option_map)
-            if matched is None:
-                raise CommandSyntaxError(
-                    f"unrecognized option: {token}", token_index=index
-                )
-            option, inline_value = matched
-            consumed, value = _consume_declared_option(
-                tokens, index, option, inline_value
+        if not literal and token in ("-h", "--help", "--version"):
+            return (
+                "help" if token != "--version" else "version",
+                [],
+                node_values,
             )
-            _store_value(values, option.name, value, multiple=option.multiple)
+        if not literal and token.startswith("-") and token != "-":
+            consumed = _consume_post_or_local_option(
+                tokens,
+                index,
+                post_map=post_map,
+                option_map=option_map,
+                global_values=global_values,
+                node_values=node_values,
+            )
             index += consumed
             continue
         positional_tokens.append(token)
         index += 1
-    return positional_tokens
+    return None, positional_tokens, node_values
+
+
+def _consume_post_or_local_option(
+    tokens: Sequence[str],
+    index: int,
+    *,
+    post_map: Mapping[str, GlobalOptionSyntax | OptionSyntax],
+    option_map: Mapping[str, OptionSyntax],
+    global_values: dict[str, object],
+    node_values: dict[str, object],
+) -> int:
+    token = tokens[index]
+    post_match = _match_option(token, post_map)
+    if post_match is not None:
+        option, inline_value = post_match
+        consumed, value = _consume_declared_option(tokens, index, option, inline_value)
+        _store_value(global_values, option.name, value, multiple=False)
+        return consumed
+    local_match = _match_local_option(token, option_map, token_index=index)
+    if local_match is None:
+        raise CommandSyntaxError(f"unrecognized option: {token}", token_index=index)
+    local_option, inline_value = local_match
+    consumed, value = _consume_declared_option(
+        tokens, index, local_option, inline_value
+    )
+    _store_value(node_values, local_option.name, value, multiple=local_option.multiple)
+    return consumed
 
 
 def _assign_positionals(
@@ -547,11 +542,17 @@ def _consume_declared_option(
         return 1, True
     if inline_value is not None:
         return 1, _convert_option_value(inline_value, option)
-    if index + 1 >= len(tokens):
+    if index + 1 >= len(tokens) or _looks_like_missing_option_value(tokens[index + 1]):
         raise CommandSyntaxError(
             f"option {option.spellings[0]} expects a value", token_index=index
         )
     return 2, _convert_option_value(tokens[index + 1], option)
+
+
+def _looks_like_missing_option_value(token: str) -> bool:
+    if token == "-":
+        return False
+    return token.startswith("-") and _NEGATIVE_NUMBER_RE.fullmatch(token) is None
 
 
 def _convert_option_value(
@@ -622,13 +623,36 @@ def _match_option(
 def _match_local_option(
     token: str,
     declarations: Mapping[str, OptionSyntax],
+    *,
+    token_index: int | None = None,
 ) -> tuple[OptionSyntax, str | None] | None:
     match = _match_option(token, declarations)
-    if match is None:
+    if match is not None:
+        option, inline_value = match
+        assert isinstance(option, OptionSyntax)
+        return option, inline_value
+    spelling, separator, inline_value = token.partition("=")
+    if not spelling.startswith("--") or spelling == "--":
         return None
-    option, inline_value = match
-    assert isinstance(option, OptionSyntax)
-    return option, inline_value
+    matched_spellings = [
+        candidate
+        for candidate in declarations
+        if candidate.startswith("--") and candidate.startswith(spelling)
+    ]
+    unique_by_name = {
+        declarations[candidate].name: declarations[candidate]
+        for candidate in matched_spellings
+    }
+    unique_options = list(unique_by_name.values())
+    if not unique_options:
+        return None
+    if len(unique_options) > 1:
+        choices = ", ".join(sorted(matched_spellings))
+        raise CommandSyntaxError(
+            f"ambiguous option: {spelling} could match {choices}",
+            token_index=token_index,
+        )
+    return unique_options[0], inline_value if separator else None
 
 
 def _find_root_command(

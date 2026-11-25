@@ -35,6 +35,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from taut_summon._providers import PROVIDER_NAMES
+
 
 class AdapterError(Exception):
     """An adapter operation failed (spawn, inject, or stream translation)."""
@@ -228,17 +230,13 @@ def _pty_harness_factory(name: str, binary: str) -> Callable[[], ProviderAdapter
     return _factory
 
 
-_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
-    "claude": _pty_harness_factory("claude", "claude"),
-    "codex": _pty_harness_factory("codex", "codex"),
-    "coder": _pty_harness_factory("coder", "coder"),
-    "grok": _pty_harness_factory("grok", "grok"),
-    "kimi": _pty_harness_factory("kimi", "kimi"),
-    "opencode": _pty_harness_factory("opencode", "opencode"),
-    "pi": _pty_harness_factory("pi", "pi"),
+_SPECIAL_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
     "pty": _pty_factory,
-    "qwen": _pty_harness_factory("qwen", "qwen"),
     "scripted": _scripted_factory,
+}
+_FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
+    name: _SPECIAL_FACTORIES.get(name) or _pty_harness_factory(name, name)
+    for name in PROVIDER_NAMES
 }
 
 
@@ -246,6 +244,24 @@ def adapter_names() -> tuple[str, ...]:
     """Return the registered provider names, sorted."""
 
     return tuple(sorted(_FACTORIES))
+
+
+def validate_provider_args(
+    provider: str | None, provider_args: tuple[str, ...]
+) -> None:
+    """Validate pass-through provider arguments before session claim."""
+
+    if not provider_args:
+        return
+    if provider == "scripted":
+        raise AdapterError(
+            "provider 'scripted' does not accept --provider-arg pass-through flags"
+        )
+    for arg in provider_args:
+        if not arg:
+            raise AdapterError("--provider-arg values must be non-empty strings")
+        if "\x00" in arg:
+            raise AdapterError("--provider-arg values must not contain NUL bytes")
 
 
 def get_adapter(name: str) -> ProviderAdapter:

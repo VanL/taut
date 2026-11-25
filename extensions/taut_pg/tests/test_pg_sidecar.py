@@ -1062,3 +1062,93 @@ def test_postgres_install_schema_false_never_creates_migrates_or_falls_back_to_p
                 older_broker_schema,
             ):
                 cur.execute(f'DROP SCHEMA IF EXISTS "{s}" CASCADE')
+
+
+def test_pg_summon_non_installing_preflight_and_controller_leave_zero_summon_tables(
+    taut_pg_project: Path,
+    pg_schema: str,
+    raw_pg_conn: psycopg.Connection[tuple[object, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from taut_summon import (
+        NothingSummoned,
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+
+    from taut import TautClient
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init(directory=taut_pg_project)
+    c = TautClient(as_name="human")
+    try:
+        c.join("general")
+    finally:
+        c.close()
+
+    ctrl = SummonController()
+    assert ctrl.list_live() == ()
+    with pytest.raises(NothingSummoned):
+        ctrl.status("human")
+    with pytest.raises(NothingSummoned):
+        ctrl.stop("human")
+
+    no_tty = ShellSummonInteraction(
+        input_stream=io.StringIO(""),
+        output_stream=io.StringIO(),
+    )
+    for bad_req in (
+        SummonRequest(
+            name="agent",
+            threads=("general",),
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            attach=False,
+            detach=True,
+            provider_flag="scripted",
+            takeover=False,
+            provider_args=("--extra",),
+        ),
+        SummonRequest(
+            name="claude",
+            threads=("general",),
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            attach=False,
+            detach=True,
+            provider_flag=None,
+            takeover=False,
+            provider_args=("",),
+        ),
+        SummonRequest(
+            name="claude",
+            threads=("general",),
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            attach=True,
+            detach=False,
+            provider_flag=None,
+            takeover=False,
+        ),
+    ):
+        with pytest.raises(SummonOperationError):
+            ctrl.run_foreground(
+                bad_req,
+                no_tty,
+                on_ready=lambda handle: handle.request_stop(),
+            )
+
+    with raw_pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+            (pg_schema,),
+        )
+        tables = {str(r[0]) for r in cur.fetchall()}
+    assert "taut_summon_sessions" not in tables

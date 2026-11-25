@@ -254,7 +254,11 @@ that verb and show in command help:
 | `QUIET` | `-q`, `--quiet` | `quiet` | Boolean OR; default `False` |
 
 Do not list a global merely because an extension might inspect the context.
-The declaration is part of that verb's grammar. Command-local options remain
+The declaration is part of that verb's grammar: core loads the command adapter
+and builds its parser before scanning post-verb tokens (routing any load or
+parser-construction failure's debug capture strictly to `root.db_path`), and
+never extracts a post-verb global from a preceding local option's mandatory
+value slot ([TAUT-8.7]). Command-local options remain
 the adapter's responsibility and may not reuse a declared root spelling with a
 different meaning.
 

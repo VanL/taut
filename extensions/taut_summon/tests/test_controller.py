@@ -248,6 +248,7 @@ def test_public_controller_models_have_exact_fields() -> None:
         "detach",
         "provider_flag",
         "takeover",
+        "provider_args",
     )
     assert tuple(field.name for field in fields(SummonedMember)) == (
         "member_id",
@@ -545,9 +546,11 @@ def test_all_advertised_provider_names_resolve_to_pty_adapter() -> None:
     from taut_summon._pty import PtyAdapter
 
     assert SummonController().provider_names() == (
+        "agy",
         "claude",
         "coder",
         "codex",
+        "gemini",
         "grok",
         "kimi",
         "opencode",
@@ -847,6 +850,31 @@ def test_controller_empty_list_returns_empty_tuple_without_printing(
     assert captured.err == ""
 
 
+def test_corrupt_non_numeric_summon_schema_version_normalizes_to_operation_error(
+    tmp_path: Path,
+) -> None:
+    from taut_summon import SummonController, SummonOperationError
+    from taut_summon._state import SUMMON_SCHEMA_VERSION_KEY, SummonSchemaVersionError
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        ensure_summon_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                ("corrupt", SUMMON_SCHEMA_VERSION_KEY),
+            )
+        with pytest.raises(SummonSchemaVersionError, match="summon schema"):
+            ensure_summon_schema(queue)
+    finally:
+        queue.close()
+
+    with pytest.raises(SummonOperationError, match="summon schema"):
+        SummonController(db_path=db).list_live()
+
+
 def test_controller_lists_live_sessions_as_typed_current_members(
     tmp_path: Path,
 ) -> None:
@@ -1020,7 +1048,7 @@ def test_release_confirmation_reads_once_after_final_ack(
     monkeypatch: pytest.MonkeyPatch,
     released: bool,
 ) -> None:
-    import taut_summon.controller as controller_module
+    import taut_summon._state as state_module
     from taut_summon import SummonController
 
     reads = 0
@@ -1045,7 +1073,7 @@ def test_release_confirmation_reads_once_after_final_ack(
             "driver_start_time": None if released else "start",
         }
 
-    monkeypatch.setattr(controller_module, "get_session", get_session)
+    monkeypatch.setattr(state_module, "get_session", get_session)
 
     assert (
         SummonController._confirm_released(
@@ -1308,3 +1336,189 @@ print(json.dumps({{"rc": rc, "loaded": loaded}}, sort_keys=True))
         "taut_summon.interaction",
     )
     assert not [name for name in loaded if name.startswith(forbidden)]
+
+
+def test_controller_non_installing_inspection_preserves_rollback_journal_and_zero_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from simplebroker import Queue
+    from taut_summon import NothingSummoned, SummonController, SummonOperationError
+    from taut_summon._state import (
+        SUMMON_SCHEMA_VERSION_KEY,
+        capture_driver_evidence,
+        ensure_summon_schema,
+        record_session,
+    )
+
+    from taut import TautClient
+
+    # 1) Missing .taut.db -> empty/NothingSummoned, file stays absent.
+    missing_db = tmp_path / "missing.db"
+    ctrl_missing = SummonController(db_path=missing_db)
+    assert ctrl_missing.list_live() == ()
+    with pytest.raises(NothingSummoned):
+        ctrl_missing.status("alice")
+    with pytest.raises(NothingSummoned):
+        ctrl_missing.stop("alice")
+    assert not missing_db.exists()
+
+    # 2) Broker-only SQLite DB (no taut_meta) -> zero Taut/Summon tables installed.
+    broker_only = tmp_path / "broker_only.db"
+    q_plain = Queue("plain", db_path=str(broker_only))
+    try:
+        q_plain.write("hello")
+    finally:
+        q_plain.close()
+    ctrl_broker = SummonController(db_path=broker_only)
+    assert ctrl_broker.list_live() == ()
+    with pytest.raises(NothingSummoned):
+        ctrl_broker.status("alice")
+    with pytest.raises(NothingSummoned):
+        ctrl_broker.stop("alice")
+    with sqlite3.connect(broker_only) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "taut_meta" not in tables
+    assert "taut_summon_sessions" not in tables
+
+    # 3) Initialized Taut DB in rollback DELETE journal mode without summon schema:
+    #    list_live/status/stop (including active [IAN-4] alias) install zero summon tables
+    #    and keep journal_mode == 'delete'.
+    delete_db = tmp_path / "delete_mode.db"
+    TautClient.init(db_path=delete_db)
+    c = TautClient(db_path=delete_db, as_name="alice")
+    try:
+        c.join("general")
+        created_member = c.last_created_member
+        assert created_member is not None
+        c.set_name("alicia")
+        c._state.add_member_alias(
+            member_id=created_member.member_id,
+            alias="ali",
+            created_ts=1,
+        )
+    finally:
+        c.close()
+    with sqlite3.connect(delete_db) as conn:
+        mode = conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+        assert mode.lower() == "delete"
+
+    ctrl_del = SummonController(db_path=delete_db)
+    assert ctrl_del.list_live() == ()
+    for lookup in ("ali", "alicia", "ghost"):
+        with pytest.raises(NothingSummoned):
+            ctrl_del.status(lookup)
+        with pytest.raises(NothingSummoned):
+            ctrl_del.stop(lookup)
+
+    with sqlite3.connect(delete_db) as conn:
+        mode_after = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        tables_after = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert mode_after.lower() == "delete"
+    assert "taut_summon_sessions" not in tables_after
+
+    # 4) Corrupt summon_schema_version in taut_meta -> SummonOperationError, fault_plane preserved,
+    #    still journal_mode == 'delete'.
+    with sqlite3.connect(delete_db) as conn:
+        conn.execute(
+            "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+            (SUMMON_SCHEMA_VERSION_KEY, "corrupt"),
+        )
+        conn.commit()
+    with pytest.raises(SummonOperationError) as bare_err:
+        ctrl_del.list_live()
+    assert bare_err.value.fault_plane is None
+    for existing_lookup in ("alicia", "ali"):
+        with pytest.raises(SummonOperationError) as named_err:
+            ctrl_del.status(existing_lookup)
+        assert named_err.value.fault_plane == "resolve_session"
+    with sqlite3.connect(delete_db) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+
+    # 5) .taut.toml target reuse when opening writable control client after probe:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    real_db = proj / "real.db"
+    wrong_db = proj / "wrong.db"
+    TautClient.init(db_path=real_db)
+    c_real = TautClient(db_path=real_db, as_name="worker")
+    try:
+        c_real.join("general")
+        m_real = c_real.last_created_member
+        assert m_real is not None and m_real.token is not None
+    finally:
+        c_real.close()
+    q_real = Queue("taut.summon_state", db_path=str(real_db))
+    try:
+        ensure_summon_schema(q_real)
+        pid, start = capture_driver_evidence(os.getpid())
+        record_session(
+            q_real,
+            member_id=m_real.member_id,
+            token=m_real.token,
+            provider="scripted",
+            driver_pid=pid,
+            driver_start_time=start,
+            updated_ts=q_real.generate_timestamp(),
+        )
+    finally:
+        q_real.close()
+    toml_path = proj / ".taut.toml"
+    toml_path.write_text(
+        'version = 1\nbackend = "sqlite"\ntarget = "real.db"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(proj)
+
+    seen_targets: list[object] = []
+
+    def spy_control(
+        client: TautClient,
+        member: Any,
+        row: Any,
+        command: str,
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        del member, row, command, timeout
+        seen_targets.append(client.target)
+        return {
+            "command": "STATUS",
+            "status": "ok",
+            "request_id": "r1",
+            "driver": "alive",
+            "provider": "scripted",
+            "thread_count": 1,
+            "cursor_lag": {},
+        }
+
+    orig_resolve = SummonController._resolve_live
+
+    def mutate_toml_after_resolve(
+        self: SummonController, client: TautClient, name: str
+    ) -> Any:
+        res = orig_resolve(self, client, name)
+        toml_path.write_text(
+            'version = 1\nbackend = "sqlite"\ntarget = "wrong.db"\n',
+            encoding="utf-8",
+        )
+        return res
+
+    monkeypatch.setattr(SummonController, "_control_request", staticmethod(spy_control))
+    monkeypatch.setattr(SummonController, "_resolve_live", mutate_toml_after_resolve)
+    st = SummonController().status("worker")
+    assert st.name == "worker"
+    assert not wrong_db.exists()
+    assert len(seen_targets) == 1
+    assert "real.db" in str(seen_targets[0])

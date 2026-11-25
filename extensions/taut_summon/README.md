@@ -18,8 +18,8 @@ root verbs (`taut summon`, `taut dismiss`), the foreground driver
 session ledger with a single-driver guard and PTY `wired` flag, the control
 plane (STOP/STATUS/PING) with a rate backstop, the default persona, and the
 provider adapters are implemented. One interactive PTY adapter hosts every
-named harness (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`, `opencode`,
-`pi`); there is no provider-specific protocol adapter. The POSIX backend is
+named harness (`agy`, `claude`, `coder`, `codex`, `gemini`, `grok`, `kimi`,
+`opencode`, `pi`, `qwen`); there is no provider-specific protocol adapter. The POSIX backend is
 implemented with a native pseudoterminal and the Windows backend with ConPTY.
 See
 the retired plan 2026-07-06-taut-summon-plan (source `0db6b82`; see the ledger in `docs/plans/README.md`),
@@ -57,34 +57,40 @@ digests, and only then publishes the GitHub Release as immutable.
 ```bash
 taut summon claude              # summon a claude into #general
 taut summon reviewer --provider claude dev
+taut summon claude --provider-arg='--allowedTools=Bash(taut *),Bash(taut-chat *)'
+taut summon --status            # list live summoned sessions (--json for NDJSON)
+taut summon --status reviewer   # correlated live status from reviewer's driver
 taut dismiss reviewer
-taut-summon status
 ```
+
+To host a foreground Summon run inside a terminal multiplexer, wrap `taut summon`
+in your shell as usual (for example, `tmux new -s claude -- taut summon claude`).
 
 When the workspace is discoverable from the current directory, `--db` is not
 required. The quickstart above exercises the same discovery path for the
 driver, control loop, and recovered broker handles.
 
 `taut-summon --help` lists the three verbs and their exit classes; each verb's
-own `--help` documents every positional and flag. Exit `0` is success, `1` is
+own `--help` documents every positional, flag, and registered provider name. Exit `0` is success, `1` is
 an invocation, adapter, storage, or unresponsive-driver error, and `2` means
 nothing is currently summoned. With no verb, help goes to stderr and exits `1`.
 
 Installing this package registers native `taut summon` and `taut dismiss`
 command adapters through Taut's command-extension interface. The root and
 standalone consoles use the same parser configuration and controller adapters;
-neither console invokes the other. `taut-summon status` remains the standalone
-control-plane listing and inspection command.
+neither console invokes the other. Both `taut summon --status [NAME]` and
+`taut-summon status [NAME]` inspect live summoned sessions and support `--json`
+(NDJSON).
 
 On first PTY use, summon first explains the handoff and waits for a blank
-Enter before it starts the provider. The provider screen is setup, not Taut
+Enter, `y`, or `yes` before it starts the provider. The provider screen is setup, not Taut
 chat: answer only trust, login, model, or equivalent prompts there. Detach with
 `Ctrl-\ Ctrl-\`. The same chord works after a provider enables Kitty CSI-u or
 xterm `modifyOtherKeys`; no terminal-specific configuration is required. After
 detach, keep the foreground Summon command running and
 use another terminal for Taut chat. Summon then starts its listener; the
 `summoned ...` line is the readiness marker. The member is marked wired and
-future summons run detached. EOF, cancellation, or any nonblank response at
+future summons run detached. EOF, cancellation, or any other response at
 the acknowledgement exits before spawning the provider and leaves it unwired.
 Use `taut summon --attach NAME` to re-enter setup, or `--detach` for an
 explicit detached run. PTY output is never parsed as speech; the agent speaks

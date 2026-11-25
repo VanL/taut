@@ -852,3 +852,180 @@ def test_finalize_stores_terminal_observation_timeout(
     assert repeated.value is first.value
     assert proc.wait_calls == []
     assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_posix_child_trampoline_resets_inherited_sighup_sig_ign() -> None:
+    master_fd, slave_fd = os.openpty()
+    prior = signal.getsignal(signal.SIGHUP)
+    spawned = None
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        spawned = spawn_process(
+            (
+                sys.executable,
+                "-c",
+                "import signal; print(signal.getsignal(signal.SIGHUP) == signal.SIG_DFL, flush=True)",
+            ),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            controlling_terminal=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        ready, _, _ = select.select([master_fd], [], [], 5.0)
+        assert ready
+        out = os.read(master_fd, 4096).decode("utf-8", errors="replace").strip()
+        assert out.splitlines()[0].strip() == "True"
+        assert spawned.domain.wait_for_leader_exit(5.0) == 0
+    finally:
+        signal.signal(signal.SIGHUP, prior)
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        os.close(master_fd)
+        if spawned is not None:
+            spawned.domain.wait_for_leader_exit(5.0)
+            cast(PosixProcessDomain, spawned.domain).finalize(graceful_timeout=0.0)
+
+
+def test_posix_pty_attach_syncs_winsize_ignores_zero_and_clamps_dsr_cursor() -> None:
+    import fcntl
+    import pty
+    import struct
+    import termios
+
+    child_code = """
+import fcntl, json, os, select, struct, sys, termios, time, tty
+
+tty.setcbreak(0)
+
+def winsz():
+    r, c, _, _ = struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\\x00" * 8))
+    return [r, c]
+
+sys.stdout.write(json.dumps({"initial": winsz()}) + "\\n")
+sys.stdout.flush()
+while True:
+    ready, _, _ = select.select([0], [], [], 5.0)
+    if not ready:
+        break
+    cmd = os.read(0, 1)
+    if not cmd:
+        break
+    if cmd == b"w":
+        sys.stdout.write(json.dumps({"size": winsz()}) + "\\n")
+        sys.stdout.flush()
+    elif cmd == b"m":
+        sys.stdout.write("\\x1b[40;120HMOVED\\n")
+        sys.stdout.flush()
+    elif cmd == b"q":
+        sys.stdout.write("\\x1b[6n")
+        sys.stdout.flush()
+        reply = b""
+        deadline = time.monotonic() + 3.0
+        while not reply.endswith(b"R") and time.monotonic() < deadline:
+            r_in, _, _ = select.select([0], [], [], 0.1)
+            if r_in:
+                ch = os.read(0, 1)
+                if not ch:
+                    break
+                reply += ch
+        clean = reply.replace(b"\\r", b"").replace(b"\\n", b"").replace(b"\\x1b", b"<ESC>")
+        sys.stdout.write("DSR=" + clean.decode("ascii", "replace") + "\\n")
+        sys.stdout.flush()
+        break
+"""
+    handle = PtyAdapter(
+        PtySpec(
+            name="winsize-probe",
+            argv=(sys.executable, "-u", "-c", child_code),
+            rows=24,
+            cols=80,
+            quiet_ms=20,
+            max_settle_s=1.0,
+        )
+    ).spawn(system_prompt="", env={})
+
+    host_master, host_slave = pty.openpty()
+    # Set 0x0 first -> attach entry must ignore 0x0 and keep 24x80.
+    fcntl.ioctl(host_master, termios.TIOCSWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+    shutdown = threading.Event()
+    attach_results: list[str] = []
+
+    def run_attach() -> None:
+        attach_results.append(
+            handle.attach(
+                shutdown=shutdown,
+                input_fd=host_slave,
+                output_fd=host_slave,
+            )
+        )
+
+    def read_host_until(needle: bytes, timeout: float = 5.0) -> bytes:
+        buf = b""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([host_master], [], [], 0.05)
+            if ready:
+                buf += os.read(host_master, 4096)
+                if needle in buf:
+                    return buf
+        raise AssertionError(f"timed out waiting for {needle!r}; got {buf!r}")
+
+    def wait_host_raw(timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (termios.tcgetattr(host_slave)[3] & termios.ICANON) == 0:
+                return
+            time.sleep(0.01)
+        raise AssertionError("attach did not enter raw mode")
+
+    try:
+        t1 = threading.Thread(target=run_attach, daemon=True)
+        t1.start()
+        wait_host_raw()
+        read_host_until(b'"initial": [24, 80]')
+        os.write(host_master, b"w")
+        read_host_until(b'"size": [24, 80]')
+        os.write(host_master, b"\x1c\x1c")
+        read_host_until(b"\x1b[>4m")
+        t1.join(timeout=5.0)
+        assert attach_results[-1] == "detached"
+
+        # Now set host to 42x132 and re-attach -> entry syncs 42x132; move cursor to 40;120;
+        # shrink host to 20x60 during attach -> synced within 100ms select wake; detach and query DSR.
+        fcntl.ioctl(host_master, termios.TIOCSWINSZ, struct.pack("HHHH", 42, 132, 0, 0))
+        t2 = threading.Thread(target=run_attach, daemon=True)
+        t2.start()
+        wait_host_raw()
+        os.write(host_master, b"w")
+        read_host_until(b'"size": [42, 132]')
+        os.write(host_master, b"m")
+        read_host_until(b"MOVED")
+        fcntl.ioctl(host_master, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 60, 0, 0))
+        time.sleep(0.22)
+        os.write(host_master, b"w")
+        read_host_until(b'"size": [20, 60]')
+        os.write(host_master, b"\x1c\x1c")
+        read_host_until(b"\x1b[>4m")
+        t2.join(timeout=5.0)
+        assert attach_results[-1] == "detached"
+
+        from taut_summon._pty_posix import PosixPtyHandle
+
+        assert isinstance(handle, PosixPtyHandle)
+        events: list[Any] = []
+        pump = threading.Thread(
+            target=lambda: events.extend(handle.events()), daemon=True
+        )
+        pump.start()
+        assert handle._reader_started_event.wait(timeout=2.0)
+        handle.inject("q")
+        pump.join(timeout=5.0)
+        assert any(isinstance(ev, ExitEvent) for ev in events)
+        assert "DSR=<ESC>[20;60R" in handle.output_tail()
+    finally:
+        shutdown.set()
+        os.close(host_master)
+        os.close(host_slave)
+        handle.close()

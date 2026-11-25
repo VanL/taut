@@ -120,7 +120,12 @@ tuple `()` for polling hosts; only the CLI turns it into the nothing-summoned
 exit class.
 
 The controller deliberately reuses `_members.find_member`, `_state`,
-`ControlClient`, and `SummonDriver` behind that boundary. A second state or
+`ControlClient`, and `SummonDriver` behind that boundary. Passive `list_live()`,
+`status()`, and `stop()` inspect existing workspace state through core's
+non-installing `TautClient(..., install_schema=False)` first so uninitialized,
+broker-only, empty, dead, or malformed targets perform no setup or WAL
+conversion, reusing the probed target and config when opening a writable client
+for live control IPC. A second state or
 control abstraction would duplicate invariants. STATUS validation copies
 cursor lag and scalar detail fields into public values, rejects malformed
 reply shapes, and excludes request/protocol keys. STOP still requires both a
@@ -286,7 +291,9 @@ On POSIX, spawn forces a new session and saves the leader PID as the process-
 group identity. PTY callers explicitly request controlling-terminal setup;
 stream callers do not. For that request, the shared spawn owner starts a tiny
 exec trampoline in the new session. The trampoline marks its status pipe
-close-on-exec, claims fd 0's PTY with `TIOCSCTTY`, and execs the provider. The
+close-on-exec, resets `SIGHUP` to `SIG_DFL` so an inherited `nohup` ignore
+disposition cannot block controlling-terminal hangup delivery, claims fd 0's PTY
+with `TIOCSCTTY`, and execs the provider. The
 parent publishes `ProcessIO` and `ProcessDomain` only after EOF on that pipe
 proves the final exec succeeded. A setup or exec diagnostic instead retires and
 reaps the unpublished child before `AdapterError` crosses the boundary. This
@@ -547,7 +554,7 @@ renders exactly the pre-excerpt notice.
 only, allows redirected stdout, gives no-tty diagnostics precedence over the
 nested marker, reads confirmation from the command context's authoritative
 stdin, writes the escaped notice to its authoritative stderr, and grants fds
-0/1 without changing terminal state. A blank Enter confirms; EOF, other input,
+0/1 without changing terminal state. A blank Enter, `y`, or `yes` confirms; EOF, other input,
 or cancellation declines before spawn. A rich host may render a native
 confirmation while its UI remains active, then pause rendering and grant other
 real tty fds only inside the later lease before restoring and redrawing.
@@ -575,8 +582,11 @@ owned reader plus `CancelSynchronousIo` is the only path (recorded from the
 2026-08-17 shell-cancel portability plan).
 
 The POSIX bridge is one bounded select loop over the human tty and PTY master.
-It checks shutdown between passes, so STOP remains observable during attach
-without a polling thread forwarding an Event into a pipe. Provider output can
+It checks shutdown and synchronizes valid non-zero host `TIOCGWINSZ` changes to
+the PTY master (`TIOCSWINSZ`) and `_TerminalState.resize` (clamping tracked DSR
+cursor coordinates) on entry and between passes ([THEORY-3]), so STOP and
+terminal resizes remain observable during attach
+without a polling thread or `SIGWINCH` wakeup pipe. Provider output can
 enable Kitty CSI-u or xterm `modifyOtherKeys` in the physical terminal even
 though the host tty is raw. The shared detach matcher therefore recognizes
 only the semantic Control-Backslash forms reserved by [SUM-7.4], while keeping
@@ -820,7 +830,8 @@ field before composing their trusted tab separators and final LF. This includes
 member/provider/session fields, lag thread names, and every extensible adapter
 detail key and value. The separators never enter the C0 escape policy, while
 generated escape notation is never scanned a second time. Domain values remain
-exact; the standalone status surface has no JSON mode.
+exact; both `taut summon --status` and `taut-summon status` emit compact
+UTF-8 NDJSON records when `--json` is active.
 
 The console adapter installs one handler on the package-scoped `taut_summon`
 logger for each foreground command execution and escapes the final owned log
@@ -877,6 +888,7 @@ require a separately drained subprocess pipe.
 |---|---|
 | `extensions/taut_summon/taut_summon/__init__.py` | Lazy, typed public facade and stable export inventory |
 | `extensions/taut_summon/taut_summon/models.py` | Public request/result/status values and operation-error hierarchy ([SUM-13]) |
+| `extensions/taut_summon/taut_summon/_providers.py` | Zero-runtime-import registered provider names shared by lazy help, controller, and adapter registry ([SUM-7.2], [SUM-13]) |
 | `extensions/taut_summon/taut_summon/controller.py` | CLI-independent provider/list/status/stop/foreground-run orchestration ([SUM-13]) |
 | `extensions/taut_summon/taut_summon/interaction.py` | Textual-free public acknowledgement/terminal-lease protocol and lazily core-dependent shell adapter ([SUM-7.4]/[SUM-13]) |
 | `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, exit-code mapping, and standalone unexpected-exception capture boundary |

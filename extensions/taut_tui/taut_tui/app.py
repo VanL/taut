@@ -1722,6 +1722,7 @@ class TautApp(App[None]):
                 detach=bool(values.get("detach")),
                 provider_flag=cast(str | None, values.get("provider")),
                 takeover=bool(values.get("takeover")),
+                provider_args=tuple(cast(list[str], values.get("provider_args") or [])),
             )
             token, future = summon.start(request, interaction)
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
@@ -1878,6 +1879,7 @@ class TautApp(App[None]):
                 detach=submission.detach,
                 provider_flag=submission.provider,
                 takeover=submission.takeover,
+                provider_args=submission.provider_args,
             )
             token, future = summon.start(request, interaction)
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception

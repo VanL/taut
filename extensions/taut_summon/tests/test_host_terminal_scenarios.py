@@ -31,9 +31,11 @@ pytestmark = pytest.mark.posix_only
 _FALSEY_ENV = {"", "0", "false", "no", "off"}
 _KITTY_ENABLE_SEQUENCE = re.compile(rb"\x1b\[(?:>|=)[1-9][0-9]*(?:;[0-9]+)*u")
 _REAL_PROVIDER_READY_TEXT = {
+    "agy": "Antigravity",
     "claude": "Claude",
     "coder": "Coder",
     "codex": "Codex",
+    "gemini": "Gemini",
     "grok": "Grok",
     "kimi": "Kimi",
     "opencode": "OpenCode",

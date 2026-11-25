@@ -24,6 +24,7 @@ _CONTROLLING_TERMINAL_TRAMPOLINE = r"""
 import fcntl
 import json
 import os
+import signal
 import sys
 import termios
 
@@ -33,6 +34,7 @@ stage = "terminal setup"
 try:
     flags = fcntl.fcntl(status_fd, fcntl.F_GETFD)
     fcntl.fcntl(status_fd, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
     os.write(status_fd, b"READY\n")
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     stage = "provider exec"

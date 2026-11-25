@@ -34,6 +34,13 @@ def provide_syntax() -> CommandSyntaxProvider:
                 "system_prompt_file", ("--system-prompt-file",), True, ValueKind.PATH
             ),
             OptionSyntax("rate_limit", ("--rate-limit",), True, ValueKind.INTEGER),
+            OptionSyntax(
+                "provider_args",
+                ("--provider-arg",),
+                True,
+                multiple=True,
+                default=(),
+            ),
         ),
         exclusive_groups=(ExclusiveGroupSyntax(("attach", "detach")),),
         post_verb_globals=(db,),

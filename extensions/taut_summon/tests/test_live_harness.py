@@ -32,9 +32,11 @@ from taut import identity
 from taut.client import TautClient
 
 _HARNESSES = (
+    pytest.param("agy", marks=pytest.mark.requires_agy),
     pytest.param("claude", marks=pytest.mark.requires_claude),
     pytest.param("codex", marks=pytest.mark.requires_codex),
     pytest.param("coder", marks=pytest.mark.requires_coder),
+    pytest.param("gemini", marks=pytest.mark.requires_gemini),
     pytest.param("grok", marks=pytest.mark.requires_grok),
     pytest.param("qwen", marks=pytest.mark.requires_qwen),
     pytest.param("kimi", marks=pytest.mark.requires_kimi),

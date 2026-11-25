@@ -695,6 +695,7 @@ def test_native_request_builder_populates_every_public_field() -> None:
             detach=False,
             provider_flag="scripted",
             takeover=True,
+            provider_args=("--model", "opus"),
         )
     finally:
         operations.close()
@@ -709,7 +710,85 @@ def test_native_request_builder_populates_every_public_field() -> None:
         detach=False,
         provider_flag="scripted",
         takeover=True,
+        provider_args=("--model", "opus"),
     )
+
+
+def test_summon_mirror_forwards_provider_args(tmp_path: Path) -> None:
+    import asyncio
+
+    from taut_summon import SummonRequest
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import (
+        CommandInput,
+        core_command_syntax,
+        merge_command_syntax,
+        parse_command_line,
+    )
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TuiSummonOperations
+
+    captured: list[object] = []
+
+    class CapturingController(_Controller):
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del interaction, install_signal_handlers
+            captured.append(request)
+            assert callable(on_ready)
+            on_ready(self.handle)
+
+    async def exercise() -> None:
+        app = TautApp(
+            db_path=str(tmp_path / "mirror.db"),
+            as_name=None,
+            continuity_token=None,
+        )
+        async with app.run_test(size=(100, 34)):
+            operations = TuiSummonOperations(
+                controller=CapturingController(),
+                ready_callback=app._accept_summon_ready_from_worker,
+            )
+            app._summon = operations
+            try:
+                syntax = merge_command_syntax(
+                    core_command_syntax(), (provide_syntax(),)
+                )
+                invocation = parse_command_line(
+                    CommandInput(
+                        "summon claude --provider-arg=--model --provider-arg opus"
+                    ),
+                    syntax=syntax,
+                )
+                app._dispatch_summon_command(invocation)
+                deadline = time.monotonic() + 5
+                while not captured and time.monotonic() < deadline:
+                    await asyncio.sleep(0.02)
+                assert captured == [
+                    SummonRequest(
+                        name="claude",
+                        threads=("general",),
+                        persona=None,
+                        system_prompt_file=None,
+                        rate_limit=None,
+                        attach=False,
+                        detach=False,
+                        provider_flag=None,
+                        takeover=False,
+                        provider_args=("--model", "opus"),
+                    )
+                ]
+            finally:
+                operations.close()
+
+    asyncio.run(exercise())
 
 
 class _LeaseApp:

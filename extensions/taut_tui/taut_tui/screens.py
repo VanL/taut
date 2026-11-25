@@ -9,6 +9,7 @@ Spec references:
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -89,6 +90,14 @@ class SummonStartSubmission:
     attach: bool
     detach: bool
     takeover: bool
+    provider_args: tuple[str, ...] = ()
+
+
+def _parse_provider_args(text: str) -> tuple[str, ...]:
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return tuple(lexer)
 
 
 @dataclass(frozen=True, slots=True)
@@ -925,6 +934,8 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
             yield Input(id="summon-system-prompt", classes="form-field")
             yield Label("Rate limit", classes="field-label")
             yield Input(type="integer", id="summon-rate-limit", classes="form-field")
+            yield Label("Provider arguments", classes="field-label")
+            yield Input(id="summon-provider-args", classes="form-field")
             yield Checkbox("Attach", id="summon-attach")
             yield Checkbox("Detach", id="summon-detach")
             yield Checkbox("Take over stale claim", id="summon-takeover")
@@ -969,6 +980,15 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
             )
             rate_input.focus()
             return
+        args_input = self.query_one("#summon-provider-args", Input)
+        try:
+            provider_args = _parse_provider_args(args_input.value)
+        except ValueError as exc:
+            self.query_one("#form-errors", Static).update(
+                f"Malformed provider arguments: {exc}"
+            )
+            args_input.focus()
+            return
         provider_value = self.query_one("#summon-provider", Select).value
         provider = provider_value if isinstance(provider_value, str) else None
         threads = tuple(
@@ -991,6 +1011,7 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
                 attach=self.query_one("#summon-attach", Checkbox).value,
                 detach=self.query_one("#summon-detach", Checkbox).value,
                 takeover=self.query_one("#summon-takeover", Checkbox).value,
+                provider_args=provider_args,
             )
         )
 

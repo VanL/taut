@@ -75,6 +75,7 @@ from taut_summon._adapter import (
     ProviderAdapter,
     UnknownAdapterError,
     get_adapter,
+    validate_provider_args,
 )
 from taut_summon._control import (
     ControlPolicy,
@@ -83,6 +84,7 @@ from taut_summon._control import (
 )
 from taut_summon._members import find_member
 from taut_summon._persona import render_default_persona
+from taut_summon._pty import PtyAdapter
 from taut_summon._reactor import PreparedInjection, SummonReactor
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
@@ -347,6 +349,8 @@ class SummonDriver:
         self._evidence: tuple[int, str] | None = None
         self._audit_start_ts: int | None = None
         self._owned_clients: list[TautClient] = []
+        self._preflighted_prompt: str | None = None
+        self._preflighted_availability: TerminalAvailability | None = None
 
     # --- public entry ----------------------------------------------------
 
@@ -414,9 +418,44 @@ class SummonDriver:
             except Exception:  # pragma: no cover - defensive cleanup
                 logger.debug("taut client close failed", exc_info=True)
 
+    def _validate_local_request(self) -> None:
+        request = self._request
+        adapter: ProviderAdapter | None = None
+        if request.provider_flag is not None:
+            adapter = self._require_adapter(request.provider_flag)
+            validate_provider_args(request.provider_flag, request.provider_args)
+            if request.attach and not adapter.supports_attach:
+                raise DriverError(
+                    f"provider '{request.provider_flag}' does not support attach"
+                )
+        else:
+            validate_provider_args(None, request.provider_args)
+            try:
+                adapter = get_adapter(request.name)
+            except AdapterError:
+                adapter = None
+        if request.system_prompt_file is not None:
+            try:
+                with open(request.system_prompt_file, encoding="utf-8") as handle:
+                    self._preflighted_prompt = handle.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise DriverError(f"cannot read --system-prompt-file: {exc}") from exc
+        if request.attach and (adapter is None or adapter.supports_attach):
+            try:
+                availability = self._interaction.terminal_availability(
+                    TerminalIntent.REQUIRED
+                )
+            except Exception as exc:
+                raise DriverError(f"terminal availability failed: {exc}") from exc
+            if not isinstance(availability, TerminalAvailability):
+                raise DriverError("terminal interaction returned invalid availability")
+            self._require_attach_available(availability)
+            self._preflighted_availability = availability
+
     # --- bootstrap ([SUM-4]) ----------------------------------------------
 
     def _run(self) -> int:
+        self._validate_local_request()
         client = self._persistent_client(db_path=self._db_path)
         db_display, db_env_path = _harness_target_projection(client.target)
         self._queue = client.queue(_LEDGER_QUEUE_NAME)
@@ -478,6 +517,7 @@ class SummonDriver:
                     f"'{request.provider_flag}' (drop --provider to resume)"
                 )
             self._require_adapter(row["provider"])
+            validate_provider_args(row["provider"], request.provider_args)
             pid, start = self._require_evidence()
             try:
                 claim_driver(
@@ -504,6 +544,7 @@ class SummonDriver:
         # itself as an adapter ([SUM-3] steps 1 and 3).
         provider = request.provider_flag or requested
         self._require_adapter(provider)
+        validate_provider_args(provider, request.provider_args)
 
         target = (
             self._automatic_name(client, requested, set()) if implied else requested
@@ -689,6 +730,11 @@ class SummonDriver:
         """Drive the run's single reactor; escaping failures end the run."""
         self._owner_boot = boot
         self._owner_adapter = self._require_adapter(boot.provider)
+        if self._request.provider_args:
+            assert isinstance(self._owner_adapter, PtyAdapter)
+            self._owner_adapter = self._owner_adapter.with_extra_args(
+                self._request.provider_args
+            )
         if self._request.attach and not self._owner_adapter.supports_attach:
             raise DriverError(f"provider '{boot.provider}' does not support attach")
         self._owner_availability = self._terminal_availability(
@@ -1613,6 +1659,10 @@ class SummonDriver:
 
         if not adapter.supports_attach or request.detach:
             return None
+        if self._preflighted_availability is not None:
+            availability = self._preflighted_availability
+            self._preflighted_availability = None
+            return availability
         intent = TerminalIntent.REQUIRED if request.attach else TerminalIntent.PREFERRED
         try:
             availability = self._interaction.terminal_availability(intent)
@@ -1746,13 +1796,8 @@ class SummonDriver:
         return str(result)
 
     def _system_prompt(self, boot: _BootstrapResult, db_display: str) -> str:
-        override = self._request.system_prompt_file
-        if override is not None:
-            try:
-                with open(override, encoding="utf-8") as handle:
-                    return handle.read()
-            except OSError as exc:
-                raise DriverError(f"cannot read --system-prompt-file: {exc}") from exc
+        if self._preflighted_prompt is not None:
+            return self._preflighted_prompt
         return render_default_persona(
             name=boot.member_name,
             threads=self._request.threads,

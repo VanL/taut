@@ -22,6 +22,7 @@ class SummonRequest:
     detach: bool = False
     provider_flag: str | None = None
     takeover: bool = False
+    provider_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -738,6 +738,30 @@ try:
     if status.driver != "alive" or status.provider != "scripted":
         raise SystemExit(f"unexpected public controller status: {status!r}")
 
+    for status_argv in (
+        ["summon", "--status", "--json"],
+        ["summon", "--status", "artifact-probe", "--json"],
+    ):
+        cli_status = subprocess.run(
+            [sys.executable, "-I", "-m", "taut", "--db", str(db), *status_argv],
+            cwd=Path.cwd(),
+            env=child_env,
+            text=True,
+            capture_output=True,
+            timeout=45.0,
+            check=False,
+        )
+        if cli_status.returncode != 0:
+            raise SystemExit(
+                f"native {' '.join(status_argv)} failed rc={cli_status.returncode} "
+                f"stdout={cli_status.stdout!r} stderr={cli_status.stderr!r}"
+            )
+        status_payload = json.loads(cli_status.stdout.strip())
+        if status_payload.get("name") != "artifact-probe":
+            raise SystemExit(
+                f"unexpected {' '.join(status_argv)} payload: {status_payload!r}"
+            )
+
     dismiss = subprocess.run(
         [
             sys.executable,

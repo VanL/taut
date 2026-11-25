@@ -1827,7 +1827,6 @@ def test_every_cli_parser_action_has_useful_help() -> None:
                 _load_command(selected),
                 StringIO(),
                 StringIO(),
-                escape_description=True,
             )
         )
     seen: set[int] = set()

@@ -440,8 +440,11 @@ attribute is a reviewed framework seam pinned by a real failing-app test at the
 retained Textual floor.
 
 Summon is discovered only through the public `taut_summon` facade. The native
-start screen constructs every `SummonRequest` field and obtains provider names
-from the controller. Each foreground run disables Summon's process signal
+start screen constructs every `SummonRequest` field (including tokenized
+`provider_args`) and obtains provider names
+from the controller; textual `:summon` forwards repeatable `--provider-arg`
+through the same `TuiSummonOperations.build_request` boundary while keeping
+`--status` and `--json` CLI-only. Each foreground run disables Summon's process signal
 handlers. Its exact-once readiness callback publishes an immutable
 `SummonRunHandle` after the first watcher drain and control-plane open; the TUI
 tracks that exact handle instead of diffing mutable names. Pending runs block
@@ -711,6 +714,14 @@ neither diagnose historical S4 nor close its release gate without the plan's
 separate causal proof or explicit owner disposition.
 
 ## Related Plans
+
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
+  extends `SummonStartScreen`, `TuiSummonOperations.build_request`, and the
+  `:summon` mirror with `provider_args` while keeping `--status` and `--json`
+  CLI-only.
+
+- `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
+  records the [TUI-7.1] explicit CLI-only disposition for `whoami --show-token`.
 
 - `docs/plans/2026-11-24-phase-1-sixty-second-onboarding-plan.md` — records the
   [TUI-7.1] command-mirror dispositions for `onboard`, `join --recent`, and

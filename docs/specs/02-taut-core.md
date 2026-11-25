@@ -1281,7 +1281,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain] [--show-token]` | Resolved identity; with `--explain`, the evidence and rule; with `--show-token`, also includes the acting member's continuity token on stdout. Read-only selection ([IAN-3.3]). | 0 resolved; 1 error (incl. invalid or missing continuity token); 2 unrecognized |
 | `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current process claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
-| `summon PROVIDER_OR_NAME [THREAD ...]` | Provided by the separately installed `taut-summon` command package through [TAUT-8.6]. Without a compatible provider, exit 1 with a one-line install hint. Behavior lives in spec 04. | per spec 04 |
+| `summon PROVIDER_OR_NAME [THREAD ...] \| summon --status [NAME]` | Provided by the separately installed `taut-summon` command package through [TAUT-8.6]. Without a compatible provider, exit 1 with a one-line install hint. Behavior lives in spec 04. | per spec 04 |
 | `dismiss NAME` | Provided by the same package and command interface; maps to Summon's stop operation. | per spec 04 |
 
 Top-level verbs are command modules under [TAUT-8.6]. Core verbs and installed
@@ -2016,7 +2016,11 @@ graph, or hot reload.
 Taut command syntax is a typed, surface-neutral contract adjacent to the
 version-1 `CommandSpec` manifest. It describes canonical command paths,
 nested subcommands, positional values, options, value kinds, quoting,
-literal `--` separator behavior, and deterministic completion metadata. It
+literal `--` separator behavior (tokens after `--` are literal positionals and
+never trigger `-h`/`--help`/`--version` actions), left-to-right option-value
+slot classification (post-verb globals require exact spellings and are never
+extracted from a preceding local option's mandatory value slot; option-shaped
+values use inline `--opt=VALUE`), and deterministic completion metadata. It
 does not describe a surface's renderer, form layout, gesture, lifecycle, or
 output transport.
 
@@ -3248,6 +3252,14 @@ expression behavior.
 - `docs/plans/2026-09-28-simplification-and-hot-path-plan.md` — binds one
   stable actor per CLI read and uses broker timestamp metadata for count-free
   thread listings; also revises watch failure and debug contracts.
+
+- `docs/plans/2026-11-24-phase-2b-summon-providers-and-attach-ergonomics-plan.md` —
+  adds `agy` automatic-name pool entries in `taut/_constants.py`, [TAUT-8.7]
+  ordered post-verb global/local option-value slot classification and
+  `root.db_path`-scoped load-failure debug capture across
+  `taut/commands/_dispatch.py` and `taut/commands/syntax.py`, and updates the
+  [TAUT-8.1] `summon` summary for `--status` parity under spec 04 while keeping
+  `summon` `post_verb_globals` pinned to `{GlobalOption.DB}`.
 
 - `docs/plans/2026-11-24-phase-2a-whoami-token-and-mcp-ergonomics-plan.md` —
   adds read-only `whoami --show-token` (`TautClient.whoami(...,

@@ -1771,6 +1771,7 @@ def test_paired_case_installs_both_wheels_and_runs_full_control_probe(
             "SummonController",
             "taut.escape_terminal_text",
             '"summon"',
+            '"--status"',
             '"dismiss"',
             '"ledger": "released"',
             '"command_owner": "taut-summon"',
@@ -1783,7 +1784,7 @@ def test_paired_case_installs_both_wheels_and_runs_full_control_probe(
             "CONTROL_PING",
         ):
             assert forbidden not in code
-        assert normalized.count('"-m", "taut",') == 2
+        assert normalized.count('"-m", "taut",') == 3
         assert '"taut_summon.cli"' not in normalized
         assert '"run",' not in normalized
         assert '"stop",' not in normalized
