@@ -1416,7 +1416,7 @@ wheels = [
 
 [[package]]
 name = "taut-chat"
-version = "0.9.12"
+version = "0.9.13"
 source = { editable = "." }
 dependencies = [
     { name = "psutil" },
@@ -1486,7 +1486,7 @@ provides-extras = ["all", "default", "tui", "dev"]
 
 [[package]]
 name = "taut-mcp"
-version = "0.9.12"
+version = "0.9.13"
 source = { editable = "extensions/taut_mcp" }
 dependencies = [
     { name = "jsonschema" },
@@ -1517,7 +1517,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-pg"
-version = "0.9.12"
+version = "0.9.13"
 source = { editable = "extensions/taut_pg" }
 dependencies = [
     { name = "simplebroker-pg" },
@@ -1541,7 +1541,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-summon"
-version = "0.9.12"
+version = "0.9.13"
 source = { editable = "extensions/taut_summon" }
 dependencies = [
     { name = "taut-chat" },
@@ -1563,7 +1563,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-tui"
-version = "0.9.12"
+version = "0.9.13"
 source = { editable = "extensions/taut_tui" }
 dependencies = [
     { name = "taut-chat" },
