@@ -1956,12 +1956,14 @@ def test_rich_host_attach_decision_ends_before_real_pty_spawn(
         fake_log = tmp_path / "host-fake-tui.jsonl"
         wait_until(
             lambda: (
-                interaction.confirmation_entered.is_set()
+                bool(failures)
+                or not thread.is_alive()
+                or interaction.confirmation_entered.is_set()
                 or bool(fake_log.exists() and fake_log.read_text(encoding="utf-8"))
             ),
-            timeout=5.0,
             message="pre-spawn confirmation or forbidden provider spawn",
         )
+        assert failures == []
         assert interaction.confirmation_entered.is_set()
         assert not fake_log.exists()
 
@@ -2102,7 +2104,16 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         second_thread, second_failures = _start_foreground_run(
             db=summon_db, request=request, interaction=second
         )
-        assert second.availability_entered.wait(timeout=10.0)
+        wait_until(
+            lambda: (
+                bool(second_failures)
+                or not second_thread.is_alive()
+                or second.availability_entered.is_set()
+            ),
+            message="second run pre-spawn terminal availability check",
+        )
+        assert second_failures == []
+        assert second.availability_entered.is_set()
         assert second.availability_calls == [TerminalIntent.PREFERRED]
         block_orientation_write.set()
         second.allow_availability.set()
