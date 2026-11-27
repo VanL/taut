@@ -32,8 +32,9 @@
   parity with `taut-summon status`, passive non-installing controller
   inspection, repeatable `--provider-arg` pass-through across CLI and TUI
   surfaces, `Enter`/`y`/`yes` terminal-attach confirmation, POSIX `TIOCGWINSZ`
-  window-size synchronization during attach, and child `SIGHUP` reset to
-  `SIG_DFL` before acquiring the controlling terminal.
+  window-size synchronization during attach, child `SIGHUP` reset to `SIG_DFL`
+  before acquiring the controlling terminal, and bounded Darwin `waitid`
+  confirmation when `killpg` reports `EPERM` across an in-flight leader exit.
 - `taut-tui` replaces raw 19-digit message IDs across human inspector and search
   read views (selected-message header, reply-inspector header and rows,
   canonical `channel.<origin_ts>` sub-thread labels, and reaction/deletion

@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from taut_summon._adapter import AdapterError
 
 _CLD_EXITED = 1
+_DARWIN_EXIT_OBSERVATION_S = 0.2
 _TRAMPOLINE_READY = b"READY\n"
 _TRAMPOLINE_ERROR = b"ERROR "
 
@@ -371,9 +372,10 @@ class PosixProcessDomain:
             return False
         except PermissionError as exc:
             if sys.platform == "darwin":
-                # Darwin can report EPERM while the leader crosses into zombie
-                # state. Cached terminal evidence makes that a no-target result.
-                if self.observe_leader_exit() is not None:
+                # Darwin sets P_WEXIT (returning EPERM from killpg) slightly before
+                # exit1() publishes SZOMB to waitid(WNOWAIT); poll boundedly so an
+                # in-flight exit establishes terminal status before treating EPERM as fatal.
+                if self.wait_for_leader_exit(_DARWIN_EXIT_OBSERVATION_S) is not None:
                     return False
             raise AdapterError(
                 f"provider process-group signal {sig!s} failed: {exc}"

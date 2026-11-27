@@ -96,6 +96,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-11-27: On Darwin (XNU `exit1()`), an exiting session leader sets
+  `P_WEXIT`—causing `os.killpg(pgid, sig)` to raise `PermissionError`
+  (`EPERM`)—before kernel VM/fd teardown finishes setting `SZOMB` for
+  `waitid(WEXITED | WNOHANG | WNOWAIT)`. In `PosixProcessDomain._signal_group`
+  (`extensions/taut_summon/taut_summon/_process_domain_posix.py`), follow a
+  Darwin `PermissionError` with a short bounded non-reaping
+  `wait_for_leader_exit()` poll rather than a single `WNOHANG` probe before
+  treating `EPERM` as fatal.
+
 - 2026-11-25: Pass `docs/program-theory.md` ([THEORY-1]–[THEORY-5.A6]) as an
   explicit primary lens in cross-family plan and completed-work review briefs
   alongside defect hunting. Pure defect reviews reward defensive ceremony (extra

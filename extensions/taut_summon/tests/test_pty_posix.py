@@ -820,6 +820,37 @@ def test_darwin_eperm_is_accepted_only_after_terminal_observation(
         live_domain.signal_group(signal.SIGTERM)
 
 
+def test_darwin_eperm_waits_for_inflight_zombie_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Darwin sets P_WEXIT (returning EPERM from killpg) before SZOMB is waitable."""
+
+    transition_proc = _FakeProcess(pid=5414)
+    transition_domain = _domain_for_fake(transition_proc)
+    observations = iter([None, None, (1, 40)])
+    monkeypatch.setattr(process_domain_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_domain_module, "_observe_exit", lambda _pid: next(observations)
+    )
+
+    def fail_permission(pgid: int, sig: int) -> None:
+        assert pgid == 5414
+        assert sig in (signal.SIGTERM, signal.SIGKILL)
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", fail_permission)
+
+    assert (
+        transition_domain.finalize(
+            graceful_timeout=0.0,
+            term_timeout=0.0,
+            kill_timeout=0.0,
+        )
+        == 40
+    )
+    assert transition_proc.wait_calls == [0.0]
+
+
 def test_finalize_stores_terminal_observation_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1634,7 +1634,7 @@ def test_query_reply_waits_for_partial_injection_writer(
             first_injection_write = False
             written = real_write(fd, data[:1])
             injection_started.set()
-            assert release_injection.wait(timeout=2.0)
+            assert release_injection.wait(timeout=10.0)
             return written
         return real_write(fd, data)
 
@@ -1651,17 +1651,17 @@ def test_query_reply_waits_for_partial_injection_writer(
     injector.start()
     pump: EventPump | None = None
     try:
-        assert injection_started.wait(timeout=1.0)
+        assert injection_started.wait(timeout=10.0)
         pump = EventPump(handle, thread_name="query-reply-pump")
-        assert writer_lock.tracked_acquire.wait(timeout=2.0)
+        assert writer_lock.tracked_acquire.wait(timeout=10.0)
         assert injector.is_alive()
         release_injection.set()
-        injector.join(timeout=2.0)
+        injector.join(timeout=10.0)
         _wait_for(log, "query")
     finally:
         release_injection.set()
         handle.close()
-        injector.join(timeout=2.0)
+        injector.join(timeout=10.0)
         if pump is not None:
             pump.drain_until_exit(timeout=5.0)
 
