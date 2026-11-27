@@ -10,6 +10,7 @@ Spec references:
 from __future__ import annotations
 
 import shlex
+import time
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from taut.commands.syntax import (
 from taut_tui.actions import ActionId, ActionSpec
 from taut_tui.forms import FieldKind, FormSpec, validate_visual_input
 from taut_tui.models import RecoveredDraft
+from taut_tui.time_format import format_subthread_label
 from taut_tui.widgets import TautButton as Button
 from taut_tui.widgets import TautCheckbox as Checkbox
 from taut_tui.widgets import TautInput as Input
@@ -833,10 +835,13 @@ class SearchScreen(_TautModalScreen[SearchHit | None]):
         self,
         search: Callable[[str], Future[list[SearchHit]]],
         target_labels: Mapping[str, str],
+        *,
+        now_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         super().__init__()
         self._search = search
         self._target_labels = target_labels
+        self._now_ns = now_ns
         self._generation = 0
         self._results: tuple[SearchHit, ...] = ()
 
@@ -894,13 +899,23 @@ class SearchScreen(_TautModalScreen[SearchHit | None]):
         )
         options = self.query_one("#search-results", OptionList)
         options.clear_options()
+        now_ns = self._now_ns()
         for result in results:
-            target = self._target_labels.get(result.thread)
-            if target is None:
-                target = (
-                    "Direct message" if result.thread_kind == "dm" else result.thread
-                )
+            target = self._result_target_label(result, now_ns=now_ns)
             options.add_option(f"{target}  {result.from_name}  {result.text}")
+
+    def _result_target_label(self, result: SearchHit, *, now_ns: int) -> str:
+        known = self._target_labels.get(result.thread)
+        if known is not None:
+            return known
+        if result.thread_kind == "dm":
+            return "Direct message"
+        subthread = format_subthread_label(
+            result.thread,
+            self._target_labels,
+            now_ns=now_ns,
+        )
+        return subthread if subthread is not None else result.thread
 
 
 class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):

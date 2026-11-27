@@ -679,6 +679,58 @@ def test_search_results_use_actor_scoped_dm_labels_without_exposing_queue_names(
     asyncio.run(exercise())
 
 
+def test_search_results_format_canonical_subthread_labels_with_relative_time() -> None:
+    from taut.client import SearchHit
+    from taut_tui.screens import SearchScreen
+
+    origin_ts = 1_723_400_000_000_000_000
+    now_ns = origin_ts + 300_000_000_000
+    subthread = f"general.{origin_ts}"
+    completed: Future[list[SearchHit]] = Future()
+    completed.set_result(
+        [
+            SearchHit(
+                thread=subthread,
+                ts=origin_ts + 60_000_000_000,
+                from_id=None,
+                from_name="Bob",
+                kind="message",
+                text="reply hit",
+                thread_kind="subthread",
+                channel="general",
+                parent="general",
+                members=None,
+            )
+        ]
+    )
+
+    class SearchHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(
+                SearchScreen(
+                    lambda _query: completed,
+                    MappingProxyType({"general": "#main"}),
+                    now_ns=lambda: now_ns,
+                )
+            )
+
+    async def exercise() -> None:
+        app = SearchHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            probe = _observed(app)
+            applied = probe.search(app.screen, completed)
+            deadline = probe.scope.now() + 5
+            await pilot.press("x", "enter")
+            await applied.wait(deadline=deadline, description="search results rendered")
+            options = app.screen.query_one("#search-results", OptionList)
+            assert options.option_count == 1
+            rendered = str(options.get_option_at_index(0).prompt)
+            assert "#main (thread 5m ago)  Bob  reply hit" in rendered
+            assert str(origin_ts) not in rendered
+
+    asyncio.run(exercise())
+
+
 def test_search_completion_after_escape_is_ignored() -> None:
     from _completion import CompletionSuperseded
 

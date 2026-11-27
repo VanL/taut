@@ -75,9 +75,11 @@ when the first reply is created while the parent conversation is already open.
 Notification delivery re-renders the inspector only when the notification
 inbox owns that surface; message, help, system, and Summon inspectors retain
 their content. Domain inspector views format messages, search hits, members
-(including presence), and threads via inline-escaped metadata and body-escaped
-message text, while `TautTranscript.get_selection()` slices displayed virtual
-rows directly with per-option strip memoization.
+(including presence), threads, and reaction/deletion receipts via inline-escaped
+metadata, body-escaped message text, and `time_format.py` compact relative ages
+for message-id and canonical `channel.<origin_ts>` sub-thread labels, while
+`TautTranscript.get_selection()` slices displayed virtual rows directly with
+per-option strip memoization.
 
 ## Typed Actions and Native Screens
 
@@ -345,14 +347,25 @@ live outside the widget arrangement, so reflow does not recreate domain state.
 Wide and medium transcript prompts use the pure
 `transcript_metadata_layout()` decision and a trusted hanging-text renderer.
 Their timestamp is the public core `taut.terminal.format_message_time()`
-projection (`HH:MM` in local time); exact ids remain in message inspectors and
-selection state. That renderer wraps the message body at the width remaining after time
-and author metadata, then prefixes continuation lines with the same display
-width. The row-height and anchor-restoration paths measure that exact prompt,
-so the visual indent cannot drift from scroll calculations.
-An intra-message row offset is bounded to the rewrapped message height when a
-wider layout shortens the row; the anchor message therefore cannot drift to
-its successor.
+projection (`HH:MM` in local time). That renderer wraps the message body at the
+width remaining after time and author metadata, then prefixes continuation
+lines with the same display width. The row-height and anchor-restoration paths
+measure that exact prompt, so the visual indent cannot drift from scroll
+calculations. An intra-message row offset is bounded to the rewrapped message
+height when a wider layout shortens the row; the anchor message therefore
+cannot drift to its successor.
+
+Selection state, active send-target chrome (`#target-header`, `#composer`
+placeholder, `#status-line`), and destructive delete confirmations retain exact
+message or sub-thread ids so send and delete actions stay unambiguous, whereas
+human inspector and search read views (`_select_message`,
+`_render_reply_inspector`, `_inspector_target_label`, `SearchScreen`, and
+`MessageReaction`/`MessageDeletion` receipts) project raw nanosecond message ids
+through `taut_tui.time_format` (`format_relative_time`,
+`format_subthread_label`). Calendar-day transitions (`2h ago`–`24h ago` today,
+`yesterday`, fixed English `Mon`–`Sun`, and the `6 -> 7`-day cutoff) run only
+below `8` elapsed 24-hour days, while week, month, and year buckets use integer
+`elapsed_seconds // 86400` arithmetic with no `fromtimestamp` fallback chain.
 
 Resize work uses a latest-generation render callback. It applies no stale
 layout pass after a newer terminal size and restores a hidden compact
@@ -418,9 +431,10 @@ The checked visual fixtures are:
 - `docs/implementation/artifacts/tui/taut-tui-64x34.svg`
 - `docs/implementation/artifacts/tui/taut-tui-40x15.svg`
 
-Regenerate them with `uv run --extra dev python bin/render-tui-screens`. The
-script uses fixed public message values. Golden review is a visual gate, not a
-substitute for the layout and pilot assertions.
+Regenerate them with `PYTHONPATH=extensions/taut_tui uv run --project extensions/taut_tui --extra dev python bin/render-tui-screens`. The
+script uses fixed public message values and pins `app._now_ns` so the selected-message
+inspector's relative age (`2m ago`) does not drift across calendar dates. Golden
+review is a visual gate, not a substitute for the layout and pilot assertions.
 
 ## System and Summon Boundaries
 

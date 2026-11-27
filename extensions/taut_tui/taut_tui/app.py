@@ -7,6 +7,7 @@ Spec references:
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import replace
@@ -128,6 +129,7 @@ from taut_tui.summon import (
     _TerminalAttachNotice,
 )
 from taut_tui.system import TuiSystemOperations
+from taut_tui.time_format import format_relative_time, format_subthread_label
 from taut_tui.viewport import ViewportEffect, ViewportEffectKind
 from taut_tui.widgets import (
     DisplayText,
@@ -419,6 +421,10 @@ class TautApp(App[None]):
         self._suppress_promotion_edits = 0
         self._pending_command_origin: tuple[str, int] | None = None
         self._too_small_screen: TerminalTooSmallScreen | None = None
+        self._now_ns: Callable[[], int] = time.time_ns
+
+    def _relative_time(self, ts_ns: int) -> str:
+        return format_relative_time(ts_ns, now_ns=self._now_ns())
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="workspace"):
@@ -1029,7 +1035,11 @@ class TautApp(App[None]):
                 return domain.search(query)
 
             self.push_screen(
-                SearchScreen(search, MappingProxyType(dict(self._target_labels))),
+                SearchScreen(
+                    search,
+                    MappingProxyType(dict(self._target_labels)),
+                    now_ns=self._now_ns,
+                ),
                 self._complete_search,
             )
 
@@ -2095,7 +2105,7 @@ class TautApp(App[None]):
         self._query_base("#inspector-body", TautStatic).update(
             display_text(
                 (escape_inline_text(message.from_name), "bold"),
-                f"  {message.ts}\n",
+                f"  {self._relative_time(message.ts)}\n",
                 escape_message_body(message.text),
                 "\n\nReply · React · Delete",
             )
@@ -2157,9 +2167,14 @@ class TautApp(App[None]):
         )
 
     def _render_reply_inspector(self, snapshot: ConversationSnapshot) -> None:
+        reply_label = (
+            self._inspector_target_label(snapshot.reply_thread)
+            if snapshot.reply_thread
+            else ""
+        )
         parts: list[str] = [
             "Replies to ",
-            escape_inline_text(snapshot.reply_thread or ""),
+            escape_inline_text(reply_label),
             "\n",
         ]
         if not snapshot.reply_messages:
@@ -2170,7 +2185,7 @@ class TautApp(App[None]):
                     parts.append("\n")
                 parts.extend(
                     (
-                        f"{message.ts}  ",
+                        f"{self._relative_time(message.ts)}  ",
                         escape_inline_text(message.from_name),
                         "  ",
                         escape_message_body(message.text),
@@ -2878,7 +2893,12 @@ class TautApp(App[None]):
             return "Direct message"
         if effective_kind == "channel":
             return f"#{name}"
-        return name
+        subthread = format_subthread_label(
+            name,
+            self._target_labels,
+            now_ns=self._now_ns(),
+        )
+        return subthread if subthread is not None else name
 
     def _format_domain_item(
         self,
@@ -2943,28 +2963,38 @@ class TautApp(App[None]):
             return ((label, f"{unread}{topic}"), False)
         return ((escape_display_text(_safe_projection(item)),), False)
 
-    def _render_domain_result(self, result: object) -> None:
+    def _format_single_domain_result(self, result: object) -> DisplayText | None:
         if isinstance(result, Thread):
-            self._render_inspector(
-                display_text(
-                    "Conversation\n",
-                    escape_inline_text(
-                        self._inspector_target_label(
-                            result.name,
-                            kind=result.kind,
-                            display_name=result.display_name,
-                        )
-                    ),
-                )
+            return display_text(
+                "Conversation\n",
+                escape_inline_text(
+                    self._inspector_target_label(
+                        result.name,
+                        kind=result.kind,
+                        display_name=result.display_name,
+                    )
+                ),
             )
-            return
         if isinstance(result, (Message, SearchHit)):
             item_parts, _multiline = self._format_domain_item(result)
-            self._render_inspector(display_text(*item_parts))
-            return
+            return display_text(*item_parts)
+        if isinstance(result, MessageReaction):
+            age = self._relative_time(result.message_ts)
+            return display_text(
+                f"Reaction {escape_inline_text(result.reaction)} "
+                f"added to message sent {age}"
+            )
+        if isinstance(result, MessageDeletion):
+            return display_text(
+                f"Deleted message sent {self._relative_time(result.ts)}"
+            )
         formatter = _RESULT_FORMATTERS.get(type(result))
-        if formatter is not None:
-            self._render_inspector(formatter(result))
+        return formatter(result) if formatter is not None else None
+
+    def _render_domain_result(self, result: object) -> None:
+        single = self._format_single_domain_result(result)
+        if single is not None:
+            self._render_inspector(single)
         elif isinstance(result, (list, tuple)):
             if not result:
                 self._render_inspector("No results")
@@ -4168,18 +4198,6 @@ def _format_init(value: object) -> DisplayText:
     return display_text(f"Workspace {state}\n{escape_inline_text(value.db)}")
 
 
-def _format_reaction(value: object) -> DisplayText:
-    assert isinstance(value, MessageReaction)
-    return display_text(
-        f"Reaction {escape_inline_text(value.reaction)} added to {value.message_ts}"
-    )
-
-
-def _format_deletion(value: object) -> DisplayText:
-    assert isinstance(value, MessageDeletion)
-    return display_text(f"Deleted message {value.ts}")
-
-
 _RESULT_FORMATTERS: dict[type[object], Callable[[object], DisplayText]] = {
     Member: _format_member,
     Channel: _format_channel,
@@ -4187,8 +4205,6 @@ _RESULT_FORMATTERS: dict[type[object], Callable[[object], DisplayText]] = {
     DoctorReport: _format_doctor,
     DumpReport: _format_dump,
     InitResult: _format_init,
-    MessageReaction: _format_reaction,
-    MessageDeletion: _format_deletion,
 }
 
 

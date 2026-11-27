@@ -661,7 +661,9 @@ async def _message_react(context: HandlerContext) -> None:
     await _applied(
         context, "react_message", lambda: _submit_form(context, {"reaction": "ack"})
     )
-    assert "Reaction ack added" in _inspector(context)
+    reaction_inspector = _inspector(context)
+    assert "Reaction ack added to message sent " in reaction_inspector
+    assert str(context.message_ts) not in reaction_inspector
     observer = _observe(context, as_name="bob")
     try:
         reactions = [
@@ -691,7 +693,9 @@ async def _message_delete(context: HandlerContext) -> None:
         "delete_message",
         lambda: _accept_confirmation(context, str(context.message_ts)),
     )
-    assert "Deleted message" in _inspector(context)
+    deletion_inspector = _inspector(context)
+    assert "Deleted message sent " in deletion_inspector
+    assert str(context.message_ts) not in deletion_inspector
     observer = _observe(context)
     try:
         with pytest.raises(NotFoundError):

@@ -73,6 +73,7 @@ async def _render(output_dir: Path) -> None:
                 messages=_MESSAGES,
             )
         )
+        app._now_ns = lambda: 1723400122000000000
         app._select_message(2)
         app.query_one("#composer", TautComposer).text = "A target-scoped\ndraft"
         for width, height in _SIZES:

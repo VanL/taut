@@ -4450,17 +4450,168 @@ def test_message_body_structure_does_not_widen_metadata_controls() -> None:
             )
             assert "next    column\n" in transcript
 
+            app._now_ns = lambda: 120_000_000_001
             app._message_rows = (message,)
             app._select_message(0)
             selected = str(app.query_one("#inspector-body").render())
-            assert selected.startswith(r"ali\nce\tname  1" + "\n")
+            assert selected.startswith(r"ali\nce\tname  2m ago" + "\n")
             assert "body\nnext    column" in selected
 
             app._render_reply_inspector(snapshot)
             replies = str(app.query_one("#inspector-body").render())
             assert replies.startswith(r"Replies to root\nthread\tlabel" + "\n")
-            assert r"1  ali\nce\tname  " in replies
+            assert r"2m ago  ali\nce\tname  " in replies
             assert "body\nnext    column" in replies
+
+    asyncio.run(exercise())
+
+
+def test_inspector_and_receipts_use_relative_time_instead_of_raw_message_ids() -> None:
+    from taut.client import (
+        Message,
+        MessageDeletion,
+        MessageReaction,
+        Notification,
+        Thread,
+    )
+    from taut.terminal import format_message_time
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+    from taut_tui.widgets import TautOptionList
+
+    origin_ts = 1_723_400_000_000_000_000
+    reply_ts = origin_ts + 180_000_000_000
+    now_ns = origin_ts + 300_000_000_000
+    subthread = f"general.{origin_ts}"
+
+    origin = Message(
+        "general",
+        origin_ts,
+        "m_alice",
+        "alice",
+        "message",
+        "root body",
+    )
+    reply = Message(
+        subthread,
+        reply_ts,
+        "m_bob",
+        "bob",
+        "message",
+        "reply body",
+    )
+    snapshot = ConversationSnapshot(
+        generation=1,
+        target="general",
+        messages=(origin,),
+        reply_thread=subthread,
+        reply_messages=(reply,),
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        app._now_ns = lambda: now_ns
+        app._target_labels["general"] = "#general"
+        async with app.run_test(size=(100, 34)):
+            app._render_messages((origin,))
+            transcript = str(
+                app.query_one("#transcript", TautOptionList)
+                .get_option_at_index(0)
+                .prompt
+            )
+            assert transcript.startswith(
+                f"{format_message_time(origin_ts)}  alice  root body\n"
+            )
+            assert str(origin_ts) not in transcript
+
+            app._message_rows = (origin,)
+            app._select_message(0)
+            selected = str(app.query_one("#inspector-body").render())
+            assert selected.startswith("alice  5m ago\n")
+            assert str(origin_ts) not in selected
+            assert app.visual_state.selected_message_id == origin_ts
+            assert app.visual_state.inspector is not None
+            assert app.visual_state.inspector.selected_item == str(origin_ts)
+
+            app._render_reply_inspector(snapshot)
+            replies = str(app.query_one("#inspector-body").render())
+            assert replies.startswith("Replies to #general (thread 5m ago)\n")
+            assert "2m ago  bob  reply body" in replies
+            assert str(origin_ts) not in replies
+            assert str(reply_ts) not in replies
+
+            app._render_domain_result(
+                Thread(
+                    name=subthread,
+                    parent="general",
+                    kind="subthread",
+                    unread_count=1,
+                    last_ts=reply_ts,
+                    unread=True,
+                )
+            )
+            thread_text = str(app.query_one("#inspector-body").render())
+            assert "#general (thread 5m ago)" in thread_text
+            assert str(origin_ts) not in thread_text
+
+            app._render_notifications(
+                (
+                    Notification(
+                        type="reply",
+                        to_id="m_alice",
+                        actor_id="m_bob",
+                        actor_name="bob",
+                        thread=subthread,
+                        message_ts=reply_ts,
+                        ts=reply_ts,
+                    ),
+                )
+            )
+            notif_text = str(app.query_one("#inspector-body").render())
+            assert "#general (thread 5m ago)" in notif_text
+            assert format_message_time(reply_ts) in notif_text
+            assert str(origin_ts) not in notif_text
+            assert str(reply_ts) not in notif_text
+
+            app._render_domain_result(
+                MessageReaction(
+                    thread="general",
+                    message_ts=origin_ts,
+                    reaction="ack",
+                    audience_count=1,
+                )
+            )
+            reaction_text = str(app.query_one("#inspector-body").render())
+            assert reaction_text == "Reaction ack added to message sent 5m ago"
+            assert str(origin_ts) not in reaction_text
+
+            app._render_domain_result(
+                MessageDeletion(
+                    thread="general",
+                    ts=origin_ts,
+                )
+            )
+            deletion_text = str(app.query_one("#inspector-body").render())
+            assert deletion_text == "Deleted message sent 5m ago"
+            assert str(origin_ts) not in deletion_text
+
+            # Active send-target chrome keeps exact public sub-thread name [TUI-5.3].
+            from taut_tui.widgets import TautComposer
+
+            app._apply_conversation(
+                ConversationSnapshot(
+                    generation=2,
+                    target=subthread,
+                    messages=(reply,),
+                    intent_token=app._conversation_intent,
+                )
+            )
+            assert str(app.query_one("#target-header").render()) == subthread
+            assert (
+                app.query_one("#composer", TautComposer).placeholder
+                == f"Message {subthread}"
+            )
+            assert subthread in str(app.query_one("#status-line").render())
 
     asyncio.run(exercise())
 

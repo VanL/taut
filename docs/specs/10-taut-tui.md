@@ -321,8 +321,23 @@ permanent keybar. `help.open` owns the complete discoverable gesture list.
 At wide and medium widths, ordinary messages use aligned local wall-clock time
 and author metadata with a hanging body indent. The time uses the same public
 core formatter as the CLI human renderer (`HH:MM`). At compact widths,
-metadata stacks above the body. The exact 19-digit message id remains available
-through selection and the inspector; it never replaces the time in the row.
+metadata stacks above the body. Selection state, active send-target labels, and
+destructive confirmation prompts retain the exact message or sub-thread id
+([TUI-2.3], [TUI-6.3]), while inspector and search views replace raw
+message-id timestamps (selected-message header, reply-inspector rows, canonical
+`channel.<origin_ts>` sub-thread labels formatted as `#channel (thread <age>)`,
+and reaction/deletion receipts formatted as `... message sent <age>`) with a
+compact relative age derived from the nanosecond message id against current
+time: `now` (`< 60s` or future skew), `1m ago`–`50m ago` (`60s`–`3059s`),
+`1h ago` (`3060s`–`7199s`), `2h ago`–`24h ago` (`>= 7200s` on the same local
+calendar day, including 25-hour fall-back DST days), `yesterday` (`>= 7200s` on
+the previous local calendar day), fixed English `Mon`–`Sun` (`2`–`6` local
+calendar days prior), `1w ago`–`3w ago` (`7`–`27` days), `1mo ago`–`11mo ago`
+(`28`–`364` days, `min(11, max(1, days // 30))`), and `Ny ago` (`>= 365` days,
+`days // 365`), where `days` uses local calendar days below `8` elapsed 24-hour
+days (`< 691200s`) and `elapsed_seconds // 86400` at or above `8` elapsed
+24-hour days. Raw message ids never replace the time in transcript rows or
+human inspector summaries.
 Notices, warnings, unread boundaries, selected messages, and thread origins
 remain structurally distinct without relying on color.
 
@@ -1072,7 +1087,15 @@ The following enumerable matrices have firing tests:
   excerpt rendering, suspension and restoration equivalence with the
   bootstrap lease, and the Summon-level proof that a non-supporting
   host receives no mid-run request); and
-- terminal-control payloads in every user/extension text-bearing widget; and
+- terminal-control payloads in every user/extension text-bearing widget;
+- every compact relative-age bucket boundary in [TUI-5.3] (`now`, future skew,
+  `1m ago`–`50m ago`, `1h ago`, same-day `2h ago`–`24h ago`, `yesterday`,
+  `Mon`–`Sun`, `1w ago`–`3w ago`, `1mo ago`–`11mo ago`, and `Ny ago`) under an
+  explicit clock seam, plus TUI projection across the selected-message
+  inspector, reply inspector header and rows, canonical sub-thread target
+  labels (including notifications and search results), and reaction/deletion
+  receipts while active send-target labels and destructive delete confirmations
+  retain exact message/sub-thread ids; and
 - mouse drag across three transcript rows and across a wrapped visual line,
   with one message containing an escaped control sequence; `y`; and a 500 ms
   stable completed selection: `get_selected_text()` equals the rendered rows;
@@ -1120,6 +1143,12 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-11-27-tui-relative-message-time-plan.md` — replaces raw
+  19-digit message IDs in TUI inspector, canonical sub-thread target labels, and
+  reaction/deletion receipts with compact relative ages under [TUI-5.3] and
+  [TUI-13.2] while preserving `HH:MM` transcript timestamps and exact target IDs
+  in selection state, active send targets, and destructive confirmations.
 
 - `docs/plans/2026-11-25-phase-3-packaging-cli-tui-polish-and-plan-hygiene-plan.md` —
   highlights the default/retained navigation row across startup and refreshes
