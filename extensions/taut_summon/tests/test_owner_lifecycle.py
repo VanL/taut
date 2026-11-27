@@ -486,19 +486,26 @@ def test_source_install_failure_preserves_primary_and_attempts_all_cleanup(
     calls: list[str] = []
     original_stop = SummonReactor.stop
     original_close = TautClient.close
+    created_reactor: BaseReactor | None = None
+    created_client: TautClient | None = None
 
-    def install(_policy: ControlPolicy) -> None:
+    def install(policy: ControlPolicy) -> None:
+        nonlocal created_reactor, created_client
+        created_reactor = policy._reactor
+        created_client = policy._client
         raise primary
 
     def stop(source: SummonReactor, **kwargs: Any) -> None:
-        calls.append("stop")
         original_stop(source, **kwargs)
-        raise RuntimeError("source stop failed")
+        if source is created_reactor:
+            calls.append("stop")
+            raise RuntimeError("source stop failed")
 
     def close(client: TautClient) -> None:
-        calls.append("close")
         original_close(client)
-        raise RuntimeError("client close failed")
+        if client is created_client:
+            calls.append("close")
+            raise RuntimeError("client close failed")
 
     monkeypatch.setattr(ControlPolicy, "install", install)
     monkeypatch.setattr(BaseReactor, "stop", stop)

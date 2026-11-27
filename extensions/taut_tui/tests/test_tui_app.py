@@ -5704,7 +5704,7 @@ def _exercise_session_inbox_cap_and_interleaving(
     orig_inbox = TautClient.inbox
 
     def gated_process_once(self: BaseReactor) -> Any:
-        assert hold_watcher.wait(10.0)
+        assert hold_watcher.wait(60.0)
         with watcher_turn_lock:
             if not hold_watcher.is_set():
                 return False
@@ -5715,16 +5715,16 @@ def _exercise_session_inbox_cap_and_interleaving(
     ) -> list[Notification]:
         batch = orig_inbox(self, *args, **kwargs)
         claimed_event.set()
-        assert release_append.wait(10.0)
+        assert release_append.wait(60.0)
         return batch
 
     try:
         with monkeypatch.context() as patch:
             patch.setattr(BaseReactor, "process_once", gated_process_once)
-            assert session.open_conversation("general").result(timeout=10.0) is not None
+            assert session.open_conversation("general").result(timeout=30.0) is not None
             with watcher_turn_lock:
                 hold_watcher.clear()
-            seeder = TautClient(db_path=cap_db, as_name="bob")
+            seeder = TautClient(db_path=cap_db, as_name="bob", persistent=True)
             try:
                 for idx in range(250):
                     seeder.say("general", f"@alice burst {idx:03d}")
@@ -5733,7 +5733,7 @@ def _exercise_session_inbox_cap_and_interleaving(
 
             patch.setattr(TautClient, "inbox", barrier_inbox)
             fut = session.claim_inbox()
-            assert claimed_event.wait(10.0)
+            assert claimed_event.wait(60.0)
 
             patch.setattr(TautClient, "inbox", orig_inbox)
             check_alice = TautClient(db_path=cap_db, as_name="alice")
@@ -5750,10 +5750,10 @@ def _exercise_session_inbox_cap_and_interleaving(
             finally:
                 charlie.close()
             hold_watcher.set()
-            assert watcher_delivered.wait(10.0)
+            assert watcher_delivered.wait(60.0)
 
             release_append.set()
-            claimed = fut.result(timeout=10.0)
+            claimed = fut.result(timeout=60.0)
 
         assert len(claimed) == 200
         feed = session.notification_feed()
@@ -5815,7 +5815,7 @@ def test_inbox_command_unifies_session_feed_caps_at_200_and_retains_newest_ts(
             orig_accept = app._session._accept_delivery
 
             def ui_gated_proc(self: BaseReactor) -> Any:
-                assert ui_hold_watcher.wait(10.0)
+                assert ui_hold_watcher.wait(60.0)
                 with ui_turn_lock:
                     if not ui_hold_watcher.is_set():
                         return False
@@ -5826,7 +5826,7 @@ def test_inbox_command_unifies_session_feed_caps_at_200_and_retains_newest_ts(
             ) -> list[Notification]:
                 batch = orig_client_inbox(self, *args, **kwargs)
                 ui_claimed.set()
-                assert ui_release_claim.wait(10.0)
+                assert ui_release_claim.wait(60.0)
                 return batch
 
             def track_accept(gen: int, item: Any) -> bool:

@@ -2810,15 +2810,18 @@ def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel
             cwd=EXTENSION_ROOT,
             env=subproc_env,
             capture_output=True,
+            text=True,
+            encoding="utf-8",
             timeout=20,
             check=False,
         )
         assert surrogate_probe.returncode == 1, surrogate_probe.stderr
-        assert surrogate_probe.stdout == b""
-        assert surrogate_probe.stderr == (
-            f"{prog}: error: --workspace must be an absolute UTF-8 directory path\n".encode()
+        assert surrogate_probe.stdout == ""
+        assert (
+            surrogate_probe.stderr
+            == f"{prog}: error: --workspace must be an absolute UTF-8 directory path\n"
         )
-        assert b"bad_surrogate" not in surrogate_probe.stderr
+        assert "bad_surrogate" not in surrogate_probe.stderr
 
     # Root globals --db / --json / --timestamps / -q rejected before protocol start on `taut mcp`,
     # and duplicate pre-verb + post-verb identity rejected!
