@@ -312,6 +312,9 @@ def test_driver_fixture_cleanup_hard_retires_provider_before_driver_kill(
         "provider-hard-retire",
         "driver-kill",
     ]
+    deadline = time.monotonic() + 5.0
+    while _same_process(provider_identity) and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert not _same_process(provider_identity)
 
 

@@ -181,14 +181,14 @@ def _run_broker_io_probe() -> dict[str, object]:
 
         def interrupting_release(
             session: _broker_session._ProcessBrokerSession,
-            *,
-            active_failure: BaseException | None = None,
+            *args: Any,
+            **kwargs: Any,
         ) -> None:
             nonlocal signal_delivered
             if session is process_session and not signal_delivered:
                 signal_delivered = True
                 signal.raise_signal(signal.SIGINT)
-            original_release(session, active_failure=active_failure)
+            original_release(session, *args, **kwargs)
 
         interrupted = False
         interrupt_notes: tuple[str, ...] = ()

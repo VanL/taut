@@ -103,6 +103,7 @@ class InstalledTuiFixture:
 
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         return subprocess.run(
             [str(self.python), "-c", code],
             cwd=self.root,

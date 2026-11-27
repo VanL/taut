@@ -513,6 +513,7 @@ def test_installed_wheel_onboard_and_cold_join_recipe_end_to_end(
     for key in list(env):
         if key.startswith(("TAUT_", "BROKER_")):
             env.pop(key, None)
+    env["PYTHONIOENCODING"] = "utf-8"
 
     def run_installed(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

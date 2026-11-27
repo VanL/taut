@@ -146,6 +146,7 @@ class InstalledCommandFixture:
     def run_python(self, code: str, *args: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         return subprocess.run(
             [str(self.python), "-c", code, *args],
             cwd=self.root,
@@ -161,6 +162,7 @@ class InstalledCommandFixture:
     def run_console(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         executable = self.python.parent / ("taut.exe" if os.name == "nt" else "taut")
         return subprocess.run(
             [str(executable), *args],
@@ -179,6 +181,7 @@ class InstalledCommandFixture:
 
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         executable = self.python.parent / (
             "taut-summon.exe" if os.name == "nt" else "taut-summon"
         )

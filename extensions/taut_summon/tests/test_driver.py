@@ -2786,7 +2786,9 @@ def test_post_claim_fatal_error_releases_ledger(
         tag="badspawn",
     )
     assert driver.wait() == 1
-    assert "failed to spawn PTY harness" in driver.stderr_tail()
+    stderr_tail = driver.stderr_tail()
+    assert "cannot spawn the harness: failed to spawn " in stderr_tail
+    assert "PTY harness:" in stderr_tail
 
     member = _member_by_name(summon_db, "postclaim-probe")
     assert member is not None  # bootstrap created the member before the fatal spawn

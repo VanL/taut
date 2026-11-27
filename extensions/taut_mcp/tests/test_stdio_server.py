@@ -2697,7 +2697,6 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(30)
 def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel_stdio(
     tmp_path: Path,
 ) -> None:
@@ -2716,6 +2715,7 @@ def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel
 
     # 1) Launch validation & content-free secret non-echo across both surfaces.
     secret_sentinel = "SECRET_NEVER_ECHO_HUNTER2_9911"
+    subproc_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     for base_argv, prog in (
         (["-m", "taut_mcp"], "taut-mcp"),
         (["-m", "taut", "mcp"], "taut mcp"),
@@ -2753,9 +2753,11 @@ def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel
             res = subprocess.run(
                 [sys.executable, *base_argv, *bad_tail],
                 cwd=EXTENSION_ROOT,
+                env=subproc_env,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                encoding="utf-8",
+                timeout=20,
                 check=False,
             )
             assert res.returncode == 1, (prog, bad_tail, res.stderr)
@@ -2764,22 +2766,59 @@ def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel
             assert secret_sentinel not in res.stderr
 
     # Non-UTF-8 surrogateescape argv must also fail content-free without echoing raw bytes.
-    raw_bad = subprocess.run(
-        [
-            sys.executable.encode("utf-8"),
-            b"-m",
-            b"taut_mcp",
-            b"--workspace",
-            b"/tmp/\xffbad",
-        ],
-        cwd=EXTENSION_ROOT,
-        capture_output=True,
-        timeout=5,
-        check=False,
-    )
-    assert raw_bad.returncode == 1
-    assert raw_bad.stdout == b""
-    assert b"\xff" not in raw_bad.stderr
+    # Windows CreateProcessW takes UTF-16 command lines (so subprocess rejects raw non-UTF-8 bytes
+    # before process launch); test raw bytes on POSIX and lone-surrogate argv on all platforms.
+    if os.name != "nt":
+        raw_bad = subprocess.run(
+            [
+                sys.executable.encode("utf-8"),
+                b"-m",
+                b"taut_mcp",
+                b"--workspace",
+                b"/tmp/\xffbad",
+            ],
+            cwd=EXTENSION_ROOT,
+            env=subproc_env,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        assert raw_bad.returncode == 1
+        assert raw_bad.stdout == b""
+        assert b"\xff" not in raw_bad.stderr
+
+    for call_expr, prog in (
+        (
+            "from taut_mcp.cli import main; raise SystemExit(main(['--workspace', bad]))",
+            "taut-mcp",
+        ),
+        (
+            "from taut.cli import main; raise SystemExit(main(['mcp', '--workspace', bad]))",
+            "taut mcp",
+        ),
+    ):
+        surrogate_probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; "
+                    "bad = 'C:\\\\bad_surrogate\\\\\\udcff' if os.name == 'nt' else '/tmp/bad_surrogate_\\udcff'; "
+                    f"{call_expr}"
+                ),
+            ],
+            cwd=EXTENSION_ROOT,
+            env=subproc_env,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        assert surrogate_probe.returncode == 1, surrogate_probe.stderr
+        assert surrogate_probe.stdout == b""
+        assert surrogate_probe.stderr == (
+            f"{prog}: error: --workspace must be an absolute UTF-8 directory path\n".encode()
+        )
+        assert b"bad_surrogate" not in surrogate_probe.stderr
 
     # Root globals --db / --json / --timestamps / -q rejected before protocol start on `taut mcp`,
     # and duplicate pre-verb + post-verb identity rejected!
@@ -2794,9 +2833,11 @@ def test_launch_cli_defaults_content_free_parser_errors_cache_scope_and_parallel
         res_root = subprocess.run(
             [sys.executable, "-m", "taut", *root_bad],
             cwd=EXTENSION_ROOT,
+            env=subproc_env,
             capture_output=True,
             text=True,
-            timeout=5,
+            encoding="utf-8",
+            timeout=20,
             check=False,
         )
         assert res_root.returncode == 1

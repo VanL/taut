@@ -7,17 +7,51 @@ Spec references:
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 
 from taut_tui.time_format import format_relative_time, format_subthread_label
 
+
+class _CentralTestTz(tzinfo):
+    """Deterministic US Central (CST/CDT) tzinfo needing no external tzdata."""
+
+    _STD = timedelta(hours=-6)
+    _DST = timedelta(hours=1)
+
+    @staticmethod
+    def _dst_window_local(year: int) -> tuple[datetime, datetime]:
+        march_1 = datetime(year, 3, 1)
+        march_first_sun = 1 + (6 - march_1.weekday()) % 7
+        dst_start = datetime(year, 3, march_first_sun + 7, 2, 0)
+        nov_1 = datetime(year, 11, 1)
+        nov_first_sun = 1 + (6 - nov_1.weekday()) % 7
+        dst_end = datetime(year, 11, nov_first_sun, 2, 0)
+        return dst_start, dst_end
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        return self._STD + self.dst(dt)
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        if dt is None:
+            return timedelta(0)
+        start, end = self._dst_window_local(dt.year)
+        naive = dt.replace(tzinfo=None)
+        if start <= naive < end - self._DST:
+            return self._DST
+        if end - self._DST <= naive < end:
+            return timedelta(0) if dt.fold else self._DST
+        return timedelta(0)
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "CDT" if self.dst(dt) else "CST"
+
+
 _NS = 1_000_000_000
 _DAY_NS = 86_400 * _NS
 _EPOCH_UTC = datetime(1970, 1, 1, tzinfo=UTC)
-_CHICAGO = ZoneInfo("America/Chicago")
+_CHICAGO = _CentralTestTz()
 
 
 def _local_ns(
