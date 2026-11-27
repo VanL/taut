@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+## 0.9.13 - 2026-11-27
+
+- Added actor-free `taut onboard` (`TautClient.onboard()` and wheel-packaged
+  `taut/agent-kernel.md` via `TautClient.agent_kernel()`) to initialize a
+  workspace, append ignore entries to existing `.gitignore`/`.dockerignore`
+  files, and create non-overwriting `AGENTS.md`, `CLAUDE.md`, and `.mcp.json`
+  files inside a verified project root. Added cursor-neutral `taut join --recent N`
+  (`TautClient.join_channel()`), single-resolution top-level `taut say ... --join`,
+  and exact cross-backend `TautClient.init().created` reporting.
+- Core now installs the `taut-chat` console entry-point alias alongside `taut`,
+  adds the `taut-chat[default]` convenience extra (`taut-summon`, `taut-mcp`,
+  `taut-tui`), and prints install hints when `taut mcp` or `taut tui` is invoked
+  without its extension installed. `TautClient` now supports `with TautClient(...)`
+  context-manager cleanup, `taut reply [THREAD] MSG_ID [TEXT|-]` resolves exact
+  19-digit message IDs across joined top-level channels when `THREAD` is omitted,
+  `taut whoami --show-token` (`TautClient.whoami(include_token=True)`) inspects
+  continuity tokens read-only, and `TautClient(..., install_schema=False)`
+  validates existing v6 workspaces without installing schema.
+- `taut mcp` and `taut-mcp` now accept optional `--workspace`, `--token`, and
+  `--as` launch defaults with compact nullable tool schemas and bounded
+  default-workspace probing. Resident MCP workspaces queue up to eight
+  in-flight commands (`MAX_QUEUED_COMMANDS = 8`) instead of rejecting concurrent
+  calls immediately, accept optional leading `#` on channel and sub-thread
+  selectors (matching `TautClient.search()`), and return server-owned
+  field-named schema validation diagnostics without echoing caller values.
+- `taut-summon` adds built-in `agy` and `gemini` PTY providers and lazy
+  `SummonController.provider_names()`, `taut summon --status [NAME] [--json]`
+  parity with `taut-summon status`, passive non-installing controller
+  inspection, repeatable `--provider-arg` pass-through across CLI and TUI
+  surfaces, `Enter`/`y`/`yes` terminal-attach confirmation, POSIX `TIOCGWINSZ`
+  window-size synchronization during attach, and child `SIGHUP` reset to
+  `SIG_DFL` before acquiring the controlling terminal.
+- `taut-tui` replaces raw 19-digit message IDs across human inspector and search
+  read views (selected-message header, reply-inspector header and rows,
+  canonical `channel.<origin_ts>` sub-thread labels, and reaction/deletion
+  receipts) with compact relative message ages (`now`, `1m ago`–`50m ago`,
+  `1h ago`, `2h ago`–`24h ago`, `yesterday`, `Mon`–`Sun`, `1w ago`–`3w ago`,
+  `1mo ago`–`11mo ago`, `Ny ago`) while keeping `HH:MM` in main transcript rows
+  and exact IDs in selection state, active send-target chrome, and delete
+  confirmations. Navigation highlights now persist deterministically across
+  refreshes without auto-opening watchers, `:inbox` unifies manual claims with
+  live deliveries, `:reply` accepts optional `THREAD`, and tail deliveries
+  append incrementally.
+- macOS host-ID capture now calls `libc.gethostuuid()` via `ctypes` instead of
+  spawning `ioreg`, `who()` batches member alias queries, mention notification
+  metadata resolves lazily, and full-text search adds batched unchanged-posting
+  reconciliation, `(generation, thread, message_ts)` indexing, SQL
+  `threads`/`before` pushdown, strict provider signature checks, and
+  `SEARCH_PROJECTION_VERSION` tombstone fencing across SQLite and PostgreSQL.
+
 ## 0.9.12 - 2026-11-10
 
 - Taut now supports Python 3.12 through 3.15 across core and every extension.
