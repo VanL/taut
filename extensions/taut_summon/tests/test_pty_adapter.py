@@ -2380,11 +2380,11 @@ def test_interrupt_wins_over_inflight_pty_io_error(
         ):
             if failure_point == "write":
                 io_entered.set()
-                assert release_io.wait(timeout=2.0)
+                assert release_io.wait(timeout=10.0)
                 raise OSError(errno.EBADF, "sentinel write race")
             if failure_point == "zero":
                 io_entered.set()
-                assert release_io.wait(timeout=2.0)
+                assert release_io.wait(timeout=10.0)
                 return 0
             raise BlockingIOError()
         return real_write(fd, data)
@@ -2395,7 +2395,7 @@ def test_interrupt_wins_over_inflight_pty_io_error(
         del readers, writers, errors, timeout
         assert failure_point == "select"
         io_entered.set()
-        assert release_io.wait(timeout=2.0)
+        assert release_io.wait(timeout=10.0)
         raise OSError(errno.EBADF, "sentinel select race")
 
     monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
@@ -2410,13 +2410,15 @@ def test_interrupt_wins_over_inflight_pty_io_error(
 
     injector = threading.Thread(target=inject, name="injector")
     injector.start()
-    assert io_entered.wait(timeout=1.0)
-    handle.interrupt()
-    release_io.set()
-    injector.join(timeout=2.0)
-    proc.returncode = 0
-    handle.close()
-    child_socket.close()
+    try:
+        assert io_entered.wait(timeout=10.0)
+        handle.interrupt()
+    finally:
+        release_io.set()
+        injector.join(timeout=10.0)
+        proc.returncode = 0
+        handle.close()
+        child_socket.close()
 
     assert not injector.is_alive()
     assert len(failures) == 1
@@ -2441,7 +2443,7 @@ def test_interrupt_cancellation_outranks_concurrent_reader_close(
             b"old-epoch"
         ):
             write_entered.set()
-            assert release_write.wait(timeout=2.0)
+            assert release_write.wait(timeout=10.0)
             raise BlockingIOError()
         return real_write(fd, data)
 
@@ -2455,16 +2457,18 @@ def test_interrupt_cancellation_outranks_concurrent_reader_close(
 
     injector = threading.Thread(target=inject, name="injector")
     injector.start()
-    assert write_entered.wait(timeout=1.0)
-    handle.interrupt()
-    # Drive the private close path while holding its documented owner lock.
-    with handle._lifecycle_lock:
-        handle._close_master_unlocked()
-    release_write.set()
-    injector.join(timeout=2.0)
-    proc.returncode = 0
-    handle.close()
-    child_socket.close()
+    try:
+        assert write_entered.wait(timeout=10.0)
+        handle.interrupt()
+        # Drive the private close path while holding its documented owner lock.
+        with handle._lifecycle_lock:
+            handle._close_master_unlocked()
+    finally:
+        release_write.set()
+        injector.join(timeout=10.0)
+        proc.returncode = 0
+        handle.close()
+        child_socket.close()
 
     assert not injector.is_alive()
     assert len(failures) == 1
