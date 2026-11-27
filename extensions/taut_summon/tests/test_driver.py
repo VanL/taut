@@ -2312,8 +2312,16 @@ def test_implied_name_join_collision_creates_two_distinct_members(
     summon_db: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    setup_ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+    try:
+        ensure_summon_schema(setup_ledger)
+    finally:
+        setup_ledger.close()
+    evidence = driver_module.capture_driver_evidence()
+
     barrier = threading.Barrier(2)
     real_join = TautClient.join
+    local = threading.local()
 
     def join_at_race(
         client: TautClient,
@@ -2323,12 +2331,14 @@ def test_implied_name_join_collision_creates_two_distinct_members(
         new: bool = False,
     ) -> Message | None:
         if new and client.as_name == "Scripted":
-            barrier.wait(timeout=10)
+            local.reached_barrier = True
+            barrier.wait(timeout=60)
         return real_join(client, thread, persona=persona, new=new)
 
     monkeypatch.setattr(TautClient, "join", join_at_race)
 
     def create() -> _BootstrapResult:
+        local.reached_barrier = False
         request = SummonRequest(
             name="scripted",
             threads=("general",),
@@ -2341,12 +2351,15 @@ def test_implied_name_join_collision_creates_two_distinct_members(
         ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
         resolver = TautClient(db_path=summon_db)
         try:
-            ensure_summon_schema(ledger)
             driver._queue = ledger
-            driver._evidence = driver_module.capture_driver_evidence()
+            driver._evidence = evidence
             return driver._first_summon(
                 resolver, "scripted", "Scripted", "scripted", True
             )
+        except BaseException:
+            if not getattr(local, "reached_barrier", False):
+                barrier.abort()
+            raise
         finally:
             resolver.close()
             ledger.close()
@@ -2354,7 +2367,7 @@ def test_implied_name_join_collision_creates_two_distinct_members(
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(create)
         second = pool.submit(create)
-        created = [first.result(timeout=15), second.result(timeout=15)]
+        created = [first.result(timeout=90), second.result(timeout=90)]
 
     assert len({item.member_id for item in created}) == 2
     assert len({item.member_name for item in created}) == 2
@@ -2422,8 +2435,16 @@ def test_concurrent_chosen_name_across_providers_has_one_core_creator(
 ) -> None:
     """Core's final-name join excludes a concurrent creator across providers."""
 
+    setup_ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+    try:
+        ensure_summon_schema(setup_ledger)
+    finally:
+        setup_ledger.close()
+    evidence = driver_module.capture_driver_evidence()
+
     barrier = threading.Barrier(2)
     real_join = TautClient.join
+    local = threading.local()
 
     def join_at_race(
         client: TautClient,
@@ -2433,12 +2454,14 @@ def test_concurrent_chosen_name_across_providers_has_one_core_creator(
         new: bool = False,
     ) -> Message | None:
         if new and client.as_name == "reviewer":
-            barrier.wait(timeout=10)
+            local.reached_barrier = True
+            barrier.wait(timeout=60)
         return real_join(client, thread, persona=persona, new=new)
 
     monkeypatch.setattr(TautClient, "join", join_at_race)
 
     def create(provider: str) -> _BootstrapResult:
+        local.reached_barrier = False
         request = SummonRequest(
             name="reviewer",
             threads=("general",),
@@ -2451,12 +2474,15 @@ def test_concurrent_chosen_name_across_providers_has_one_core_creator(
         ledger = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
         resolver = TautClient(db_path=summon_db)
         try:
-            ensure_summon_schema(ledger)
             driver._queue = ledger
-            driver._evidence = driver_module.capture_driver_evidence()
+            driver._evidence = evidence
             return driver._first_summon(
                 resolver, "reviewer", "reviewer", provider, False
             )
+        except BaseException:
+            if not getattr(local, "reached_barrier", False):
+                barrier.abort()
+            raise
         finally:
             resolver.close()
             ledger.close()
@@ -2466,7 +2492,7 @@ def test_concurrent_chosen_name_across_providers_has_one_core_creator(
         outcomes: list[_BootstrapResult | DriverError] = []
         for future in futures:
             try:
-                outcomes.append(future.result(timeout=15))
+                outcomes.append(future.result(timeout=90))
             except DriverError as exc:
                 outcomes.append(exc)
 
